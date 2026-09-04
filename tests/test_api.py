@@ -113,7 +113,33 @@ class TestAnalyze:
         for key in ("features", "bands", "findings", "detectors", "deviations"):
             assert key in body
         assert body["features"]["n_words"] > 300
-        assert 0.0 <= body["detectors"]["heuristic"]["ai_probability"] <= 1.0
+        # `detectors` now carries the published default model, or is empty
+        # with the reason in `detector_error`. There is no fallback score:
+        # this repo writes no AI-detection arithmetic, so "the model would not
+        # load" has to read as no number rather than as a different number.
+        assert "detector_error" in body
+        if body["detectors"]:
+            row = next(iter(body["detectors"].values()))
+            assert 0.0 <= row["ai_probability"] <= 1.0
+            assert row["is_published_detector"] is True
+            assert row["model"]
+        else:
+            assert body["detector_error"]
+
+    def test_style_signals_are_explanation_and_say_so(self, client):
+        """The former heuristic detector, re-scoped.
+
+        It is still useful for telling a writer *which* AI tells their draft
+        contains. It is no longer allowed to look like evidence, so it ships
+        under its own key, with a citation per signal and no aggregate.
+        """
+        body = client.post("/api/analyze", json={"text": SAMPLE}).json()
+        block = body["ai_style_signals"]
+        assert block["is_a_detector"] is False
+        assert "ai_probability" not in block["signals"]
+        assert set(block["signals"]) == set(block["sources"])
+        assert all(0.0 <= v <= 1.0 for v in block["signals"].values())
+        assert "heuristic" not in body["detectors"]
 
     def test_findings_carry_grade_cost(self, client):
         findings = client.post("/api/analyze", json={"text": SAMPLE}).json()["findings"]
@@ -186,16 +212,37 @@ class TestSentences:
 
     def test_short_sentence_falls_back_to_document_risk(self, client):
         body = client.post("/api/analyze", json={"text": "Yes. " + SAMPLE}).json()
-        doc_risk = body["detectors"]["heuristic"]["ai_probability"]
+        if not body["detectors"]:
+            pytest.skip(body["detector_error"])
+        doc_risk = next(iter(body["detectors"].values()))["ai_probability"]
         first = body["sentences"][0]
         assert first["length"] < 5
         assert first["risk"] == pytest.approx(doc_risk)
 
     def test_sentence_risks_vary(self, client):
-        risks = {
-            s["risk"] for s in client.post("/api/analyze", json={"text": SAMPLE}).json()["sentences"]
-        }
+        """Real per-sentence numbers from the published model, not a constant."""
+        body = client.post("/api/analyze", json={"text": SAMPLE}).json()
+        if not body["detectors"]:
+            pytest.skip(body["detector_error"])
+        risks = {s["risk"] for s in body["sentences"]}
         assert len(risks) > 1, "per-sentence scoring should not be a constant"
+
+    def test_risk_is_null_rather_than_invented_when_no_model_is_available(
+        self, client
+    ):
+        """The honest degraded path.
+
+        Before, an unavailable model was papered over by hand-written
+        arithmetic that produced a number in the same field. Now the field is
+        null and the reason is on the wire.
+        """
+        body = client.post("/api/analyze", json={"text": SAMPLE}).json()
+        if body["detectors"]:
+            pytest.skip("the detector is available in this environment")
+        assert body["detector_error"]
+        assert all(s["risk"] is None for s in body["sentences"])
+        # And the explanation still works without any model at all.
+        assert body["ai_style_signals"]["signals"]
 
 
 class TestFeatures:

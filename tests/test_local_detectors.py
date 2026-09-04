@@ -21,19 +21,23 @@ from pathlib import Path
 
 import pytest
 
-from humanizer.detectors import DetectorResult, HeuristicDetector
+from humanizer.detectors import Detector, DetectorResult
 from humanizer.detectors.local import (
-    ALTERNATIVE_MODERN_MODELS,
     DEFAULT_CLASSIFIER_MODEL,
     DEFAULT_MODERN_MODEL,
     DEFAULT_PERPLEXITY_MODEL,
     HEAD_POOLED_SIGMOID,
     HEAD_SOFTMAX,
+    DEFAULT_ENSEMBLE_WEIGHTS,
     ClassifierDetector,
     EnsembleDetector,
     ModernDetector,
     PerplexityDetector,
+    MODEL_HEADS,
+    PUBLISHED_DETECTORS,
+    SHIPPED_DETECTORS,
     backend_available,
+    check_load_integrity,
     resolve_ai_index,
     resolve_head,
 )
@@ -273,10 +277,83 @@ class TestResolveHead:
         assert resolve_head([], "")[0] == HEAD_SOFTMAX
         assert resolve_head(None, "")[0] == HEAD_SOFTMAX
 
-    def test_alternatives_are_registered_with_a_head(self):
-        for name, head in ALTERNATIVE_MODERN_MODELS.items():
-            assert head in (HEAD_SOFTMAX, HEAD_POOLED_SIGMOID), name
-            assert resolve_head([], name) == (head, "known-model")
+    def test_every_published_checkpoint_is_registered_with_a_head(self):
+        for model, head in MODEL_HEADS.items():
+            assert head in (HEAD_SOFTMAX, HEAD_POOLED_SIGMOID), model
+            assert resolve_head([], model) == (head, "known-model")
+
+
+class TestCheckLoadIntegrity:
+    """The guard for the desklib trap.
+
+    `from_pretrained` will happily build a model whose classification head was
+    not in the checkpoint, randomly initialise it, and return confident
+    probabilities computed from noise. Nothing about that load looks like a
+    failure, so the only defence is to read `missing_keys` and refuse.
+    """
+
+    def test_a_clean_load_records_the_zero_counts_as_evidence(self):
+        check = check_load_integrity("some/model", [], [])
+        assert check["n_missing"] == 0
+        assert check["n_unexpected"] == 0
+        assert check["head_weights_loaded"] is True
+
+    def test_a_randomly_initialised_head_is_refused(self):
+        with pytest.raises(RuntimeError) as exc:
+            check_load_integrity("some/model", ["classifier.weight"], [])
+        assert "randomly initialised" in str(exc.value)
+        assert "classification head" in str(exc.value)
+
+    def test_out_proj_counts_as_a_head_weight(self):
+        """RoBERTa-style classification heads are named `...out_proj`."""
+        with pytest.raises(RuntimeError):
+            check_load_integrity("m", ["classifier.out_proj.bias"], [])
+
+    def test_a_missing_encoder_weight_is_also_refused(self):
+        """A half-initialised backbone is no more trustworthy than a bad head."""
+        with pytest.raises(RuntimeError) as exc:
+            check_load_integrity("m", ["encoder.layer.0.attention.self.query.weight"], [])
+        assert "encoder" in str(exc.value)
+
+    def test_unexpected_keys_are_recorded_but_allowed(self):
+        """`roberta-large-openai-detector` ships an unused pooler. Harmless."""
+        check = check_load_integrity("m", [], ["roberta.pooler.dense.bias"])
+        assert check["n_unexpected"] == 1
+        assert check["head_weights_loaded"] is True
+
+
+class TestPublishedRegistry:
+    """Every engine is somebody else's checkpoint, and carries its numbers."""
+
+    def test_every_shipped_engine_has_a_measurement(self):
+        for name, spec in PUBLISHED_DETECTORS.items():
+            assert 0.0 <= spec["pairwise"] <= 1.0, name
+            assert 0 <= spec["fpr"] <= 14, name
+            assert 0 <= spec["tpr"] <= 14, name
+            assert spec["note"], name
+
+    def test_the_default_is_the_best_measured_shipped_engine(self):
+        """No engine ships that beats the default on both axes at once."""
+        default = PUBLISHED_DETECTORS["modern"]
+        assert DEFAULT_MODERN_MODEL == default["model"]
+        for name, spec in SHIPPED_DETECTORS.items():
+            spec = PUBLISHED_DETECTORS[name]
+            better = (
+                spec["pairwise"] > default["pairwise"]
+                and spec["fpr"] < default["fpr"]
+            )
+            assert not better, f"{name} beats the default and is not it"
+
+    def test_rejected_checkpoints_keep_the_number_that_rejected_them(self):
+        """A rejection with a measurement beats a silent omission."""
+        rejected = {k: v for k, v in PUBLISHED_DETECTORS.items() if not v["ship"]}
+        assert rejected
+        # The cautionary pair: high separation, unusable false-positive rate.
+        assert rejected["distilbert"]["pairwise"] > 0.9
+        assert rejected["distilbert"]["fpr"] >= 13
+        # And the opposite failure: safe because it never fires.
+        assert rejected["piratexx"]["fpr"] == 0
+        assert rejected["piratexx"]["tpr"] <= 1
 
 
 # ---------------------------------------------------------- modern detector
@@ -291,6 +368,24 @@ class TestModernDetector:
     wide enough (1.000 vs 0.34 as measured) that asserting a 0.3 margin is a
     statement about the model working at all rather than a fitted threshold.
     """
+
+    def test_the_head_weights_actually_loaded(self):
+        """0 missing / 0 unexpected is the proof the wrapper matched.
+
+        Loading desklib with `AutoModelForSequenceClassification` instead would
+        succeed, silently discard the trained single-logit head, and score
+        with a random one. This is what rules that out.
+        """
+        raw = ModernDetector(score_sentences=False).score(AI_STYLE).raw
+        check = raw["load_check"]
+        assert check["n_missing"] == 0, check["missing_keys"]
+        assert check["n_unexpected"] == 0, check["unexpected_keys"]
+        assert check["head_weights_loaded"] is True
+
+    def test_it_is_flagged_as_a_published_checkpoint(self):
+        assert ModernDetector.is_published_detector is True
+        raw = ModernDetector(score_sentences=False).score(AI_STYLE).raw
+        assert raw["is_published_detector"] is True
 
     def test_head_is_read_from_the_config_not_assumed(self):
         raw = ModernDetector(score_sentences=False).score(AI_STYLE).raw
@@ -397,7 +492,7 @@ class TestModernDetector:
 
     def test_a_softmax_alternative_reads_its_label_order_from_the_config(self):
         """The other supported head shape, on a model that publishes labels."""
-        name = "andreas122001/roberta-academic-detector"
+        name = SHIPPED_DETECTORS["academic"]
         detector = ModernDetector(model_name=name, score_sentences=False)
         if not detector.available():
             pytest.skip(detector.unavailable_reason() or "unavailable")
@@ -408,6 +503,20 @@ class TestModernDetector:
         assert raw["head"] == HEAD_SOFTMAX
         assert raw["ai_index_source"] == "id2label"
         assert "machine" in str(raw["ai_label"]).lower()
+
+    def test_a_head_override_gets_its_own_cache_slot(self):
+        """An override changes which weights are looked for, so it must not
+        alias the default load, and a failure under it must be visible to
+        `available()` -- otherwise every request retries a dead download.
+        """
+        plain = ModernDetector(model_name=DEFAULT_MODERN_MODEL)
+        forced = ModernDetector(model_name=DEFAULT_MODERN_MODEL, head=HEAD_SOFTMAX)
+        assert plain._cache_name() != forced._cache_name()
+        # desklib has no softmax head, so this load cannot succeed.
+        with pytest.raises(RuntimeError):
+            forced.score(AI_STYLE)
+        assert forced.available() is False
+        assert plain.available() is True
 
     def test_missing_model_reports_unavailable_rather_than_raising_forever(self):
         detector = ModernDetector(model_name="humanizer-test/not-a-real-detector")
@@ -456,6 +565,30 @@ def test_modern_detector_does_better_on_academic_prose_than_perplexity():
 
 
 # ------------------------------------------------------ perplexity detector
+
+
+def test_perplexity_is_labelled_as_this_repos_own_arithmetic():
+    """The one engine whose scoring is not somebody else's, said out loud.
+
+    gpt2 is published; the logistic, both centres and both slopes that turn
+    its perplexities into a probability were written here and fitted to
+    nothing. It stays for research comparison, so the label is what keeps it
+    honest -- and it must never be in a default.
+    """
+    assert PerplexityDetector.is_published_detector is False
+    assert ModernDetector.is_published_detector is True
+    assert ClassifierDetector.is_published_detector is True
+
+    from humanizer.api.server import DEFAULT_DETECTORS
+
+    assert "perplexity" not in DEFAULT_DETECTORS
+
+
+@requires_backend
+def test_perplexity_says_so_on_the_wire_too():
+    raw = PerplexityDetector().score(HUMAN_NARRATIVE).raw
+    assert raw["is_published_detector"] is False
+    assert "not" in raw["scoring_is_ours"].lower()
 
 
 @requires_backend
@@ -707,9 +840,9 @@ class TestEnsembleDetector:
         members = [
             StubDetector("perplexity", 0.9),
             StubDetector("classifier", 0.1),
-            StubDetector("heuristic", 0.5),
+            StubDetector("modern", 0.5),
         ]
-        weights = {"perplexity": 1.0, "classifier": 1.5, "heuristic": 0.5}
+        weights = {"perplexity": 1.0, "classifier": 1.5, "modern": 0.5}
         result = EnsembleDetector(members=members, weights=weights).score("text")
 
         expected = (1.0 * 0.9 + 1.5 * 0.1 + 0.5 * 0.5) / 3.0
@@ -770,29 +903,32 @@ class TestEnsembleDetector:
         result = EnsembleDetector(members=members).score("text")
         assert result.sentence_scores == []
 
-    def test_default_members_are_the_three_detectors(self):
+    def test_default_members_are_published_checkpoints_only(self):
+        """The hand-written member is gone; the average is other people's."""
         ensemble = EnsembleDetector()
         assert [m.name for m in ensemble.members] == [
+            "modern",
             "perplexity",
             "classifier",
-            "heuristic",
         ]
-        # The heuristic has no dependencies, so the ensemble is always usable.
-        assert ensemble.available() is True
+        assert "heuristic" not in DEFAULT_ENSEMBLE_WEIGHTS
+        # Every member now needs the extra, so without torch there is nothing
+        # to average and the ensemble says so rather than inventing a number.
+        assert ensemble.available() is backend_available()
 
-    def test_heuristic_only_ensemble_still_scores(self):
+    def test_a_single_member_ensemble_still_scores(self):
         """Graceful degradation: no torch, still a number."""
-        ensemble = EnsembleDetector(members=[HeuristicDetector()])
+        ensemble = EnsembleDetector(members=[StubDetector("stub", 0.4)])
         result = ensemble.score(HUMAN_NARRATIVE)
         assert 0.0 <= result.ai_probability <= 1.0
         assert result.raw["n_scored"] == 1
 
 
 @requires_backend
-def test_real_ensemble_combines_all_three():
+def test_real_ensemble_combines_the_published_members():
     result = EnsembleDetector().score(HUMAN_NARRATIVE)
     members = result.raw["members"]
-    assert set(members) == {"perplexity", "classifier", "heuristic"}
+    assert set(members) == {"modern", "perplexity", "classifier"}
     assert all(m["available"] for m in members.values())
     assert 0.0 <= result.ai_probability <= 1.0
     # In the default configuration only the perplexity member has sentence
@@ -817,16 +953,22 @@ def client():
 
 
 class TestDetectEndpoint:
-    def test_heuristic_only_needs_no_extras(self, client):
+    def test_the_hand_written_engine_is_gone(self, client):
+        """`heuristic` was this repo's own arithmetic. It is not a detector.
+
+        Not hidden, not disabled -- removed. Asking for it is the same error
+        as asking for any other name that does not exist, and the valid-names
+        list in the message is every published checkpoint plus the two
+        labelled legacy engines.
+        """
         r = client.post(
             "/api/detect", json={"text": HUMAN_NARRATIVE, "detectors": ["heuristic"]}
         )
         assert r.status_code == 200
-        rows = r.json()["detectors"]
-        assert len(rows) == 1
-        assert rows[0]["name"] == "heuristic"
-        assert rows[0]["available"] is True
-        assert 0.0 <= rows[0]["ai_probability"] <= 1.0
+        row = r.json()["detectors"][0]
+        assert row["available"] is False
+        assert "Unknown detector" in row["error"]
+        assert "heuristic" not in r.json()["known_detectors"]
 
     def test_response_shape_is_the_documented_contract(self, client):
         r = client.post(
@@ -862,14 +1004,22 @@ class TestDetectEndpoint:
             "/api/detect",
             json={
                 "text": HUMAN_NARRATIVE,
-                "detectors": ["heuristic", "perplexity", "classifier", "ensemble"],
+                "detectors": ["perplexity", "classifier", "ensemble"],
             },
         )
         assert r.status_code == 200
         names = [row["name"] for row in r.json()["detectors"]]
-        assert names == ["heuristic", "perplexity", "classifier", "ensemble"]
+        assert names == ["perplexity", "classifier", "ensemble"]
         for row in r.json()["detectors"]:
             assert row["error"] is None or "Unknown detector" not in row["error"]
+
+    def test_every_published_engine_is_reachable_by_name(self, client):
+        """Five checkpoints, one wrapper, all addressable."""
+        known = client.post(
+            "/api/detect", json={"text": HUMAN_NARRATIVE, "detectors": ["modern"]}
+        ).json()["known_detectors"]
+        for name in SHIPPED_DETECTORS:
+            assert name in known
 
     def test_unknown_detector_is_a_row_not_a_500(self, client):
         r = client.post(

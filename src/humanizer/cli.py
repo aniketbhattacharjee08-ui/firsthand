@@ -4,6 +4,7 @@
     humanizer features FILE
     humanizer build-reference GENRE PATTERN --out FILE
     humanizer calibrate --scores FILE
+    humanizer humanize FILE [--aggressiveness balanced] [--text|--json]
     humanizer plan --mu 0.6 --target 0.99 --rho 0.2
     humanizer serve --port 8000 --reference data/reference/academic.json
 """
@@ -17,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from .detectors import HeuristicDetector, pass_rate, required_n
+from .detectors import pass_rate, required_n
 from .eval import analyze
 from .reference import ReferenceDistribution, build_from_texts
 
@@ -36,7 +37,17 @@ def _load_reference(path: Optional[str]) -> Optional[ReferenceDistribution]:
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     text = _read(args.file)
-    detectors = [] if args.no_detectors else [HeuristicDetector()]
+    # A published checkpoint or nothing. This project writes no AI-detection
+    # arithmetic, so `--no-detectors` now means "features only" and the
+    # default means "download desklib/ai-text-detector-v1.01 (~1.74GB) on
+    # first use". `analyze()` records a load failure as an error row rather
+    # than raising, so a machine without the `detectors` extra still gets the
+    # full feature report.
+    detectors: List = []
+    if not args.no_detectors:
+        from .detectors import ModernDetector
+
+        detectors.append(ModernDetector(score_sentences=False))
     if args.gptzero:
         from .detectors import GPTZeroClient
 
@@ -157,6 +168,67 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_humanize(args: argparse.Namespace) -> int:
+    """Rewrite a document and print the edit list, or the rewritten text.
+
+    Default output is the report, not the text, because the point of this tool
+    is that every edit is inspectable and carries a research/00 §4 grade-cost
+    rating. `--text` prints only the rewrite, for piping.
+    """
+    from .humanize import humanize
+
+    try:
+        result = humanize(_read(args.file), aggressiveness=args.aggressiveness)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return 0
+    if args.text:
+        print(result.humanized)
+        return 0
+
+    before, after = result.before, result.after
+    print(f"{len(result.edits)} edits at aggressiveness '{result.aggressiveness}'")
+    for kind, count in sorted(result.edit_counts().items()):
+        print(f"  {kind:<20} {count}")
+    if result.dropped:
+        print(
+            f"  {'(dropped by the meaning gate)':<20} {len(result.dropped)}",
+            file=sys.stderr,
+        )
+    print()
+    if before["ai_probability"] is None or after["ai_probability"] is None:
+        # Degraded, not broken: the feature-level numbers below need no model.
+        print(
+            "AI probability            unavailable (the detector model could "
+            "not run; pip install -e '.[detectors]')"
+        )
+    else:
+        print(
+            f"AI probability          {before['ai_probability']:.3f} -> "
+            f"{after['ai_probability']:.3f} "
+            f"({result.summary['risk_delta']:+.3f})"
+        )
+    cv_before = before["features"].get("sent_len_cv", float("nan"))
+    cv_after = after["features"].get("sent_len_cv", float("nan"))
+    print(
+        f"sentence-length CV      {cv_before:.3f} -> {cv_after:.3f} "
+        "(human band 0.42-0.60, research/10)"
+    )
+    print(
+        f"AI vocabulary /1k       "
+        f"{before['features'].get('ai_vocab_weighted_per_1k', 0.0):.1f} -> "
+        f"{after['features'].get('ai_vocab_weighted_per_1k', 0.0):.1f}"
+    )
+    print()
+    for edit in result.edits:
+        print(f"  [{edit.kind}] {edit.before!r} -> {edit.after!r}")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Serve the HTTP API and, when web/ exists, the static frontend."""
     try:
@@ -186,7 +258,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reference", help="path to a reference distribution JSON")
     p.add_argument("--json", action="store_true", help="emit JSON")
     p.add_argument("--gptzero", action="store_true", help="also query GPTZero")
-    p.add_argument("--no-detectors", action="store_true")
+    p.add_argument(
+        "--no-detectors",
+        action="store_true",
+        help=(
+            "features only. Otherwise the published default detector "
+            "(desklib/ai-text-detector-v1.01, ~1.74GB on first use) is run."
+        ),
+    )
     p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("features", help="dump the raw feature vector")
@@ -210,6 +289,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mu", type=float, default=0.6)
     p.add_argument("--target", type=float, default=0.99)
     p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("humanize", help="rewrite a document toward the human band")
+    p.add_argument("file", help="path to a text file, or - for stdin")
+    p.add_argument(
+        "--aggressiveness",
+        default="balanced",
+        choices=["light", "balanced", "strong"],
+        help=(
+            "light: AI lexicon and formal connectives. balanced: adds "
+            "parallelism and paragraph template. strong: adds sentence-length "
+            "restructuring."
+        ),
+    )
+    p.add_argument("--text", action="store_true", help="print only the rewrite")
+    p.add_argument("--json", action="store_true", help="emit the full result as JSON")
+    p.set_defaults(func=cmd_humanize)
 
     p = sub.add_parser("serve", help="run the HTTP API and web frontend")
     p.add_argument("--host", default="127.0.0.1")

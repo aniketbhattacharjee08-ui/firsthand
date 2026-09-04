@@ -1,16 +1,36 @@
-"""Local, open-weight AI-text detectors.
+"""Local AI-text detectors. Every one of them is somebody else's model.
 
-Three of them, in the order you should reach for them:
+POLICY: THIS REPO WRITES NO DETECTION ARITHMETIC
+------------------------------------------------
+Detection comes from published, pretrained checkpoints downloaded from the
+Hugging Face hub. What this module contributes is plumbing -- chunking,
+batching, reading the label mapping off the config, checking that the weights
+actually loaded -- and *measurement*. It contributes no weights, no thresholds
+and no scoring formula. The one exception is `PerplexityDetector`, which is
+kept out of every default, flagged `is_published_detector: false` on the wire,
+and documented as a reimplementation rather than a published detector.
 
-  * `ModernDetector` -- **the default**. A current open fine-tuned transformer
-    sequence classifier, `desklib/ai-text-detector-v1.01` (DeBERTa-v3-large,
-    435M parameters, ~1.74GB), which led the RAID detection leaderboard.
-  * `PerplexityDetector` -- GPTZero's *original*, published, January-2023
-    method: per-sentence GPT-2 perplexity plus burstiness. Kept, by explicit
-    request only, because it is a historical reference point and because the
-    measurement below is worth preserving.
-  * `ClassifierDetector` -- OpenAI's 2019 RoBERTa GPT-2 output detector. Kept
-    for the same reason, and it is the worse of the two.
+The hand-written `HeuristicDetector` that used to live alongside these is
+gone. `humanizer.detectors.heuristic` now exports `AiStyleSignals`, which
+produces named, cited style signals and no score at all.
+
+WHAT IS AVAILABLE
+-----------------
+    engine        checkpoint                                        params
+    ---------------------------------------------------------------------
+    modern *      desklib/ai-text-detector-v1.01                      434M
+    fakespot      fakespot-ai/roberta-base-ai-text-detection-v1       125M
+    academic      andreas122001/roberta-academic-detector             125M
+    radar         TrustSafeAI/RADAR-Vicuna-7B                         355M
+    fast          MayZhou/e5-small-lora-ai-generated-detector          33M
+    ---------------------------------------------------------------------
+    perplexity    gpt2 + OUR arithmetic (research comparison only)    124M
+    classifier    openai-community/roberta-base-openai-detector       125M
+
+`* = default`. All five published engines are `ModernDetector` with a
+different `model_name`; there is one wrapper, not five. `PUBLISHED_DETECTORS`
+carries the full registry including five more checkpoints that were
+benchmarked and rejected, each with the number that rejected it.
 
 WHAT THIS IS, AND WHAT IT IS NOT
 --------------------------------
@@ -42,21 +62,41 @@ research articles) and 14 written AI-style paragraphs in four registers
 (general explainer, blog, five-paragraph essay, and -- deliberately -- four in
 the same biomedical-abstract register as the human side, so the benchmark is
 not secretly measuring "general prose vs biomedical prose"). Scored on CPU,
-Apple Silicon, torch 2.8:
+Apple Silicon, torch 2.8. Every checkpoint loaded with 0 missing keys.
 
-    detector                    AI mean   human mean   FPR@0.5   pairwise
-    ------------------------------------------------------------------------
-    modern (desklib v1.01)        1.000        0.123    1 / 14      1.000
-    perplexity (gpt2)             0.920        0.797   13 / 14      0.740
-    classifier (roberta-openai)   0.239        0.215    3 / 14      0.444
+    engine       checkpoint                    AI mean  hum mean  FPR  TPR  pairwise
+    --------------------------------------------------------------------------------
+    modern *     desklib v1.01                   1.000     0.123  1/14 14/14   1.000
+    fakespot     fakespot-ai roberta-base        1.000     0.213  3/14 14/14   1.000
+    academic     andreas122001 academic          0.926     0.072  1/14 13/14   0.980
+    fast         MayZhou e5-small-lora           0.870     0.497  8/14 14/14   0.944
+    radar        TrustSafeAI RADAR               0.491     0.084  1/14  7/14   0.867
+    --------------------------------------------------------------------------------
+    (rejected)   andreas122001 mixed             0.661     0.084  1/14  9/14   0.944
+    (rejected)   akshayvkt detect-ai-text        0.998     0.877 13/14 14/14   0.959
+    (rejected)   Hello-SimpleAI chatgpt-roberta  0.463     0.090  1/14  6/14   0.811
+    (rejected)   PirateXX AI-Content-Detector    0.086     0.001  0/14  1/14   0.832
+    (rejected)   roberta-large-openai-detector   0.944     0.859 12/14 13/14   0.638
+    --------------------------------------------------------------------------------
+    perplexity   gpt2 + our arithmetic           0.920     0.797 13/14 14/14   0.740
+    classifier   roberta-base-openai-detector    0.239     0.215  3/14  3/14   0.444
 
 "pairwise" is P(a random AI paragraph outscores a random human paragraph); 0.5
 is chance. "FPR@0.5" is how many of the fourteen genuine human PMC paragraphs
 were labelled AI.
 
+Read the last two rows together with the `akshayvkt` row. **Pairwise
+separation and false-positive rate are different measurements and a detector
+can pass one while failing the other.** `akshayvkt/detect-ai-text` ranks AI
+above human at 0.959 and is still unusable, because it called 13 of 14 genuine
+human academic paragraphs AI; ranking is invariant to a constant offset and
+accusing people is not. Both columns are reported for every checkpoint for
+that reason, and `fast` is shipped with an explicit warning rather than
+quietly, because its 8/14 is the same failure in milder form.
+
 **The classic perplexity method does not usefully separate templated AI prose
 from human biomedical academic prose**, and the 2019 OpenAI classifier is
-*below chance* on this set. That is why the default moved. The perplexity
+*below chance* on this set. That is why neither is a default. The perplexity
 result is not a bug in the implementation and was not fixed by moving the
 thresholds, because moving them would only relabel this one sample. It is the
 documented failure mode: research/01 §5 records that "memorised or formulaic
@@ -65,6 +105,12 @@ perplexity-based methods", and Liang et al. measured 61.3% false positives on
 TOEFL essays from exactly this signal. Formal biomedical prose is highly
 templated, so GPT-2 finds it extremely predictable. research/01 §3.9 adds the
 converse, "perplexity inversion", for modern generators.
+
+Two checkpoints would have shipped **inverted** if their output index had been
+assumed rather than resolved: `TrustSafeAI/RADAR-Vicuna-7B` and
+`PirateXX/AI-Content-Detector` both put AI at index 0 while publishing only
+`LABEL_0`/`LABEL_1`. See `_KNOWN_AI_INDEX` for the evidence used on each, and
+`resolve_ai_index` for the general rule.
 
 Caveats on the 1.000, which is the number most likely to be misread:
 
@@ -87,32 +133,33 @@ Caveats on the 1.000, which is the number most likely to be misread:
 WHAT IS HERE
 ------------
 `ModernDetector`
-    A fine-tuned transformer classifier, default
+    The wrapper every published engine uses, default
     `desklib/ai-text-detector-v1.01`. Two head shapes are supported: the
     ordinary softmax-over-labels head (label index read from `config.id2label`
     via `resolve_ai_index`, never assumed) and desklib's mean-pooled
     single-logit sigmoid head, which is not one of transformers' `AutoModel`
-    classes and so is rebuilt here. Long inputs are chunked to the model's
-    context and aggregated (both the token-weighted mean and the max over
-    chunks are reported). Per-sentence probabilities are produced by scoring
-    each sentence in a batch, segmented with `humanizer.text.Document.parse`
-    so the indices line up with `/api/analyze`.
+    classes and so is rebuilt here. `check_load_integrity` refuses any load
+    that left a head or encoder weight randomly initialised. Long inputs are
+    chunked to the model's context and aggregated (both the token-weighted
+    mean and the max over chunks are reported). Per-sentence probabilities
+    come from scoring each sentence in a batch, segmented with
+    `humanizer.text.Document.parse` so the indices line up with
+    `/api/analyze`.
 
 `PerplexityDetector`
-    Per-sentence perplexity under a causal LM (default ``gpt2``), document
-    perplexity, burstiness = SD of the per-sentence values, and mean/max
-    sentence perplexity. Maps to a probability with a smooth logistic on
-    log-perplexity and log-burstiness rather than the historical hard cut.
+    **Not a published detector.** gpt2 perplexity plus burstiness, mapped to a
+    probability by arithmetic this repo invented. Research comparison only;
+    see the class docstring.
 
 `ClassifierDetector`
-    An open fine-tuned sequence classifier, default
-    ``openai-community/roberta-base-openai-detector`` -- the RoBERTa-base model
-    OpenAI released with the GPT-2 output dataset (research/01 §3.6). Long
-    inputs are chunked to the model's context and aggregated.
+    A published but obsolete checkpoint,
+    ``openai-community/roberta-base-openai-detector`` (research/01 §3.6).
+    Superseded by `ModernDetector`; kept because its 0.444 is part of the
+    evidence for the change.
 
 `EnsembleDetector`
-    A weighted combination of whichever members are available, with every
-    member's own score preserved in `raw`.
+    A weighted mean over whichever members are available, with every member's
+    own score preserved in `raw`. Published members only.
 
 DEPENDENCIES AND LAZINESS
 -------------------------
@@ -125,7 +172,9 @@ once. Everything runs on CPU with `torch.no_grad()` and the model in eval mode;
 no GPU is required or requested.
 
 Weights are fetched from the Hugging Face hub on first use and are not small:
-desklib ~1.74GB, gpt2 ~525MB, the OpenAI RoBERTa detector ~480MB. Every path
+desklib ~1.74GB, RADAR ~1.4GB, gpt2 ~525MB, the OpenAI RoBERTa detector
+~480MB, fakespot and academic ~500MB each, `fast` ~130MB. Only the engines a
+caller actually names are ever downloaded. Every path
 degrades to `available() -> False` with an actionable message rather than
 raising, and `/api/detect` turns that into a 200 with an `error` string.
 """
@@ -150,7 +199,11 @@ __all__ = [
     "loaded_models",
     "resolve_ai_index",
     "resolve_head",
+    "check_load_integrity",
     "DEFAULT_MODERN_MODEL",
+    "PUBLISHED_DETECTORS",
+    "SHIPPED_DETECTORS",
+    "MODEL_HEADS",
     "DEFAULT_PERPLEXITY_MODEL",
     "FAST_PERPLEXITY_MODEL",
     "DEFAULT_CLASSIFIER_MODEL",
@@ -168,23 +221,180 @@ DEFAULT_CLASSIFIER_MODEL = "openai-community/roberta-base-openai-detector"
 #: the module docstring records what it measured on this repo's own corpus.
 DEFAULT_MODERN_MODEL = "desklib/ai-text-detector-v1.01"
 
-#: Alternative open detectors, all verified to download and run on CPU under
-#: Python 3.9 / torch 2.8 / transformers 4.57. Pass one as `model_name=` to
-#: `ModernDetector`. The pairwise figures are from this repo's 28-paragraph
-#: set (see the module docstring); they are not a benchmark, they are a smoke
-#: test with n=28 and no confidence interval.
-ALTERNATIVE_MODERN_MODELS: Dict[str, str] = {
-    # 33M params, ~130MB. e5-small + merged LoRA, trained on RAID-train.
-    # Cheapest thing here that works at all -- research/05 names it as small
-    # enough for an inner optimisation loop. Pairwise 0.944, but it called 8
-    # of 14 human PMC paragraphs AI, which is disqualifying for a default.
-    "MayZhou/e5-small-lora-ai-generated-detector": "softmax",
-    # 125M params. RoBERTa-base fine-tuned on academic abstracts; publishes
-    # honest labels. Pairwise 0.980, 1 of 14 human paragraphs over 0.5.
-    "andreas122001/roberta-academic-detector": "softmax",
-    # 125M params. The HC3 ChatGPT detector. Pairwise 0.811 and it missed 8 of
-    # 14 AI paragraphs; it is tuned to 2022-era ChatGPT output.
-    "Hello-SimpleAI/chatgpt-detector-roberta": "softmax",
+#: Every published detector this repo will run, and what was measured about
+#: each one on this repo's own 28-paragraph set (14 human PMC paragraphs, 14
+#: written AI-style paragraphs; see the module docstring). All of them are
+#: other people's trained checkpoints -- this repo contributes the wrapper and
+#: the measurement, never the scoring.
+#:
+#: `head` is the classification head shape (see `resolve_head`). `ship` marks
+#: the ones exposed as named engines by `/api/detect`; the rest are recorded
+#: here because they were benchmarked and rejected, and a rejection with a
+#: number attached is more useful than a silent omission.
+#:
+#: pairwise = P(a random AI paragraph outscores a random human paragraph),
+#: 0.5 is chance. FPR = human PMC paragraphs scored >= 0.5, out of 14.
+#: TPR = AI paragraphs scored >= 0.5, out of 14.
+PUBLISHED_DETECTORS: Dict[str, Dict[str, Any]] = {
+    "modern": {
+        "model": "desklib/ai-text-detector-v1.01",
+        "head": "pooled-sigmoid",
+        "params": 434_000_000,
+        "ship": True,
+        "pairwise": 1.000,
+        "fpr": 1,
+        "tpr": 14,
+        "note": (
+            "DeBERTa-v3-large fine-tuned on RAID; led the RAID detection "
+            "leaderboard. Best measured here on both separation and false "
+            "positives, so it is the default."
+        ),
+    },
+    "fakespot": {
+        "model": "fakespot-ai/roberta-base-ai-text-detection-v1",
+        "head": "softmax",
+        "params": 125_000_000,
+        "ship": True,
+        "pairwise": 1.000,
+        "fpr": 3,
+        "tpr": 14,
+        "note": (
+            "Fakespot/Apollo DFT RoBERTa-base. Separates as well as the "
+            "default and is 6x cheaper, but flagged 3 of 14 genuine human "
+            "academic paragraphs against the default's 1, so it is a second "
+            "opinion rather than the default."
+        ),
+    },
+    "academic": {
+        "model": "andreas122001/roberta-academic-detector",
+        "head": "softmax",
+        "params": 125_000_000,
+        "ship": True,
+        "pairwise": 0.980,
+        "fpr": 1,
+        "tpr": 13,
+        "note": (
+            "RoBERTa-base trained on academic abstracts, which is the domain "
+            "this project's users write in. Ties the default on false "
+            "positives at a fifth of the cost."
+        ),
+    },
+    "radar": {
+        "model": "TrustSafeAI/RADAR-Vicuna-7B",
+        "head": "softmax",
+        "params": 355_000_000,
+        "ship": True,
+        "pairwise": 0.867,
+        "fpr": 1,
+        "tpr": 7,
+        "note": (
+            "RoBERTa-large from IBM/TrustSafeAI, trained adversarially "
+            "against a Vicuna-7B paraphraser (arXiv 2307.03838) -- the name "
+            "is the paraphraser, not the detector, which is a 355M encoder "
+            "that runs fine on CPU. Deliberately conservative: it missed 7 of "
+            "14 AI paragraphs, but it is the only checkpoint here that was "
+            "trained against paraphrase attacks, which is what a humanizer "
+            "produces. Worth having precisely because it is the hardest to "
+            "move."
+        ),
+    },
+    "fast": {
+        "model": "MayZhou/e5-small-lora-ai-generated-detector",
+        "head": "softmax",
+        "params": 33_000_000,
+        "ship": True,
+        "pairwise": 0.944,
+        "fpr": 8,
+        "tpr": 14,
+        "note": (
+            "e5-small + merged LoRA, trained on RAID-train. 33M parameters "
+            "and ~19ms a document, cheap enough for an inner optimisation "
+            "loop (research/05). READ THE FPR: it called 8 of 14 genuine "
+            "human PMC paragraphs AI. Fine as a fast relative signal while "
+            "editing, useless as a verdict."
+        ),
+    },
+    # ---- benchmarked and NOT shipped. Kept for the record. -----------------
+    "mixed": {
+        "model": "andreas122001/roberta-mixed-detector",
+        "head": "softmax",
+        "params": 125_000_000,
+        "ship": False,
+        "pairwise": 0.944,
+        "fpr": 1,
+        "tpr": 9,
+        "note": "Same family as `academic` and dominated by it here.",
+    },
+    "chatgpt-detector": {
+        "model": "Hello-SimpleAI/chatgpt-detector-roberta",
+        "head": "softmax",
+        "params": 125_000_000,
+        "ship": False,
+        "pairwise": 0.811,
+        "fpr": 1,
+        "tpr": 6,
+        "note": (
+            "HC3, tuned to 2022-era ChatGPT output. Missed 8 of 14 AI "
+            "paragraphs."
+        ),
+    },
+    "piratexx": {
+        "model": "PirateXX/AI-Content-Detector",
+        "head": "softmax",
+        "params": 125_000_000,
+        "ship": False,
+        "pairwise": 0.832,
+        "fpr": 0,
+        "tpr": 1,
+        "note": (
+            "Fires on almost nothing: AI mean 0.086, 1 of 14 AI paragraphs "
+            "over 0.5. A detector that never says AI has no false positives "
+            "and no use."
+        ),
+    },
+    "distilbert": {
+        "model": "akshayvkt/detect-ai-text",
+        "head": "softmax",
+        "params": 67_000_000,
+        "ship": False,
+        "pairwise": 0.959,
+        "fpr": 13,
+        "tpr": 14,
+        "note": (
+            "The cautionary one. Ranks well (0.959) and is still unusable: it "
+            "called 13 of 14 genuine human academic paragraphs AI. Separation "
+            "and safety are different measurements and this is why both are "
+            "reported."
+        ),
+    },
+    "roberta-large-openai": {
+        "model": "openai-community/roberta-large-openai-detector",
+        "head": "softmax",
+        "params": 355_000_000,
+        "ship": False,
+        "pairwise": 0.638,
+        "fpr": 12,
+        "tpr": 13,
+        "note": (
+            "The large sibling of the legacy `classifier` engine. 0.638 "
+            "pairwise, 12 of 14 human paragraphs flagged. Also the only "
+            "checkpoint benchmarked with unexpected keys on load (an unused "
+            "RoBERTa pooler), which is harmless but worth recording."
+        ),
+    },
+}
+
+#: Detector name -> model id, for the ones `/api/detect` exposes.
+SHIPPED_DETECTORS: Dict[str, str] = {
+    name: spec["model"]
+    for name, spec in PUBLISHED_DETECTORS.items()
+    if spec["ship"]
+}
+
+#: Model id -> head shape, consulted by `resolve_head` when the checkpoint's
+#: own `config.architectures` does not settle it.
+MODEL_HEADS: Dict[str, str] = {
+    spec["model"]: spec["head"] for spec in PUBLISHED_DETECTORS.values()
 }
 
 
@@ -364,7 +574,7 @@ def resolve_head(architectures: Sequence[str], model_name: str = "") -> Tuple[st
     for arch in architectures or ():
         if str(arch) in _POOLED_SIGMOID_ARCHITECTURES:
             return HEAD_POOLED_SIGMOID, f"architecture:{arch}"
-    declared = ALTERNATIVE_MODERN_MODELS.get(model_name)
+    declared = MODEL_HEADS.get(model_name)
     if declared:
         return declared, "known-model"
     return HEAD_SOFTMAX, "default"
@@ -405,16 +615,99 @@ def _pooled_sigmoid_class():
     return _PooledSigmoidClassifier
 
 
-def _load_modern(model_name: str) -> Tuple[Any, Any, str, str]:
-    """Load `(tokenizer, model, head, head_source)` for `ModernDetector`.
+#: Substrings that mark a parameter as belonging to the *classification head*
+#: rather than the encoder. If one of these turns up in `missing_keys` the
+#: checkpoint did not supply that weight and `from_pretrained` has quietly
+#: randomly initialised it -- which is the desklib trap: a load that succeeds,
+#: emits confident-looking probabilities, and is measuring nothing.
+_HEAD_KEY_MARKERS = ("classifier", "score", "logit", "out_proj", "class_head")
+
+
+def check_load_integrity(
+    model_name: str, missing_keys: Sequence[str], unexpected_keys: Sequence[str]
+) -> Dict[str, Any]:
+    """Turn `from_pretrained`'s loading info into a verdict, and raise on the
+    dangerous case.
+
+    Returns a `load_check` dict recording both key lists, so `raw` can carry
+    "0 missing / 0 unexpected" as the evidence that the wrapper matched the
+    checkpoint rather than as an assurance.
+
+    The two directions are not symmetric:
+
+      * A **missing** head key means the trained classifier was not in the
+        checkpoint and torch filled it with noise. Every score after that is
+        meaningless, so this raises. It is exactly what happens if you load
+        `desklib/ai-text-detector-v1.01` with
+        `AutoModelForSequenceClassification`, whose config advertises a
+        two-way softmax head that the checkpoint does not contain.
+      * **Unexpected** keys mean the checkpoint carried weights the model
+        class does not use -- e.g. `openai-community/roberta-large-openai-detector`
+        ships an unused RoBERTa pooler. Harmless, but recorded.
+
+    Missing *encoder* keys are also refused: a half-initialised backbone is no
+    more trustworthy than a random head.
+    """
+    missing = [str(k) for k in missing_keys or ()]
+    unexpected = [str(k) for k in unexpected_keys or ()]
+    head_missing = [
+        k for k in missing if any(m in k.lower() for m in _HEAD_KEY_MARKERS)
+    ]
+    if missing:
+        which = head_missing or missing
+        kind = "classification head" if head_missing else "encoder"
+        raise RuntimeError(
+            f"Refusing to use {model_name!r}: {len(missing)} weight(s) were "
+            f"not present in the checkpoint and have been randomly "
+            f"initialised, including the {kind} ({which[:4]}). A load like "
+            "this succeeds silently and then reports confident nonsense. The "
+            "wrapper's head shape does not match this checkpoint; see "
+            "`resolve_head`."
+        )
+    return {
+        "missing_keys": missing,
+        "unexpected_keys": unexpected,
+        "n_missing": len(missing),
+        "n_unexpected": len(unexpected),
+        "head_weights_loaded": True,
+        "note": (
+            "0 missing keys is the proof the published head was loaded rather "
+            "than randomly initialised. Unexpected keys are weights the "
+            "checkpoint carries that this model class does not use."
+        ),
+    }
+
+
+def _modern_cache_name(model_name: str, head_override: Optional[str]) -> str:
+    """Cache/failure key for a checkpoint, disambiguated by any head override.
+
+    `available()` and `_load_modern` must agree on this string or a remembered
+    load failure is invisible to the availability check and every request
+    retries a download that is not going to work.
+    """
+    if head_override is None:
+        return model_name
+    return f"{model_name}#{head_override}"
+
+
+def _load_modern(
+    model_name: str, head_override: Optional[str] = None
+) -> Tuple[Any, Any, str, str, Dict[str, Any]]:
+    """Load `(tokenizer, model, head, head_source, load_check)`.
 
     Shares `_MODEL_CACHE` and `_LOAD_FAILURES` with `_load` under the cache
     kind ``"modern"``, so `clear_model_cache`, `loaded_models` and
     `_known_failure` all cover it. The config is read first, because which
     model class to instantiate depends on what the config says the
     architecture is.
+
+    `head_override` forces the head shape, and forces it at *load* time rather
+    than at interpretation time -- the two must not disagree, because the head
+    decides which model class is instantiated and therefore which weights are
+    looked for. An override gets its own cache slot so the two shapes of the
+    same checkpoint cannot alias.
     """
-    key = ("modern", model_name)
+    key = ("modern", _modern_cache_name(model_name, head_override))
     with _CACHE_LOCK:
         if key in _MODEL_CACHE:
             return _MODEL_CACHE[key]
@@ -439,17 +732,28 @@ def _load_modern(model_name: str) -> Tuple[Any, Any, str, str]:
         )
 
         config = AutoConfig.from_pretrained(model_name)
-        head, head_source = resolve_head(
-            getattr(config, "architectures", None) or (), model_name
-        )
+        if head_override is not None:
+            head, head_source = head_override, "explicit"
+        else:
+            head, head_source = resolve_head(
+                getattr(config, "architectures", None) or (), model_name
+            )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if head == HEAD_POOLED_SIGMOID:
-            model = _pooled_sigmoid_class().from_pretrained(model_name, config=config)
+            model, info = _pooled_sigmoid_class().from_pretrained(
+                model_name, config=config, output_loading_info=True
+            )
         else:
-            model = AutoModelForSequenceClassification.from_pretrained(
-                model_name, config=config
+            model, info = AutoModelForSequenceClassification.from_pretrained(
+                model_name, config=config, output_loading_info=True
             )
         model.eval()
+        # Raises when a head or encoder weight was randomly initialised.
+        load_check = check_load_integrity(
+            model_name,
+            info.get("missing_keys", ()),
+            info.get("unexpected_keys", ()),
+        )
     except Exception as exc:  # noqa: BLE001 - offline, disk, hub, all the same
         message = (
             f"Could not load {model_name!r}: {type(exc).__name__}: {exc}. "
@@ -461,7 +765,7 @@ def _load_modern(model_name: str) -> Tuple[Any, Any, str, str]:
             _LOAD_FAILURES[key] = message
         raise RuntimeError(message) from exc
 
-    loaded = (tokenizer, model, head, head_source)
+    loaded = (tokenizer, model, head, head_source, load_check)
     with _CACHE_LOCK:
         _MODEL_CACHE[key] = loaded
     return loaded
@@ -499,7 +803,35 @@ def _finite(values: Sequence[float]) -> List[float]:
 
 
 class PerplexityDetector(Detector):
-    """GPTZero's original method: per-sentence perplexity plus burstiness.
+    """GPTZero's original 2023 method, **reimplemented here from the paper**.
+
+    NOT A PUBLISHED DETECTOR. Read this before quoting a number from it.
+
+    Everything else in this module wraps somebody else's trained checkpoint
+    and adds no arithmetic. This class is the exception and is kept only as a
+    research comparison: `gpt2` is a published language model, but the way its
+    perplexities are turned into a probability is **ours**. Specifically, this
+    repo chose the logistic form, the `PPL_HUMAN_CENTER` and
+    `BURSTINESS_HUMAN_CENTER` constants, the two slopes, and the decision to
+    combine document perplexity with burstiness at all. GPTZero published a
+    rule of thumb (~85) and a definition of burstiness; it never published a
+    mapping from those to a probability, so the mapping cannot be a
+    reimplementation of anything. It is an invention with a citation attached.
+
+    It is therefore:
+
+      * excluded from `DEFAULT_DETECTORS`, so no caller gets it by accident;
+      * flagged on the wire as `is_published_detector: false`;
+      * measured, and the measurement is bad -- 0.740 pairwise on this repo's
+        28-paragraph set with 13 of 14 genuine human PMC paragraphs labelled
+        AI. That finding is the reason the class survives at all: it is the
+        evidence for why the default is a published transformer instead.
+
+    Use it to reproduce the 2023 behaviour, including the reason the 2023
+    method was abandoned. Do not use it to judge a document.
+
+    THE METHOD ITSELF
+    -----------------
 
     Perplexity of a sentence of tokens t_1..t_N under LM theta is
 
@@ -527,6 +859,9 @@ class PerplexityDetector(Detector):
     """
 
     name = "perplexity"
+    #: False: the scoring arithmetic is this repo's, not a published model's.
+    #: `/api/detect` copies this onto every row so a UI can label it.
+    is_published_detector = False
 
     def __init__(
         self,
@@ -601,8 +936,18 @@ class PerplexityDetector(Detector):
         ]
 
         raw: Dict[str, Any] = {
-            "method": "per-sentence perplexity + burstiness (GPTZero, Jan 2023)",
+            "method": (
+                "per-sentence perplexity + burstiness, this repo's "
+                "reimplementation of GPTZero's January-2023 published method"
+            ),
             "model": self.model_name,
+            "is_published_detector": False,
+            "scoring_is_ours": (
+                "gpt2 is published; the mapping from its perplexities to a "
+                "probability is not. The logistic form, both centres and both "
+                "slopes were chosen in this repo and fitted to nothing. "
+                "Research comparison only -- excluded from the defaults."
+            ),
             "perplexity": doc_ppl,
             "burstiness": burstiness,
             "mean_sentence_perplexity": mean_ppl,
@@ -789,6 +1134,18 @@ _KNOWN_AI_INDEX: Dict[str, int] = {
     # would land on 1 anyway, but silently guessing right is not the same as
     # knowing.
     "MayZhou/e5-small-lora-ai-generated-detector": 1,
+    # RADAR publishes no labels in config.json and none in its card prose.
+    # Two independent lines of evidence put AI at index 0: the upstream demo
+    # code takes `log_softmax(logits, -1)[:, 0].exp()` as "probability of
+    # AI-generated text", and on this repo's 28-paragraph set index 0 ranks
+    # the AI paragraphs above the human ones at 0.867 pairwise while index 1
+    # gives the exact inverse, 0.133. The default assumption of 1 would have
+    # shipped this detector backwards.
+    "TrustSafeAI/RADAR-Vicuna-7B": 0,
+    # Card: "Label_0 represents Fake, Label_1 represents Real". Same inversion
+    # trap, same empirical confirmation (0.832 pairwise at index 0, 0.168 at
+    # index 1). Benchmarked, not shipped -- see PUBLISHED_DETECTORS.
+    "PirateXX/AI-Content-Detector": 0,
 }
 
 
@@ -860,8 +1217,8 @@ class ModernDetector(Detector):
     Default model: `desklib/ai-text-detector-v1.01` -- DeBERTa-v3-large (435M
     parameters, ~1.74GB) fine-tuned on the RAID corpus, which led the RAID
     detection leaderboard. Pass `model_name=` to swap it; see
-    `ALTERNATIVE_MODERN_MODELS` for three smaller ones that were verified to
-    load and run here.
+    `PUBLISHED_DETECTORS` for every checkpoint that was benchmarked here,
+    including the ones that were rejected and why.
 
     WHY THIS IS THE DEFAULT AND WHAT IT DOES NOT MEAN
     -------------------------------------------------
@@ -908,6 +1265,10 @@ class ModernDetector(Detector):
     """
 
     name = "modern"
+    #: True: this is somebody else's trained checkpoint and this class adds no
+    #: scoring arithmetic of its own -- only chunking, batching and the label
+    #: or head resolution needed to read the model's output correctly.
+    is_published_detector = True
 
     def __init__(
         self,
@@ -924,6 +1285,9 @@ class ModernDetector(Detector):
         #: escape hatch for a checkpoint whose config lies about itself.
         self.max_length = max_length
         self.ai_index = ai_index
+        #: Forces the head shape at load time. Only needed for a checkpoint
+        #: whose `config.architectures` does not identify it; getting it wrong
+        #: is caught by `check_load_integrity`, not silently tolerated.
         self.head = head
         #: Turn off to pay the document forward pass only. Roughly a 5x saving
         #: on a fifteen-sentence paragraph.
@@ -940,7 +1304,10 @@ class ModernDetector(Detector):
         """
         if not backend_available():
             return False
-        return _known_failure("modern", self.model_name) is None
+        return _known_failure("modern", self._cache_name()) is None
+
+    def _cache_name(self) -> str:
+        return _modern_cache_name(self.model_name, self.head)
 
     def unavailable_reason(self) -> Optional[str]:
         if not backend_available():
@@ -948,11 +1315,11 @@ class ModernDetector(Detector):
                 "torch/transformers are not installed. "
                 "pip install -e '.[detectors]'"
             )
-        return _known_failure("modern", self.model_name)
+        return _known_failure("modern", self._cache_name())
 
     def load(self) -> None:
         """Force the model into the cache. Optional; `score()` does it too."""
-        _load_modern(self.model_name)
+        _load_modern(self.model_name, self.head)
 
     # -- scoring ------------------------------------------------------------
 
@@ -974,9 +1341,9 @@ class ModernDetector(Detector):
         return max(8, limit - special)
 
     def score(self, text: str) -> DetectorResult:
-        tokenizer, model, head, head_source = _load_modern(self.model_name)
-        if self.head is not None:
-            head, head_source = self.head, "explicit"
+        tokenizer, model, head, head_source, load_check = _load_modern(
+            self.model_name, self.head
+        )
 
         id2label = dict(getattr(model.config, "id2label", {}) or {})
         ai_index: Optional[int] = None
@@ -1018,10 +1385,12 @@ class ModernDetector(Detector):
         )
 
         raw: Dict[str, Any] = {
-            "method": "fine-tuned transformer sequence classifier",
+            "method": "published fine-tuned transformer sequence classifier",
             "model": self.model_name,
+            "is_published_detector": True,
             "head": head,
             "head_source": head_source,
+            "load_check": load_check,
             "id2label": {str(k): v for k, v in id2label.items()},
             "ai_index": ai_index,
             "ai_label": id2label.get(ai_index) if ai_index is not None else None,
@@ -1195,6 +1564,8 @@ class ClassifierDetector(Detector):
     """
 
     name = "classifier"
+    #: True: a published checkpoint with a thin wrapper. Legacy, but not ours.
+    is_published_detector = True
 
     def __init__(
         self,
@@ -1292,8 +1663,14 @@ class ClassifierDetector(Detector):
         # a different cost profile, so the classifier reports document level
         # only and the frontend heatmap uses the perplexity detector's rows.
         raw: Dict[str, Any] = {
-            "method": "fine-tuned sequence classifier",
+            "method": "fine-tuned sequence classifier (2019, legacy)",
             "model": self.model_name,
+            "is_published_detector": True,
+            "superseded_by": (
+                "`modern`. On this repo's 28-paragraph set this checkpoint "
+                "scored 0.444 pairwise -- below the 0.5 chance line -- "
+                "against 1.000 for the default. Kept for comparison only."
+            ),
             "id2label": {str(k): v for k, v in id2label.items()},
             "ai_index": ai_index,
             "ai_label": id2label.get(ai_index),
@@ -1323,14 +1700,17 @@ class ClassifierDetector(Detector):
 
 # --------------------------------------------------------- ensemble detector
 
-#: Default member weights. Hand-set, not fitted -- the classifier gets the
-#: larger share because research/01 §7.2 finds fine-tuned encoders are the
-#: harder family to move, and the heuristic gets a small share because it is
-#: the only member that sees discourse-level features at all.
+#: Default member weights. Hand-set, not fitted. Both members are published
+#: checkpoints; the ensemble contributes an average, not a score of its own.
+#:
+#: The hand-written `heuristic` member was removed: this repo does not write
+#: AI-detection arithmetic any more, and an invented signal inside an average
+#: is still an invented signal. See `detectors.heuristic`, which is now
+#: explanatory style signals with no aggregate.
 DEFAULT_ENSEMBLE_WEIGHTS: Dict[str, float] = {
+    "modern": 2.0,
     "perplexity": 1.0,
-    "classifier": 1.5,
-    "heuristic": 0.5,
+    "classifier": 1.0,
 }
 
 
@@ -1344,7 +1724,8 @@ class EnsembleDetector(Detector):
 
     `sentence_scores` comes from the members that produced one of the right
     length, weighted the same way. In the default configuration that is the
-    perplexity detector alone.
+    perplexity detector alone, because the modern member is constructed with
+    `score_sentences=False` to keep the ensemble affordable.
     """
 
     name = "ensemble"
@@ -1356,12 +1737,15 @@ class EnsembleDetector(Detector):
         threshold: float = 0.5,
     ):
         if members is None:
-            from .heuristic import HeuristicDetector
-
+            # Published checkpoints only. `ModernDetector` carries most of the
+            # weight because it is the only member that measured better than
+            # chance on this repo's academic corpus; the other two are here so
+            # `raw["members"]` shows the comparison, not because averaging
+            # them in improves anything.
             members = [
+                ModernDetector(score_sentences=False),
                 PerplexityDetector(),
                 ClassifierDetector(),
-                HeuristicDetector(),
             ]
         self.members = list(members)
         self.weights = dict(weights) if weights is not None else dict(

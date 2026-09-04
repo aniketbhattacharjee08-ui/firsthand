@@ -9,9 +9,9 @@ import math
 import pytest
 
 from humanizer.detectors import (
+    AiStyleSignals,
     DetectorResult,
     GPTZeroClient,
-    HeuristicDetector,
     calibrate,
     estimate_cost,
     fleet_pass_rate,
@@ -20,6 +20,7 @@ from humanizer.detectors import (
 )
 from humanizer.detectors.calibration import wilson_interval
 from humanizer.detectors.gptzero import _normalize_label
+from humanizer.features import extract_features
 
 AI_LIKE = (
     "In today's rapidly evolving landscape, it is important to note that this "
@@ -60,36 +61,80 @@ class TestDetectorResult:
         assert not DetectorResult(detector="t", ai_probability=0.8).says_human
 
 
-class TestHeuristicDetector:
-    def test_separates_ai_like_from_human_like(self):
-        det = HeuristicDetector()
-        assert det.score(AI_LIKE).ai_probability > det.score(HUMAN_LIKE).ai_probability
+class TestAiStyleSignals:
+    """The former `HeuristicDetector`, re-scoped to explanation only.
 
-    def test_ai_like_is_flagged(self):
-        assert HeuristicDetector().score(AI_LIKE).label == "ai"
+    It used to combine these signals with hand-set weights and a hand-tuned
+    bias into an "ai_probability" that sat next to real detector scores in the
+    same response. That arithmetic was invented in this repo, fitted to
+    nothing, and is deleted. Detection now comes only from published
+    checkpoints (`humanizer.detectors.local`).
 
-    def test_probability_in_unit_range(self):
-        for text in (AI_LIKE, HUMAN_LIKE, "short."):
-            p = HeuristicDetector().score(text).ai_probability
-            assert 0.0 <= p <= 1.0
+    So what is tested here is that it is *not* a detector, and that the
+    individual signals still measure what research/04 and research/10 say they
+    measure.
+    """
 
-    def test_penalises_overshot_variance(self):
-        """Extreme burstiness must not read as more human than the human band.
+    def test_it_is_not_a_detector(self):
+        """The policy, asserted rather than documented.
 
-        This is the specific failure mode research/10 warns about: a detector
-        that rewards maximal variance would rank hand-tuned humanizer output
-        above real prose.
+        No `score`, no `name`, no threshold, and not a `Detector`, so it
+        cannot be handed to `analyze(detectors=[...])` or reached through
+        `/api/detect`.
         """
-        det = HeuristicDetector()
+        from humanizer.detectors.base import Detector
+
+        sig = AiStyleSignals()
+        assert not isinstance(sig, Detector)
+        assert not issubclass(AiStyleSignals, Detector)
+        for attr in ("score", "name", "threshold", "score_features"):
+            assert not hasattr(sig, attr), attr
+
+    def test_there_is_no_aggregate_to_read_as_a_score(self):
+        """The deleted part: weights, bias, logistic. All of it, gone."""
+        from humanizer.detectors import heuristic as mod
+
+        for gone in ("WEIGHTS", "BIAS", "_sigmoid", "HeuristicDetector"):
+            assert not hasattr(mod, gone), gone
+        values = AiStyleSignals().signals_for_text(AI_LIKE)
+        assert "ai_probability" not in values
+        assert all(0.0 <= v <= 1.0 for v in values.values())
+
+    def test_ai_like_prose_lights_up_more_signals_than_human_prose(self):
+        """Still a useful explanation, which is why it was kept at all."""
+        sig = AiStyleSignals()
+        ai = sig.signals_for_text(AI_LIKE)
+        human = sig.signals_for_text(HUMAN_LIKE)
+        assert ai["ai_vocab_weighted"] > human["ai_vocab_weighted"]
+        assert ai["formal_connective"] > human["formal_connective"]
+
+    def test_overshot_variance_is_flagged_not_rewarded(self):
+        """research/10's failure mode: burstiness is a band, not a direction.
+
+        A signal that rewarded maximal variance would tell a user to make
+        their prose weirder, which moves it *out* of the measured human band.
+        """
+        sig = AiStyleSignals()
         in_band = " ".join(
             ["word " * n + "." for n in (8, 22, 14, 31, 9, 19, 27, 12, 35, 16)] * 3
         )
         overshot = " ".join(["word ." if i % 2 else "word " * 70 + "." for i in range(30)])
-        assert det.score(overshot).ai_probability >= det.score(in_band).ai_probability
+        a = sig.signals_for_text(overshot)["cv_band_distance"]
+        b = sig.signals_for_text(in_band)["cv_band_distance"]
+        assert a >= b
 
-    def test_signals_exposed(self):
-        raw = HeuristicDetector().score(AI_LIKE).raw
-        assert "signals" in raw and "ai_vocab_weighted" in raw["signals"]
+    def test_every_signal_is_cited(self):
+        """A UI showing these must be able to say where each one comes from."""
+        from humanizer.detectors.heuristic import SIGNAL_SOURCES
+
+        values = AiStyleSignals().signals(extract_features(AI_LIKE))
+        assert set(values) == set(SIGNAL_SOURCES)
+        assert all(SIGNAL_SOURCES[k].startswith("research/") for k in values)
+
+    def test_present_filters_and_orders(self):
+        found = AiStyleSignals().present(extract_features(AI_LIKE), floor=0.25)
+        assert all(v >= 0.25 for v in found.values())
+        assert list(found.values()) == sorted(found.values(), reverse=True)
 
 
 class TestWilson:

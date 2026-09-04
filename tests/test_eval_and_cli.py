@@ -6,7 +6,7 @@ import pytest
 
 from humanizer.clean import clean_markup, looks_like_markup
 from humanizer.cli import main
-from humanizer.detectors import HeuristicDetector
+from humanizer.detectors import Detector, DetectorResult
 from humanizer.eval import analyze, build_findings
 from humanizer.features import extract_features
 
@@ -128,11 +128,29 @@ class TestReport:
         assert "features" in payload and "findings" in payload
 
     def test_detector_included(self):
-        report = analyze(AI_LIKE, detectors=[HeuristicDetector()])
-        assert "heuristic" in report.detectors
+        """`analyze()` is generic over detectors; a stub proves the plumbing.
+
+        A stub rather than a real detector on purpose. The real ones are
+        published checkpoints of 130MB to 1.7GB and this test is about
+        `analyze()` calling `score()` and filing the result under
+        `detector.name`, not about any model.
+        """
+
+        class Stub(Detector):
+            name = "stub"
+
+            def score(self, text):
+                return DetectorResult(detector=self.name, ai_probability=0.5,
+                                      label="ai", confidence="low")
+
+        report = analyze(AI_LIKE, detectors=[Stub()])
+        assert "stub" in report.detectors
+        assert report.detectors["stub"]["ai_probability"] == 0.5
 
     def test_failing_detector_is_recorded_not_raised(self):
-        class Broken(HeuristicDetector):
+        """A missing 1.7GB download must degrade the report, not kill it."""
+
+        class Broken(Detector):
             name = "broken"
 
             def score(self, text):

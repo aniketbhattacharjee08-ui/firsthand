@@ -1,4 +1,15 @@
-"""Detector interfaces, local baselines, and the GPTZero calibration harness.
+"""Detector interfaces, published detector wrappers, and the GPTZero harness.
+
+Every detector exported here scores with somebody else's pretrained
+checkpoint. This repo writes no AI-detection arithmetic: the one piece of it
+that ever existed, `HeuristicDetector`, was removed, and what was useful about
+it survives as `AiStyleSignals` -- named, cited *explanatory* style signals
+with no aggregate score, which is deliberately not a `Detector` and cannot be
+passed to `analyze(detectors=[...])` or reached through `/api/detect`.
+
+`PerplexityDetector` is the one borderline case and is labelled as such: gpt2
+is published but the mapping from its perplexities to a probability is ours.
+It is excluded from every default and reports `is_published_detector: false`.
 
 `local` is imported eagerly, but it only pulls in stdlib plus `humanizer.text`.
 Importing this package must never import torch: the CLI and the HTTP API have
@@ -16,9 +27,8 @@ from .calibration import (
     required_n,
 )
 from .gptzero import GPTZeroClient, estimate_cost
-from .heuristic import HeuristicDetector
+from .heuristic import AiStyleSignals
 from .local import (
-    ALTERNATIVE_MODERN_MODELS,
     DEFAULT_CLASSIFIER_MODEL,
     DEFAULT_MODERN_MODEL,
     DEFAULT_PERPLEXITY_MODEL,
@@ -32,12 +42,17 @@ from .local import (
     loaded_models,
     resolve_ai_index,
     resolve_head,
+    check_load_integrity,
+    MODEL_HEADS,
+    PUBLISHED_DETECTORS,
+    SHIPPED_DETECTORS,
 )
 
 __all__ = [
     "Detector",
     "DetectorResult",
-    "HeuristicDetector",
+    # Explanatory style signals. NOT a detector; see `detectors.heuristic`.
+    "AiStyleSignals",
     "GPTZeroClient",
     "estimate_cost",
     "Calibration",
@@ -60,7 +75,10 @@ __all__ = [
     "FAST_PERPLEXITY_MODEL",
     "DEFAULT_CLASSIFIER_MODEL",
     "DEFAULT_MODERN_MODEL",
-    "ALTERNATIVE_MODERN_MODELS",
+    "PUBLISHED_DETECTORS",
+    "SHIPPED_DETECTORS",
+    "MODEL_HEADS",
     "resolve_ai_index",
     "resolve_head",
+    "check_load_integrity",
 ]
