@@ -1,87 +1,103 @@
-"""Local, open-weight AI-text detectors: the classic perplexity/burstiness
-method and an open fine-tuned classifier.
+"""Local, open-weight AI-text detectors.
+
+Three of them, in the order you should reach for them:
+
+  * `ModernDetector` -- **the default**. A current open fine-tuned transformer
+    sequence classifier, `desklib/ai-text-detector-v1.01` (DeBERTa-v3-large,
+    435M parameters, ~1.74GB), which led the RAID detection leaderboard.
+  * `PerplexityDetector` -- GPTZero's *original*, published, January-2023
+    method: per-sentence GPT-2 perplexity plus burstiness. Kept, by explicit
+    request only, because it is a historical reference point and because the
+    measurement below is worth preserving.
+  * `ClassifierDetector` -- OpenAI's 2019 RoBERTa GPT-2 output detector. Kept
+    for the same reason, and it is the worse of the two.
 
 WHAT THIS IS, AND WHAT IT IS NOT
 --------------------------------
 This module is **not** GPTZero and does not reproduce GPTZero.
 
-What it *does* reproduce is GPTZero's **original, published, January-2023
-method**: score every sentence for perplexity under a GPT-2-class language
-model, and take the standard deviation of those per-sentence perplexities as
-"burstiness". research/01 §1.2 records that definition, and GPTZero's own
-historical rule of thumb that a document perplexity above roughly 85 read as
-human. `PerplexityDetector` below implements exactly that, with the same GPT-2
-family of scoring model, so the numbers it produces are the same *kind* of
-numbers the 2023 product showed.
+GPTZero today is a proprietary supervised deep model. research/07 §3 quotes
+their own arXiv paper: hierarchical multi-task heads (document-level {Human,
+AI, Mixed} over a sub-head {Pure AI, Polished, AI Paraphrased}, plus a jointly
+trained *binary* sentence head), trained on ~28.6M documents, with four tiers
+of adversarial red teaming and a post-hoc ℝ³ calibration remap. "Architecture
+and hyperparameters are proprietary." The weights have never been published.
+We cannot run their model, and nothing here approximates their numbers.
 
-GPTZero **today** is something else entirely, and nothing here approximates it.
-research/07 §3 quotes GPTZero's own arXiv paper: a proprietary supervised deep
-model with hierarchical multi-task heads (document-level {Human, AI, Mixed}
-over a sub-head {Pure AI, Polished, AI Paraphrased}, plus a separate binary
-sentence head), trained on ~28.6M documents, with four tiers of adversarial red
-teaming and a post-hoc calibration remap. GPTZero support states plainly that
-the product "no longer uses perplexity and burstiness for its AI detection" as
-a decision mechanism (research/01 §1.1). Architecture and weights are
-proprietary and unpublished. We cannot run it locally and do not claim to.
-
-Practically, that means:
-
-  * The probabilities here are **not** calibrated against GPTZero's, or against
-    anything else. See `PPL_HUMAN_CENTER` for how arbitrary the mapping is.
-  * research/01 §3.6 and the RAID results in research/13 both show that
-    GPT-2-era statistical detectors and the GPT-2 RoBERTa detectors generalise
-    *worst* of all detector families against modern LLM output (RAID: 44.8% for
-    RoBERTa-L GPT2, and note the "perplexity inversion" finding in research/01
-    §3.9 that modern LLM output can have *higher* perplexity than human text).
-    Treat a "human" verdict from this module as worth nothing at all against a
-    2026 commercial detector.
-  * Use this to *measure* what changed when you edit a document, not to certify
-    that a document will pass anything.
+What `ModernDetector` *does* match is the **architectural class**. Every
+serious detector shipped after 2023 -- GPTZero, Originality, Pangram,
+Turnitin -- is a supervised fine-tuned transformer classifier, not a perplexity
+statistic. GPTZero support states plainly that the product "no longer uses
+perplexity and burstiness for its AI detection" as a decision mechanism
+(research/01 §1.1). Running a fine-tuned transformer classifier locally puts us
+in the same *family* as the current products. It does not put us anywhere near
+their training data, their thresholds, or their calibration, and a score out of
+this module predicts a GPTZero verdict no better than any other third-party
+detector does.
 
 MEASURED ON THIS REPO'S OWN CORPUS -- READ BEFORE BELIEVING A NUMBER
 --------------------------------------------------------------------
-Four templated LLM-style paragraphs versus twelve human paragraphs from
-`data/raw/pmc/*.txt` (biomedical research articles), scored with `gpt2`:
+28 paragraphs: 14 human paragraphs pulled from `data/raw/pmc/*.txt` (biomedical
+research articles) and 14 written AI-style paragraphs in four registers
+(general explainer, blog, five-paragraph essay, and -- deliberately -- four in
+the same biomedical-abstract register as the human side, so the benchmark is
+not secretly measuring "general prose vs biomedical prose"). Scored on CPU,
+Apple Silicon, torch 2.8:
 
-    document perplexity   AI-templated  mean 24.5   range 11.1 - 33.2
-                          PMC human     mean 30.6   range 17.3 - 63.9
-    burstiness (SD)       AI-templated  mean 36.3
-                          PMC human     mean 56.0
+    detector                    AI mean   human mean   FPR@0.5   pairwise
+    ------------------------------------------------------------------------
+    modern (desklib v1.01)        1.000        0.123    1 / 14      1.000
+    perplexity (gpt2)             0.920        0.797   13 / 14      0.740
+    classifier (roberta-openai)   0.239        0.215    3 / 14      0.444
 
-    pairwise separation (P[AI scores lower perplexity than a human doc])
-                          0.583   -- 0.5 is chance
+"pairwise" is P(a random AI paragraph outscores a random human paragraph); 0.5
+is chance. "FPR@0.5" is how many of the fourteen genuine human PMC paragraphs
+were labelled AI.
 
 **The classic perplexity method does not usefully separate templated AI prose
-from human biomedical academic prose.** It is barely above chance, and the
-burstiness signal is *inverted* from the theory: the human academic paragraphs
-were burstier than the AI ones, not flatter. With `PPL_HUMAN_CENTER` at the
-historical 85, all twelve genuine human PMC paragraphs are labelled "ai".
-
-This is not a bug in the implementation and it was not fixed by moving the
+from human biomedical academic prose**, and the 2019 OpenAI classifier is
+*below chance* on this set. That is why the default moved. The perplexity
+result is not a bug in the implementation and was not fixed by moving the
 thresholds, because moving them would only relabel this one sample. It is the
 documented failure mode: research/01 §5 records that "memorised or formulaic
 human text (constitutions, boilerplate, rote writing) reads as AI to
 perplexity-based methods", and Liang et al. measured 61.3% false positives on
-TOEFL essays from exactly this signal (research/01 §5, §3.5 -- Ghostbuster's
-perplexity-only baseline scored 13.2% there). Formal biomedical prose is highly
+TOEFL essays from exactly this signal. Formal biomedical prose is highly
 templated, so GPT-2 finds it extremely predictable. research/01 §3.9 adds the
 converse, "perplexity inversion", for modern generators.
 
-Where it *does* work is the textbook demo case: a human narrative paragraph in
-the same run scored perplexity 52.8 and burstiness 94.5 against the AI mean of
-24.5, and is the only text in the set the mapping calls human. So the method
-reproduces the 2023 behaviour faithfully, including the reason the 2023 method
-was abandoned.
+Caveats on the 1.000, which is the number most likely to be misread:
 
-`ClassifierDetector` did better on the same sample -- pairwise separation 0.812,
-and 0.0002 on the human narrative -- but it is noisy in the direction that
-matters, scoring two of the twelve genuine PMC paragraphs above 0.999.
-
-Both numbers come from tiny samples with no confidence interval. They are here
-to stop anyone reading a probability out of this module as a fact.
+  * n = 28. There is no confidence interval here and one more borderline
+    document would move every figure.
+  * The AI side was written by one model in one session. A real detector
+    benchmark spans generators, decoding settings and adversarial attacks;
+    RAID does, and desklib's leaderboard position is evidence from RAID, not
+    from this file.
+  * One genuine human PMC paragraph scored 0.505 -- over the line by five
+    thousandths. A detector that flags 1 in 14 real academic paragraphs is
+    still a detector that will accuse someone. research/01 §5 on non-native
+    writers applies to this model too; it is better than the old default, not
+    safe.
+  * Document scores are much steadier than sentence scores. On a 9-sentence
+    human paragraph the document score was 0.015 while individual sentences
+    ranged 0.06-0.87. Sentence rows exist for the heatmap; do not threshold
+    them.
 
 WHAT IS HERE
 ------------
+`ModernDetector`
+    A fine-tuned transformer classifier, default
+    `desklib/ai-text-detector-v1.01`. Two head shapes are supported: the
+    ordinary softmax-over-labels head (label index read from `config.id2label`
+    via `resolve_ai_index`, never assumed) and desklib's mean-pooled
+    single-logit sigmoid head, which is not one of transformers' `AutoModel`
+    classes and so is rebuilt here. Long inputs are chunked to the model's
+    context and aggregated (both the token-weighted mean and the max over
+    chunks are reported). Per-sentence probabilities are produced by scoring
+    each sentence in a batch, segmented with `humanizer.text.Document.parse`
+    so the indices line up with `/api/analyze`.
+
 `PerplexityDetector`
     Per-sentence perplexity under a causal LM (default ``gpt2``), document
     perplexity, burstiness = SD of the per-sentence values, and mean/max
@@ -107,6 +123,11 @@ Every import of them is inside a function body. Models load on the first
 `score()` call and are cached module-level, so a process pays the load cost
 once. Everything runs on CPU with `torch.no_grad()` and the model in eval mode;
 no GPU is required or requested.
+
+Weights are fetched from the Hugging Face hub on first use and are not small:
+desklib ~1.74GB, gpt2 ~525MB, the OpenAI RoBERTa detector ~480MB. Every path
+degrades to `available() -> False` with an actionable message rather than
+raising, and `/api/detect` turns that into a 200 with an `error` string.
 """
 
 from __future__ import annotations
@@ -120,12 +141,16 @@ from ..text import Document
 from .base import Detector, DetectorResult
 
 __all__ = [
+    "ModernDetector",
     "PerplexityDetector",
     "ClassifierDetector",
     "EnsembleDetector",
     "backend_available",
     "clear_model_cache",
     "loaded_models",
+    "resolve_ai_index",
+    "resolve_head",
+    "DEFAULT_MODERN_MODEL",
     "DEFAULT_PERPLEXITY_MODEL",
     "FAST_PERPLEXITY_MODEL",
     "DEFAULT_CLASSIFIER_MODEL",
@@ -137,6 +162,30 @@ DEFAULT_PERPLEXITY_MODEL = "gpt2"
 FAST_PERPLEXITY_MODEL = "distilgpt2"
 #: ~499 MB. OpenAI's RoBERTa-base GPT-2 output detector (research/01 §3.6).
 DEFAULT_CLASSIFIER_MODEL = "openai-community/roberta-base-openai-detector"
+#: ~1.74 GB, 435M parameters. A DeBERTa-v3-large fine-tuned by Desklib on the
+#: RAID corpus (liamdugan/raid) with a mean-pooled single-logit sigmoid head;
+#: it topped the RAID detection leaderboard. This is the default engine, and
+#: the module docstring records what it measured on this repo's own corpus.
+DEFAULT_MODERN_MODEL = "desklib/ai-text-detector-v1.01"
+
+#: Alternative open detectors, all verified to download and run on CPU under
+#: Python 3.9 / torch 2.8 / transformers 4.57. Pass one as `model_name=` to
+#: `ModernDetector`. The pairwise figures are from this repo's 28-paragraph
+#: set (see the module docstring); they are not a benchmark, they are a smoke
+#: test with n=28 and no confidence interval.
+ALTERNATIVE_MODERN_MODELS: Dict[str, str] = {
+    # 33M params, ~130MB. e5-small + merged LoRA, trained on RAID-train.
+    # Cheapest thing here that works at all -- research/05 names it as small
+    # enough for an inner optimisation loop. Pairwise 0.944, but it called 8
+    # of 14 human PMC paragraphs AI, which is disqualifying for a default.
+    "MayZhou/e5-small-lora-ai-generated-detector": "softmax",
+    # 125M params. RoBERTa-base fine-tuned on academic abstracts; publishes
+    # honest labels. Pairwise 0.980, 1 of 14 human paragraphs over 0.5.
+    "andreas122001/roberta-academic-detector": "softmax",
+    # 125M params. The HC3 ChatGPT detector. Pairwise 0.811 and it missed 8 of
+    # 14 AI paragraphs; it is tuned to 2022-era ChatGPT output.
+    "Hello-SimpleAI/chatgpt-detector-roberta": "softmax",
+}
 
 
 # --------------------------------------------------------------------- tuning
@@ -280,6 +329,142 @@ def _load(kind: str, model_name: str) -> Tuple[Any, Any]:
 def _known_failure(kind: str, model_name: str) -> Optional[str]:
     with _CACHE_LOCK:
         return _LOAD_FAILURES.get((kind, model_name))
+
+
+# ------------------------------------------------- modern-detector head types
+
+#: Architectures whose classification head is a mean-pooled single logit
+#: squashed with a sigmoid, rather than transformers' standard
+#: `...ForSequenceClassification` softmax over `num_labels`. These are not
+#: `AutoModel` classes -- the checkpoint ships weights under `model.*` plus a
+#: `classifier.*` of shape (1, hidden) and expects the caller to supply the
+#: head. `_PooledSigmoidClassifier` below is that head.
+#:
+#: desklib's config.json still says `num_labels: 2` with `id2label`
+#: {0: LABEL_0, 1: LABEL_1}, which is simply wrong for the checkpoint: loading
+#: it with `AutoModelForSequenceClassification` silently discards the trained
+#: classifier and gives you a randomly initialised two-way head. That failure
+#: is *quiet* -- you get plausible-looking probabilities that mean nothing --
+#: which is why the head is resolved explicitly instead of assumed.
+_POOLED_SIGMOID_ARCHITECTURES = frozenset({"DesklibAIDetectionModel"})
+
+#: Head kinds `ModernDetector` understands.
+HEAD_SOFTMAX = "softmax"
+HEAD_POOLED_SIGMOID = "pooled-sigmoid"
+
+
+def resolve_head(architectures: Sequence[str], model_name: str = "") -> Tuple[str, str]:
+    """Decide which classification head a checkpoint needs.
+
+    Returns `(head, how)`. `architectures` is `config.architectures`. Anything
+    not in `_POOLED_SIGMOID_ARCHITECTURES` is treated as an ordinary softmax
+    sequence classifier, which is the right default: that is what every
+    `...ForSequenceClassification` checkpoint is.
+    """
+    for arch in architectures or ():
+        if str(arch) in _POOLED_SIGMOID_ARCHITECTURES:
+            return HEAD_POOLED_SIGMOID, f"architecture:{arch}"
+    declared = ALTERNATIVE_MODERN_MODELS.get(model_name)
+    if declared:
+        return declared, "known-model"
+    return HEAD_SOFTMAX, "default"
+
+
+def _pooled_sigmoid_class():
+    """Build the mean-pool + single-logit `PreTrainedModel` subclass.
+
+    Defined inside a function because the class statement needs `torch.nn` and
+    `transformers` at definition time, and this module must import without
+    either. Mirrors the reference implementation on the desklib model card:
+    mean-pool the last hidden state under the attention mask, then one linear
+    layer to a single logit. `from_pretrained` on this class reports zero
+    missing and zero unexpected keys against the desklib checkpoint, which is
+    the check that the head is the right one.
+    """
+    import torch.nn as nn
+    from transformers import AutoConfig, AutoModel, PreTrainedModel
+
+    class _PooledSigmoidClassifier(PreTrainedModel):
+        config_class = AutoConfig
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = AutoModel.from_config(config)
+            self.classifier = nn.Linear(config.hidden_size, 1)
+            self.init_weights()
+
+        def forward(self, input_ids, attention_mask=None, **_kwargs):
+            hidden = self.model(input_ids, attention_mask=attention_mask)[0]
+            if attention_mask is None:
+                pooled = hidden.mean(dim=1)
+            else:
+                mask = attention_mask.unsqueeze(-1).expand(hidden.size()).float()
+                pooled = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+            return self.classifier(pooled)
+
+    return _PooledSigmoidClassifier
+
+
+def _load_modern(model_name: str) -> Tuple[Any, Any, str, str]:
+    """Load `(tokenizer, model, head, head_source)` for `ModernDetector`.
+
+    Shares `_MODEL_CACHE` and `_LOAD_FAILURES` with `_load` under the cache
+    kind ``"modern"``, so `clear_model_cache`, `loaded_models` and
+    `_known_failure` all cover it. The config is read first, because which
+    model class to instantiate depends on what the config says the
+    architecture is.
+    """
+    key = ("modern", model_name)
+    with _CACHE_LOCK:
+        if key in _MODEL_CACHE:
+            return _MODEL_CACHE[key]
+        failure = _LOAD_FAILURES.get(key)
+    if failure is not None:
+        raise RuntimeError(failure)
+
+    if not backend_available():
+        message = (
+            "Local detectors need the `detectors` extra: "
+            "pip install -e '.[detectors]'  (torch, transformers)"
+        )
+        with _CACHE_LOCK:
+            _LOAD_FAILURES[key] = message
+        raise RuntimeError(message)
+
+    try:
+        from transformers import (  # noqa: WPS433 - deliberately lazy
+            AutoConfig,
+            AutoModelForSequenceClassification,
+            AutoTokenizer,
+        )
+
+        config = AutoConfig.from_pretrained(model_name)
+        head, head_source = resolve_head(
+            getattr(config, "architectures", None) or (), model_name
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if head == HEAD_POOLED_SIGMOID:
+            model = _pooled_sigmoid_class().from_pretrained(model_name, config=config)
+        else:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name, config=config
+            )
+        model.eval()
+    except Exception as exc:  # noqa: BLE001 - offline, disk, hub, all the same
+        message = (
+            f"Could not load {model_name!r}: {type(exc).__name__}: {exc}. "
+            "The weights are downloaded from the Hugging Face hub on first "
+            "use (~1.74GB for the default model); this fails offline or "
+            "without disk space."
+        )
+        with _CACHE_LOCK:
+            _LOAD_FAILURES[key] = message
+        raise RuntimeError(message) from exc
+
+    loaded = (tokenizer, model, head, head_source)
+    with _CACHE_LOCK:
+        _MODEL_CACHE[key] = loaded
+    return loaded
 
 
 # ------------------------------------------------------------------- numerics
@@ -576,7 +761,7 @@ class PerplexityDetector(Detector):
         return out
 
 
-# ------------------------------------------------------- classifier detector
+# --------------------------------------------------- label-index resolution
 
 # Label vocabularies for `config.id2label`. Checked as exact tokens after
 # lowercasing and splitting on non-letters, so "Real" cannot match "ai" by
@@ -598,6 +783,12 @@ _KNOWN_AI_INDEX: Dict[str, int] = {
     "openai-community/roberta-base-openai-detector": 0,
     "roberta-base-openai-detector": 0,
     "roberta-large-openai-detector": 0,
+    # config.json says LABEL_0/LABEL_1; the model card is explicit that
+    # "Label_0: human-written, Label_1: AI-generated". Recorded here so the
+    # resolver reports "known-model" rather than "assumed" -- the fallback
+    # would land on 1 anyway, but silently guessing right is not the same as
+    # knowing.
+    "MayZhou/e5-small-lora-ai-generated-detector": 1,
 }
 
 
@@ -647,6 +838,339 @@ def resolve_ai_index(id2label: Dict[int, str], model_name: str = "") -> Tuple[in
         return known, "known-model"
     # Nothing to go on. Say so loudly in `raw` rather than silently picking.
     return 1, "assumed"
+
+
+# ------------------------------------------------- modern detector (default)
+
+#: Sentences per forward pass when producing the heatmap rows. Eight keeps the
+#: padded batch small on a 435M-parameter model on CPU; a 9-sentence paragraph
+#: costs ~0.6s end to end on Apple Silicon.
+_MODERN_SENTENCE_BATCH = 8
+
+#: Hard cap on how many sentences get their own forward pass. Beyond this the
+#: remaining sentences inherit the document probability and `raw` says so. A
+#: 2,000-sentence paste should not turn one HTTP request into four minutes of
+#: CPU; the document score, which is the one worth trusting, is unaffected.
+MAX_SCORED_SENTENCES = 300
+
+
+class ModernDetector(Detector):
+    """A current fine-tuned transformer classifier. The default engine.
+
+    Default model: `desklib/ai-text-detector-v1.01` -- DeBERTa-v3-large (435M
+    parameters, ~1.74GB) fine-tuned on the RAID corpus, which led the RAID
+    detection leaderboard. Pass `model_name=` to swap it; see
+    `ALTERNATIVE_MODERN_MODELS` for three smaller ones that were verified to
+    load and run here.
+
+    WHY THIS IS THE DEFAULT AND WHAT IT DOES NOT MEAN
+    -------------------------------------------------
+    Every detector shipped after 2023 -- GPTZero, Originality, Pangram,
+    Turnitin -- is a supervised fine-tuned transformer, not a perplexity
+    statistic (research/01 §1.1, research/07 §3). Running one locally puts this
+    module in the same architectural family as the current products. It does
+    **not** make it GPTZero: GPTZero's model, its ~28.6M-document training
+    corpus, its hierarchical {Human, AI, Mixed} / {Pure AI, Polished, AI
+    Paraphrased} heads and its post-hoc calibration remap are all proprietary
+    and unpublished. There is no relationship between the number this returns
+    and the number GPTZero would return. Use it to measure what changed when
+    you edit a document.
+
+    HOW IT SCORES
+    -------------
+    Two head shapes are handled, chosen by `resolve_head` from
+    `config.architectures` rather than assumed:
+
+      * `pooled-sigmoid` (desklib): mean-pool the last hidden state under the
+        attention mask, one linear layer to a single logit, sigmoid. The logit
+        *is* P(AI), so there is no label index to get backwards.
+      * `softmax`: an ordinary `...ForSequenceClassification` head. Which
+        output index means "AI" is read from `config.id2label` through
+        `resolve_ai_index`, never assumed -- `roberta-base-openai-detector`
+        labels index 0 "Fake" and index 1 "Real", so the naive assumption
+        inverts every score it produces.
+
+    Long documents are split into disjoint windows of the model's context and
+    every window is scored. `ai_probability` is the token-count-weighted mean
+    over windows; `raw["max_chunk_probability"]` reports the loudest window,
+    which is what you want when only part of a document is generated. GPTZero
+    does the same thing and keeps which aggregation proprietary (research/07
+    §2), so both are reported rather than picking one silently.
+
+    `sentence_scores` is a real per-sentence forward pass for each sentence,
+    segmented by `humanizer.text.Document.parse` so the indices line up with
+    `/api/analyze` and with the frontend heatmap. **Treat those rows as much
+    weaker than the document score.** They are the same document-trained model
+    run on 15-word inputs, well under every vendor's stated reliability floor
+    (research/01 §5: GPTZero 250 chars, Sapling 300, Turnitin 300 words), and
+    on this repo's corpus a human paragraph scoring 0.015 at document level had
+    individual sentences up at 0.87. They are a visualisation, not a verdict.
+    """
+
+    name = "modern"
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODERN_MODEL,
+        threshold: float = 0.5,
+        max_length: Optional[int] = None,
+        ai_index: Optional[int] = None,
+        head: Optional[str] = None,
+        score_sentences: bool = True,
+    ):
+        self.model_name = model_name
+        self.threshold = threshold
+        #: None means "ask the model's config". An explicit int/str is an
+        #: escape hatch for a checkpoint whose config lies about itself.
+        self.max_length = max_length
+        self.ai_index = ai_index
+        self.head = head
+        #: Turn off to pay the document forward pass only. Roughly a 5x saving
+        #: on a fifteen-sentence paragraph.
+        self.score_sentences = score_sentences
+
+    # -- availability -------------------------------------------------------
+
+    def available(self) -> bool:
+        """See `PerplexityDetector.available` for the optimistic-True caveat.
+
+        Cheap by construction: nothing is downloaded here. It returns False
+        when torch/transformers are missing or when a previous load of this
+        model already failed, and optimistically True before the first attempt.
+        """
+        if not backend_available():
+            return False
+        return _known_failure("modern", self.model_name) is None
+
+    def unavailable_reason(self) -> Optional[str]:
+        if not backend_available():
+            return (
+                "torch/transformers are not installed. "
+                "pip install -e '.[detectors]'"
+            )
+        return _known_failure("modern", self.model_name)
+
+    def load(self) -> None:
+        """Force the model into the cache. Optional; `score()` does it too."""
+        _load_modern(self.model_name)
+
+    # -- scoring ------------------------------------------------------------
+
+    def _window_size(self, tokenizer, model) -> int:
+        """Content tokens per window, excluding the special tokens.
+
+        `tokenizer.model_max_length` is a sentinel-sized int for tokenizers
+        that do not declare a limit (desklib's is 1e19), so it is only trusted
+        when it looks like a real context length.
+        """
+        if self.max_length is not None:
+            limit = int(self.max_length)
+        else:
+            limit = getattr(tokenizer, "model_max_length", None)
+            if not isinstance(limit, int) or limit <= 0 or limit > 100_000:
+                limit = int(getattr(model.config, "max_position_embeddings", 512))
+                limit = min(limit, 512)
+        special = int(tokenizer.num_special_tokens_to_add(pair=False) or 0)
+        return max(8, limit - special)
+
+    def score(self, text: str) -> DetectorResult:
+        tokenizer, model, head, head_source = _load_modern(self.model_name)
+        if self.head is not None:
+            head, head_source = self.head, "explicit"
+
+        id2label = dict(getattr(model.config, "id2label", {}) or {})
+        ai_index: Optional[int] = None
+        ai_index_source: Optional[str] = None
+        if head == HEAD_SOFTMAX:
+            if self.ai_index is not None:
+                ai_index, ai_index_source = self.ai_index, "explicit"
+            else:
+                ai_index, ai_index_source = resolve_ai_index(id2label, self.model_name)
+
+        window = self._window_size(tokenizer, model)
+        # verbose=False: over-length is expected here; chunking is the point.
+        ids = tokenizer(
+            text, add_special_tokens=False, return_tensors=None, verbose=False
+        )["input_ids"]
+        if not ids:
+            raise ValueError("Cannot score empty text.")
+
+        chunks = [ids[i : i + window] for i in range(0, len(ids), window)]
+        # A trailing sliver of a chunk is mostly noise; fold it into the
+        # previous window when the model can still hold both.
+        if len(chunks) > 1 and len(chunks[-1]) < window // 8:
+            tail = chunks.pop()
+            if len(chunks[-1]) + len(tail) <= window:
+                chunks[-1] = chunks[-1] + tail
+            else:
+                chunks.append(tail)
+
+        probs = self._probabilities(tokenizer, model, head, ai_index, chunks)
+        weights = [float(len(c)) for c in chunks]
+        total = sum(weights) or 1.0
+        mean_p = sum(p * w for p, w in zip(probs, weights)) / total
+        max_p = max(probs)
+
+        doc = Document.parse(text)
+        sentences = [s.text for s in doc.sentences]
+        sentence_scores, n_scored = self._sentence_probabilities(
+            tokenizer, model, head, ai_index, sentences, window, mean_p
+        )
+
+        raw: Dict[str, Any] = {
+            "method": "fine-tuned transformer sequence classifier",
+            "model": self.model_name,
+            "head": head,
+            "head_source": head_source,
+            "id2label": {str(k): v for k, v in id2label.items()},
+            "ai_index": ai_index,
+            "ai_label": id2label.get(ai_index) if ai_index is not None else None,
+            "ai_index_source": ai_index_source,
+            "n_chunks": len(chunks),
+            "chunk_tokens": [int(w) for w in weights],
+            "chunk_probabilities": probs,
+            "mean_chunk_probability": mean_p,
+            "max_chunk_probability": max_p,
+            "window_tokens": window,
+            "n_tokens": len(ids),
+            "n_sentences": len(sentences),
+            "n_scored_sentences": n_scored,
+            "sentence_scores_are_unreliable": True,
+            "sentence_score_note": (
+                "Per-sentence rows are the document-trained model run on "
+                "inputs far below every vendor's reliability floor "
+                "(research/01 §5). They exist for the heatmap. Do not "
+                "threshold them; the document score is the verdict."
+            ),
+            "architecture_class": (
+                "Same architectural class as GPTZero, Originality, Pangram "
+                "and Turnitin today -- a supervised fine-tuned transformer "
+                "classifier, not the 2023 perplexity/burstiness statistic."
+            ),
+            "is_gptzero": False,
+            "gptzero_relationship": (
+                "None. GPTZero's model, its ~28.6M-document training corpus, "
+                "its hierarchical Human/AI/Mixed heads and its calibration "
+                "remap are proprietary and unpublished (research/07 §3). This "
+                "score has no relationship to theirs."
+            ),
+            "thresholds_are_calibrated": False,
+            "calibration_note": (
+                "Measured on this repo's own 28-paragraph set (14 human PMC "
+                "paragraphs, 14 written AI-style paragraphs in four "
+                "registers): pairwise separation 1.000 where 0.5 is chance, "
+                "AI mean 1.000, human mean 0.123, and 1 of 14 genuine human "
+                "academic paragraphs scored over 0.5 (at 0.505). n=28 with no "
+                "confidence interval and one author on the AI side. The "
+                "legacy 'perplexity' engine scored 0.740 pairwise with 13 of "
+                "14 human paragraphs called AI on the same set."
+            ),
+            "below_reliable_length": len(text.strip()) < MIN_RELIABLE_CHARS,
+        }
+        return DetectorResult(
+            detector=self.name,
+            ai_probability=mean_p,
+            label="ai" if mean_p >= self.threshold else "human",
+            # Not "high" and never will be: nothing here is calibrated against
+            # a labelled holdout, so the confidence field stays honest even
+            # when the separation on 28 paragraphs looks perfect.
+            confidence="medium" if not raw["below_reliable_length"] else "low",
+            sentence_scores=sentence_scores,
+            raw=raw,
+        )
+
+    # -- forward passes -----------------------------------------------------
+
+    def _probabilities(
+        self,
+        tokenizer,
+        model,
+        head: str,
+        ai_index: Optional[int],
+        id_lists: Sequence[Sequence[int]],
+    ) -> List[float]:
+        """P(AI) for each pre-tokenised sequence, in one padded batch.
+
+        Takes token ids rather than strings so that the document chunks are
+        scored on exactly the ids they were split into -- decoding a chunk back
+        to text and re-encoding it is not a round trip for every tokenizer, and
+        a shifted chunk boundary is a silently wrong number.
+
+        Both head shapes end in one probability per row: the sigmoid of the
+        pooled single logit, or the softmax entry at `ai_index`. Padded
+        positions are masked out, so the pad id cannot affect a result.
+        """
+        import torch
+
+        if not id_lists:
+            return []
+        built = [
+            list(tokenizer.build_inputs_with_special_tokens(list(ids)))
+            for ids in id_lists
+        ]
+        width = max(len(b) for b in built)
+        pad_id = tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = tokenizer.eos_token_id or 0
+        input_ids = [b + [pad_id] * (width - len(b)) for b in built]
+        attention = [[1] * len(b) + [0] * (width - len(b)) for b in built]
+
+        with torch.no_grad():
+            out = model(
+                input_ids=torch.tensor(input_ids, dtype=torch.long),
+                attention_mask=torch.tensor(attention, dtype=torch.long),
+            )
+            logits = out if isinstance(out, torch.Tensor) else out.logits
+            if head == HEAD_POOLED_SIGMOID:
+                return torch.sigmoid(logits.reshape(-1).float()).tolist()
+            index = 0 if ai_index is None else int(ai_index)
+            return torch.softmax(logits.float(), dim=-1)[:, index].tolist()
+
+    def _sentence_probabilities(
+        self,
+        tokenizer,
+        model,
+        head: str,
+        ai_index: Optional[int],
+        sentences: Sequence[str],
+        window: int,
+        document_probability: float,
+    ) -> Tuple[List[float], int]:
+        """Per-sentence P(AI), batched. Returns `(scores, n_actually_scored)`.
+
+        Sentences too short to carry any signal, and anything past
+        `MAX_SCORED_SENTENCES`, inherit the document probability instead of
+        reporting a fabricated one. Same reasoning as
+        `api.server.MIN_WORDS_FOR_SENTENCE_RISK`; Winston AI similarly ignores
+        sentences under 60 characters (research/01 §2).
+        """
+        out = [document_probability] * len(sentences)
+        if not sentences or not self.score_sentences:
+            return out, 0
+
+        eligible: List[int] = []
+        encoded: List[List[int]] = []
+        for i, sent in enumerate(sentences):
+            if len(eligible) >= MAX_SCORED_SENTENCES:
+                break
+            ids = tokenizer(sent, add_special_tokens=False, return_tensors=None)[
+                "input_ids"
+            ]
+            if len(ids) >= MIN_SENTENCE_TOKENS:
+                eligible.append(i)
+                encoded.append(list(ids[:window]))
+
+        for start in range(0, len(eligible), _MODERN_SENTENCE_BATCH):
+            stop = start + _MODERN_SENTENCE_BATCH
+            probs = self._probabilities(
+                tokenizer, model, head, ai_index, encoded[start:stop]
+            )
+            for i, p in zip(eligible[start:stop], probs):
+                out[i] = p
+        return out, len(eligible)
+
+
+# ------------------------------------------- legacy classifier detector
 
 
 class ClassifierDetector(Detector):

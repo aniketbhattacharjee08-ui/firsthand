@@ -9,6 +9,7 @@ Endpoints
     GET  /api/reference/{name}    one distribution's summary statistics
     POST /api/detect              run the local detectors over one document
     POST /api/plan                best-of-N table under candidate correlation
+    POST /api/humanize            rewrite a document and report every edit
     GET  /                        the static frontend in web/, when present
 
 Design notes
@@ -40,6 +41,7 @@ from ..detectors import (
     ClassifierDetector,
     EnsembleDetector,
     HeuristicDetector,
+    ModernDetector,
     PerplexityDetector,
     backend_available,
     pass_rate,
@@ -266,21 +268,36 @@ def _ok(payload: Any) -> JSONResponse:
 # actually names the detector. Instances are then cached on app.state so the
 # model load is paid once per process rather than once per request.
 #
-# `perplexity` and `classifier` need the `detectors` extra (torch,
+# `modern`, `perplexity` and `classifier` need the `detectors` extra (torch,
 # transformers). They are listed here unconditionally on purpose: the endpoint
 # reports `available: false` with the install command rather than pretending
 # the detector does not exist, which is what the frontend needs in order to
 # show a disabled control instead of silently dropping a feature.
 DETECTOR_FACTORIES: Dict[str, Any] = {
+    # The default. A current fine-tuned transformer classifier
+    # (desklib/ai-text-detector-v1.01, DeBERTa-v3-large, ~1.74GB) -- the same
+    # architectural class GPTZero, Originality, Pangram and Turnitin all use
+    # now, and not GPTZero. See `humanizer.detectors.local`.
+    "modern": lambda: ModernDetector(),
     "heuristic": lambda: HeuristicDetector(),
+    # 2023-era baselines, kept and reachable by name. Both were measured on
+    # this repo's own PMC corpus and both are worse than `modern` there:
+    # pairwise 0.740 and 0.444 against 1.000, with 13 of 14 and 3 of 14
+    # genuine human academic paragraphs mislabelled AI against 1 of 14.
     "perplexity": lambda: PerplexityDetector(),
     "classifier": lambda: ClassifierDetector(),
     "ensemble": lambda: EnsembleDetector(),
 }
 
-#: Used when the request leaves `detectors` null. Excludes `ensemble` because
-#: it would double-count the three members that are already in the list.
-DEFAULT_DETECTORS = ("heuristic", "perplexity", "classifier")
+#: Used when the request leaves `detectors` null.
+#:
+#: One engine, deliberately. The old default ran three and let the page show
+#: three disagreeing percentages, two of which came from methods this repo has
+#: measured as no better than chance on academic prose. Showing a caller a
+#: number that is wrong, next to a number that is right, is worse than showing
+#: one number: it invites them to average. `heuristic`, `perplexity`,
+#: `classifier` and `ensemble` are all still one explicit request away.
+DEFAULT_DETECTORS = ("modern",)
 
 
 class DetectRequest(BaseModel):
@@ -365,6 +382,28 @@ def run_detector(app: FastAPI, name: str, text: str) -> Dict[str, Any]:
         }
     )
     return row
+
+
+# ---------------------------------------------------------- /api/humanize
+#
+# Body model for the appended humanize endpoint. It lives at module scope, next
+# to `DetectRequest`, because FastAPI resolves a route's annotations against the
+# defining module's globals: a request model declared inside `create_app()`
+# cannot be found and every request 422s before it reaches the handler.
+
+
+class HumanizeRequest(BaseModel):
+    """Body for POST /api/humanize."""
+
+    text: str = Field(default="", description="Raw document text.")
+    aggressiveness: str = Field(
+        default="balanced",
+        description=(
+            "'light' (AI lexicon and formal connectives only), 'balanced' "
+            "(adds parallelism and paragraph-template breaking) or 'strong' "
+            "(adds sentence-length restructuring)."
+        ),
+    )
 
 
 # ----------------------------------------------------------------------- app
@@ -484,15 +523,25 @@ def create_app(
         carries its own `available` flag and `error` string, so a page can show
         the heuristic score while the 500MB gpt2 download is still failing.
 
-        On what these detectors are: `heuristic` is the dependency-free
-        baseline, `perplexity` is GPTZero's *original* January-2023 method
-        (per-sentence perplexity under gpt2, burstiness = the SD of those), and
-        `classifier` is OpenAI's open RoBERTa GPT-2 output detector. None of
-        them is GPTZero, whose current model is a proprietary fine-tuned
-        transformer with a hierarchical multi-task head (research/07 §3). The
-        response says so on the wire in `disclaimer` rather than leaving it to
-        the docs, because a percentage on a screen reads as authoritative and
-        these percentages are not.
+        On what these detectors are. `modern` is the default and the only one
+        worth reading a number off: `desklib/ai-text-detector-v1.01`, an open
+        fine-tuned DeBERTa-v3-large classifier that led the RAID detection
+        leaderboard. It is the same *architectural class* as every detector
+        shipped after 2023 -- GPTZero, Originality, Pangram, Turnitin are all
+        supervised fine-tuned transformers now -- which is exactly as far as
+        the resemblance goes. `heuristic` is the dependency-free baseline.
+        `perplexity` is GPTZero's *original* January-2023 method (per-sentence
+        perplexity under gpt2, burstiness = the SD of those), kept because it
+        is a historical reference and because this repo measured it failing on
+        academic prose; `classifier` is OpenAI's 2019 RoBERTa GPT-2 output
+        detector, which measured *below chance* on the same set.
+
+        None of them is GPTZero, whose current model is a proprietary
+        supervised transformer with a hierarchical multi-task head over
+        {Human, AI, Mixed} plus a joint binary sentence head, trained on ~28.6M
+        undisclosed documents (research/07 §3). The response says so on the
+        wire in `disclaimer` rather than leaving it to the docs, because a
+        percentage on a screen reads as authoritative.
         """
         text = _require_text(body.text)
         names = list(body.detectors) if body.detectors is not None else list(
@@ -521,17 +570,31 @@ def create_app(
                 "known_detectors": sorted(DETECTOR_FACTORIES),
                 "is_gptzero": False,
                 "disclaimer": (
-                    "Not GPTZero. 'perplexity' reproduces GPTZero's original "
-                    "January-2023 published method (per-sentence GPT-2 "
-                    "perplexity plus burstiness, the SD of those "
-                    "per-sentence values); GPTZero abandoned that as a "
-                    "decision rule and today runs a proprietary fine-tuned "
-                    "transformer with a hierarchical multi-task head that "
-                    "cannot be reproduced locally. 'classifier' is OpenAI's "
-                    "2019 RoBERTa GPT-2 output detector. All probabilities "
-                    "here are uncalibrated heuristics; on this repo's own PMC "
-                    "corpus the perplexity method separates AI from human "
-                    "academic prose at 0.583 pairwise, where 0.5 is chance."
+                    "Not GPTZero. The default engine 'modern' is "
+                    "desklib/ai-text-detector-v1.01: an open fine-tuned "
+                    "DeBERTa-v3-large sequence classifier (435M parameters) "
+                    "trained on the RAID corpus, which led the RAID detection "
+                    "leaderboard. It is the same architectural class GPTZero "
+                    "uses today -- a supervised fine-tuned transformer "
+                    "classifier rather than the 2023 perplexity-and-"
+                    "burstiness statistic, which GPTZero itself abandoned as "
+                    "a decision rule -- and that is the whole of the "
+                    "resemblance. It is not GPTZero and has no relationship "
+                    "to GPTZero's weights, training data, thresholds or "
+                    "calibration. GPTZero's current model is proprietary and "
+                    "unpublished: a supervised transformer with a "
+                    "hierarchical multi-task head over {Human, AI, Mixed} "
+                    "plus a jointly trained binary sentence head, trained on "
+                    "~28.6M documents (research/07 s3). Nothing here is "
+                    "calibrated. Measured on this repo's own 28-paragraph set "
+                    "(14 human PMC paragraphs, 14 written AI-style "
+                    "paragraphs), 'modern' separates them at 1.000 pairwise "
+                    "with 1 of 14 genuine human academic paragraphs over 0.5; "
+                    "the legacy 'perplexity' engine scored 0.740 pairwise "
+                    "with 13 of 14, and 'classifier' scored 0.444 -- below "
+                    "chance. n=28, one author on the AI side, no confidence "
+                    "interval. Per-sentence rows are far less reliable than "
+                    "the document score and exist for the heatmap only."
                 ),
             }
         )
@@ -558,6 +621,37 @@ def create_app(
             for rho in PLAN_RHOS
         ]
         return _ok({"mu": body.mu, "target": body.target, "rows": rows})
+
+    # ------------------------------------------------------ /api/humanize
+    #
+    # Appended, and deliberately registered *before* the StaticFiles mount
+    # below: a mount at "/" matches every path, so a route added after it would
+    # never be reached.
+
+    @app.post("/api/humanize")
+    def humanize_endpoint(body: HumanizeRequest) -> JSONResponse:
+        """Rewrite one document and report every edit with its rationale.
+
+        The response carries the full before/after feature vectors and the
+        heuristic AI probability for each, so a caller can show the measurement
+        that justified the rewrite rather than a bare score. `risk_delta` is
+        after minus before, so **negative is an improvement**.
+
+        Only edits that research/00 §4 rates as zero or negative grade cost are
+        ever produced; `humanizer.humanize.transforms` documents the refusal
+        list. Every edit is gated by an exact-match meaning invariant over
+        numbers, quotations, citations and named entities before it is applied,
+        and `Document.protected_spans()` keeps all of them out of quotes,
+        citations and the first and last sentence.
+        """
+        text = _require_text(body.text)
+        from ..humanize import humanize as run_humanize
+
+        try:
+            result = run_humanize(text, aggressiveness=body.aggressiveness)
+        except ValueError as exc:  # unknown aggressiveness level
+            raise HTTPException(status_code=400, detail=str(exc))
+        return _ok(result.as_dict())
 
     # Mounted last on purpose: a StaticFiles mount at "/" matches every path,
     # so it must sit behind the API routes in the router's ordered list.

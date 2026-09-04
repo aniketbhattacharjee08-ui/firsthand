@@ -23,13 +23,19 @@ import pytest
 
 from humanizer.detectors import DetectorResult, HeuristicDetector
 from humanizer.detectors.local import (
+    ALTERNATIVE_MODERN_MODELS,
     DEFAULT_CLASSIFIER_MODEL,
+    DEFAULT_MODERN_MODEL,
     DEFAULT_PERPLEXITY_MODEL,
+    HEAD_POOLED_SIGMOID,
+    HEAD_SOFTMAX,
     ClassifierDetector,
     EnsembleDetector,
+    ModernDetector,
     PerplexityDetector,
     backend_available,
     resolve_ai_index,
+    resolve_head,
 )
 from humanizer.text import Document
 
@@ -67,6 +73,25 @@ HUMAN_NARRATIVE = (
     "the colour of the paper itself. It records a payment of nine shillings "
     "to a carter whose name appears nowhere else in the surviving records of "
     "the estate, on a date three weeks after the estate was supposedly sold."
+)
+
+
+# A templated LLM-style paragraph in the register the default detector is
+# supposed to catch: hedged, tricolon-heavy, no specifics, closing synthesis.
+# Distinct from REPETITIVE, which is degenerate rather than merely generic.
+AI_STYLE = (
+    "In today's rapidly evolving digital landscape, artificial intelligence has "
+    "become an increasingly important tool for organizations of all sizes. It is "
+    "important to note that the adoption of these technologies requires careful "
+    "consideration of both the opportunities and the challenges involved. On the "
+    "one hand, automation can significantly improve efficiency and reduce "
+    "operational costs. On the other hand, organizations must ensure that "
+    "appropriate safeguards are in place to protect user privacy and maintain "
+    "trust. Furthermore, the ethical implications of these systems cannot be "
+    "overlooked. By taking a balanced and thoughtful approach, organizations can "
+    "harness the full potential of artificial intelligence while minimizing "
+    "potential risks. Ultimately, success in this area depends on a commitment to "
+    "transparency, accountability, and continuous improvement."
 )
 
 
@@ -120,8 +145,13 @@ def test_constructing_detectors_does_not_load_a_model():
     """Constructors are free; `score()` is what costs 500MB."""
     p = PerplexityDetector()
     c = ClassifierDetector()
+    m = ModernDetector()
     assert p.model_name == DEFAULT_PERPLEXITY_MODEL
     assert c.model_name == DEFAULT_CLASSIFIER_MODEL
+    assert m.model_name == DEFAULT_MODERN_MODEL
+    # 1.74GB of DeBERTa has not been touched: the head is not even resolved
+    # until the config has been read inside `score()`.
+    assert m.head is None
     # No forward pass has happened, so nothing about the model is known yet.
     assert p.ppl_center > 0
 
@@ -131,7 +161,7 @@ def test_constructing_detectors_does_not_load_a_model():
 
 def test_available_matches_backend_and_never_raises():
     """`available()` answers a bool in every environment, extra or not."""
-    for detector in (PerplexityDetector(), ClassifierDetector()):
+    for detector in (ModernDetector(), PerplexityDetector(), ClassifierDetector()):
         value = detector.available()
         assert isinstance(value, bool)
         if not backend_available():
@@ -216,6 +246,213 @@ class TestResolveAiIndex:
         index, how = resolve_ai_index({0: "LABEL_0", 1: "LABEL_1"}, "who/knows")
         assert how == "assumed"
         assert index in (0, 1)
+
+
+class TestResolveHead:
+    """Which classification head a checkpoint needs.
+
+    Getting this wrong is quieter than getting the label index wrong.
+    desklib's config.json advertises `num_labels: 2` with LABEL_0/LABEL_1, but
+    the checkpoint's trained head is a single logit on a mean-pooled encoder.
+    Loading it with `AutoModelForSequenceClassification` succeeds, discards the
+    trained classifier, and returns confident-looking numbers from a randomly
+    initialised head.
+    """
+
+    def test_desklib_architecture_needs_the_pooled_sigmoid_head(self):
+        head, how = resolve_head(["DesklibAIDetectionModel"], DEFAULT_MODERN_MODEL)
+        assert head == HEAD_POOLED_SIGMOID
+        assert how == "architecture:DesklibAIDetectionModel"
+
+    def test_an_ordinary_sequence_classifier_is_softmax(self):
+        head, how = resolve_head(["RobertaForSequenceClassification"], "who/knows")
+        assert head == HEAD_SOFTMAX
+        assert how == "default"
+
+    def test_no_architectures_at_all_defaults_to_softmax(self):
+        assert resolve_head([], "")[0] == HEAD_SOFTMAX
+        assert resolve_head(None, "")[0] == HEAD_SOFTMAX
+
+    def test_alternatives_are_registered_with_a_head(self):
+        for name, head in ALTERNATIVE_MODERN_MODELS.items():
+            assert head in (HEAD_SOFTMAX, HEAD_POOLED_SIGMOID), name
+            assert resolve_head([], name) == (head, "known-model")
+
+
+# ---------------------------------------------------------- modern detector
+
+
+@requires_backend
+class TestModernDetector:
+    """The default engine.
+
+    Every assertion here is an ordering or a shape, never an absolute
+    probability, with one exception: the AI-vs-human gap on the two fixtures is
+    wide enough (1.000 vs 0.34 as measured) that asserting a 0.3 margin is a
+    statement about the model working at all rather than a fitted threshold.
+    """
+
+    def test_head_is_read_from_the_config_not_assumed(self):
+        raw = ModernDetector(score_sentences=False).score(AI_STYLE).raw
+        assert raw["head"] == HEAD_POOLED_SIGMOID
+        assert raw["head_source"] == "architecture:DesklibAIDetectionModel"
+        # A single-logit sigmoid head has no label index to resolve.
+        assert raw["ai_index"] is None
+        assert raw["model"] == DEFAULT_MODERN_MODEL
+
+    def test_templated_ai_prose_outscores_human_narrative(self):
+        detector = ModernDetector(score_sentences=False)
+        ai = detector.score(AI_STYLE).ai_probability
+        human = detector.score(HUMAN_NARRATIVE).ai_probability
+        assert ai - human > 0.3, (ai, human)
+        assert detector.score(AI_STYLE).label == "ai"
+
+    def test_sentence_scores_match_the_document_segmentation(self):
+        """The frontend heatmap indexes these against /api/analyze's rows."""
+        result = ModernDetector().score(HUMAN_NARRATIVE)
+        expected = Document.parse(HUMAN_NARRATIVE).n_sentences
+        assert len(result.sentence_scores) == expected
+        assert result.raw["n_sentences"] == expected
+        assert result.raw["n_scored_sentences"] >= 1
+        assert all(0.0 <= s <= 1.0 for s in result.sentence_scores)
+
+    def test_sentence_scoring_can_be_switched_off(self):
+        """Off still returns one row per sentence, inheriting the document."""
+        result = ModernDetector(score_sentences=False).score(HUMAN_NARRATIVE)
+        assert len(result.sentence_scores) == Document.parse(HUMAN_NARRATIVE).n_sentences
+        assert result.raw["n_scored_sentences"] == 0
+        assert set(result.sentence_scores) == {result.ai_probability}
+
+    def test_short_sentences_inherit_the_document_score(self):
+        text = "Yes. " + HUMAN_NARRATIVE
+        result = ModernDetector().score(text)
+        assert result.sentence_scores[0] == pytest.approx(result.ai_probability)
+
+    def test_raw_carries_every_documented_field(self):
+        raw = ModernDetector(score_sentences=False).score(HUMAN_NARRATIVE).raw
+        for key in (
+            "method",
+            "model",
+            "head",
+            "head_source",
+            "n_chunks",
+            "chunk_probabilities",
+            "mean_chunk_probability",
+            "max_chunk_probability",
+            "window_tokens",
+            "n_tokens",
+            "n_sentences",
+            "n_scored_sentences",
+            "sentence_scores_are_unreliable",
+            "architecture_class",
+            "is_gptzero",
+            "gptzero_relationship",
+            "thresholds_are_calibrated",
+            "calibration_note",
+            "below_reliable_length",
+        ):
+            assert key in raw, key
+        assert raw["is_gptzero"] is False
+        assert raw["thresholds_are_calibrated"] is False
+        assert raw["sentence_scores_are_unreliable"] is True
+
+    def test_it_never_claims_to_be_gptzero(self):
+        """Non-negotiable, and asserted at the detector as well as the API."""
+        raw = ModernDetector(score_sentences=False).score(AI_STYLE).raw
+        assert raw["is_gptzero"] is False
+        assert "proprietary" in raw["gptzero_relationship"]
+        assert "No relationship" in raw["gptzero_relationship"] or (
+            "None." in raw["gptzero_relationship"]
+        )
+
+    def test_long_document_is_chunked_and_every_token_is_scored(self):
+        text = (HUMAN_NARRATIVE + " ") * 12
+        result = ModernDetector(score_sentences=False).score(text)
+        assert result.raw["n_chunks"] > 1
+        assert sum(result.raw["chunk_tokens"]) == result.raw["n_tokens"]
+        assert len(result.raw["chunk_probabilities"]) == result.raw["n_chunks"]
+        # The headline number is the weighted mean; the max is reported beside
+        # it because a partly generated document only shows up in one window.
+        assert result.ai_probability == pytest.approx(
+            result.raw["mean_chunk_probability"]
+        )
+        assert result.raw["max_chunk_probability"] >= result.ai_probability - 1e-9
+
+    def test_short_input_is_a_single_chunk_and_flagged_as_short(self):
+        result = ModernDetector(score_sentences=False).score("A short sentence here.")
+        assert result.raw["n_chunks"] == 1
+        assert result.raw["below_reliable_length"] is True
+        assert result.confidence == "low"
+
+    def test_empty_text_is_rejected(self):
+        with pytest.raises(ValueError):
+            ModernDetector().score("")
+
+    def test_result_is_deterministic(self):
+        detector = ModernDetector()
+        a = detector.score(HUMAN_NARRATIVE)
+        b = detector.score(HUMAN_NARRATIVE)
+        assert a.ai_probability == pytest.approx(b.ai_probability)
+        assert a.sentence_scores == pytest.approx(b.sentence_scores)
+
+    def test_a_softmax_alternative_reads_its_label_order_from_the_config(self):
+        """The other supported head shape, on a model that publishes labels."""
+        name = "andreas122001/roberta-academic-detector"
+        detector = ModernDetector(model_name=name, score_sentences=False)
+        if not detector.available():
+            pytest.skip(detector.unavailable_reason() or "unavailable")
+        try:
+            raw = detector.score(AI_STYLE).raw
+        except RuntimeError as exc:
+            pytest.skip(f"could not fetch {name}: {exc}")
+        assert raw["head"] == HEAD_SOFTMAX
+        assert raw["ai_index_source"] == "id2label"
+        assert "machine" in str(raw["ai_label"]).lower()
+
+    def test_missing_model_reports_unavailable_rather_than_raising_forever(self):
+        detector = ModernDetector(model_name="humanizer-test/not-a-real-detector")
+        with pytest.raises(RuntimeError) as exc:
+            detector.score("Some text to score. And a second sentence.")
+        assert "Could not load" in str(exc.value)
+        assert detector.available() is False
+        assert detector.unavailable_reason()
+
+
+@requires_backend
+@pytest.mark.skipif(not PMC_DIR.is_dir(), reason="PMC corpus not present")
+def test_modern_detector_does_better_on_academic_prose_than_perplexity():
+    """The reason the default moved, asserted rather than asserted-about.
+
+    `test_academic_prose_is_a_false_positive` below pins the old default
+    labelling genuine human PMC paragraphs as AI. This pins that the new
+    default does not. Measured over 14 human paragraphs and 14 written AI-style
+    paragraphs the modern detector separated them at 1.000 pairwise with 1 of
+    14 human paragraphs over 0.5, against 0.740 and 13 of 14 for perplexity;
+    here we check a cheaper five-paragraph slice of the same claim, so the
+    assertion is "a majority of real human academic paragraphs are not
+    flagged", not a reproduction of the benchmark.
+
+    This is the failure mode that makes detectors harmful. research/01 §5:
+    Liang et al. measured 61.3% false positives on TOEFL essays from the
+    perplexity signal. A detector that flags formulaic or non-native human
+    writing accuses real people, so the false-positive side is what is pinned.
+    """
+    paragraphs = pmc_paragraphs(limit=5)
+    if len(paragraphs) < 3:
+        pytest.skip("not enough usable PMC paragraphs")
+
+    detector = ModernDetector(score_sentences=False)
+    probabilities = [detector.score(text).ai_probability for _, text in paragraphs]
+    flagged = sum(1 for p in probabilities if p >= 0.5)
+    assert flagged <= len(probabilities) // 2, (
+        "The modern detector started flagging human academic prose. That is "
+        "the exact failure that motivated replacing the perplexity default, "
+        f"so it is a regression, not a threshold to tune. probabilities="
+        f"{probabilities}"
+    )
+    # And it must still fire on the templated AI paragraph, or the line above
+    # is satisfied by a detector that simply says "human" to everything.
+    assert detector.score(AI_STYLE).ai_probability >= 0.5
 
 
 # ------------------------------------------------------ perplexity detector
@@ -607,11 +844,32 @@ class TestDetectEndpoint:
         ):
             assert key in row, key
 
-    def test_null_detectors_runs_the_default_set(self, client):
+    def test_null_detectors_runs_the_single_default_engine(self, client):
+        """One engine by default, and it is the modern one.
+
+        The UI shows a single score. Returning three disagreeing percentages,
+        two of them from methods measured at or below chance on academic
+        prose, invited callers to average them.
+        """
         r = client.post("/api/detect", json={"text": HUMAN_NARRATIVE})
         assert r.status_code == 200
         names = [row["name"] for row in r.json()["detectors"]]
-        assert names == ["heuristic", "perplexity", "classifier"]
+        assert names == ["modern"]
+
+    def test_the_legacy_engines_are_still_reachable_by_name(self, client):
+        """Kept, not deleted. The measured finding about them is the point."""
+        r = client.post(
+            "/api/detect",
+            json={
+                "text": HUMAN_NARRATIVE,
+                "detectors": ["heuristic", "perplexity", "classifier", "ensemble"],
+            },
+        )
+        assert r.status_code == 200
+        names = [row["name"] for row in r.json()["detectors"]]
+        assert names == ["heuristic", "perplexity", "classifier", "ensemble"]
+        for row in r.json()["detectors"]:
+            assert row["error"] is None or "Unknown detector" not in row["error"]
 
     def test_unknown_detector_is_a_row_not_a_500(self, client):
         r = client.post(
@@ -674,6 +932,22 @@ class TestDetectEndpoint:
         assert "Not GPTZero" in disclaimer
         assert "proprietary" in disclaimer
 
+    def test_disclaimer_names_the_default_model_and_its_relationship(self, client):
+        """The disclaimer has to describe what actually ran.
+
+        Naming the checkpoint is what makes the claim checkable: a reader can
+        go and look at desklib/ai-text-detector-v1.01 and confirm both that it
+        is a real fine-tuned transformer and that it is not GPTZero's.
+        """
+        body = client.post(
+            "/api/detect", json={"text": HUMAN_NARRATIVE, "detectors": ["heuristic"]}
+        ).json()
+        disclaimer = body["disclaimer"]
+        assert "desklib/ai-text-detector-v1.01" in disclaimer
+        assert "fine-tuned" in disclaimer
+        assert "no relationship" in disclaimer.lower()
+        assert "modern" in body["known_detectors"]
+
     def test_detect_reports_the_backend_capability(self, client):
         """Capability flags ride on /api/detect, not /api/health.
 
@@ -697,6 +971,22 @@ class TestDetectEndpoint:
         assert row["available"] is True
         assert len(row["sentence_scores"]) == body["n_sentences"]
         assert len(body["sentences"]) == body["n_sentences"]
+
+    @requires_backend
+    def test_modern_row_carries_real_per_sentence_numbers(self, client):
+        """The heatmap needs one row per sentence from the default engine."""
+        body = client.post(
+            "/api/detect",
+            json={"text": HUMAN_NARRATIVE, "detectors": ["modern"]},
+        ).json()
+        row = body["detectors"][0]
+        if not row["available"]:
+            pytest.skip(row["error"])
+        assert len(row["sentence_scores"]) == body["n_sentences"]
+        assert row["raw"]["n_scored_sentences"] >= 1
+        # Distinct values, i.e. actually scored rather than the document score
+        # copied into every slot.
+        assert len(set(row["sentence_scores"])) > 1
 
     @requires_backend
     def test_perplexity_row_exposes_burstiness(self, client):
