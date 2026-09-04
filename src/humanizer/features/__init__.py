@@ -20,6 +20,7 @@ __all__ = [
     "extract_from_document",
     "feature_names",
     "band_report",
+    "syntax_available",
     "FEATURE_ORDER",
 ]
 
@@ -58,11 +59,31 @@ def feature_names(feats: Dict[str, float], include_size: bool = False) -> List[s
 
 
 def band_report(feats: Dict[str, float]) -> Dict[str, str]:
-    """Human-band checks across every module that defines them."""
+    """Human-band checks across every module that defines them.
+
+    Syntax bands are added only when the parsed features are present, so the
+    report stays consistent whether or not the optional backend ran.
+    """
     out: Dict[str, str] = {}
     out.update(shape.band_report(feats))
     out.update(punctuation.band_report(feats))
+    if any(name.startswith("syn_") for name in feats):
+        try:
+            from . import syntax
+        except ImportError:
+            pass
+        else:
+            out.update(syntax.band_report(feats))
     return out
+
+
+def syntax_available() -> bool:
+    """Whether the optional spaCy clause-level backend can run."""
+    try:
+        from . import syntax
+    except ImportError:
+        return False
+    return syntax.available()
 
 
 # Canonical ordering for the reference-distribution vectors. Computed lazily

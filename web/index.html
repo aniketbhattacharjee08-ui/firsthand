@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>humanizer — Stage 0 measurement</title>
+<meta name="description" content="Per-sentence detection risk and writing quality, measured against human academic reference distributions.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#editor">Skip to the writing canvas</a>
+
+<header class="bar" role="banner">
+  <div class="bar-left">
+    <span class="wordmark">humanizer</span>
+    <span class="stage-tag">Stage&nbsp;0 · measurement only, no rewriting</span>
+  </div>
+
+  <div class="bar-right">
+    <p id="health" class="pill pill-wait" role="status" aria-live="polite">checking API…</p>
+
+    <label class="field">
+      <span class="field-label">Reference corpus</span>
+      <select id="reference-select">
+        <option value="">none (bands only)</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Sample</span>
+      <select id="sample-select">
+        <option value="">load…</option>
+        <option value="ai">AI-ish draft</option>
+        <option value="human">Human-ish draft</option>
+        <option value="blank">Empty canvas</option>
+      </select>
+    </label>
+
+    <button id="analyze-btn" class="btn btn-primary" type="button">
+      Analyze <kbd class="kbd">Ctrl</kbd><kbd class="kbd">&crarr;</kbd>
+    </button>
+
+    <button id="theme-btn" class="btn" type="button" aria-label="Switch colour scheme" title="Switch colour scheme">
+      <span id="theme-label">Auto</span>
+    </button>
+  </div>
+</header>
+
+<p id="mock-banner" class="banner" hidden>
+  <strong>Mock mode.</strong>
+  <span id="mock-banner-text">Numbers below come from a reduced in-browser reimplementation of the
+  Stage&nbsp;0 extractor, not from the Python service. Feature definitions match, thresholds are
+  abridged, and no reference distribution or trained detector is involved. Do not quote these figures.</span>
+  <button id="mock-exit" class="linkish" type="button">Try the live API again</button>
+</p>
+
+<main class="layout">
+
+  <!-- ─────────────────── writing canvas ─────────────────── -->
+  <section class="canvas-col" aria-label="Writing canvas">
+    <div class="canvas-head">
+      <div class="canvas-head-left">
+        <h1 class="canvas-title">Document</h1>
+        <p class="canvas-sub" id="doc-counts">no text yet</p>
+      </div>
+      <div class="legend" aria-label="Risk ramp legend">
+        <span class="legend-label">sentence risk</span>
+        <span class="ramp" aria-hidden="true">
+          <i class="risk-0"></i><i class="risk-1"></i><i class="risk-2"></i><i class="risk-3"></i><i class="risk-4"></i><i class="risk-5"></i>
+        </span>
+        <span class="legend-ends"><span>0.00</span><span>1.00</span></span>
+        <span class="legend-note">dotted = low confidence · green and red are reserved for the rewrite diff</span>
+      </div>
+    </div>
+
+    <div class="canvas-scroll">
+      <div id="editor"
+           class="canvas"
+           contenteditable="true"
+           spellcheck="false"
+           role="textbox"
+           aria-multiline="true"
+           aria-label="Essay text. Move the caret into a sentence to inspect its measurements."></div>
+    </div>
+
+    <div class="canvas-foot">
+      <p class="advisory" id="advisory-note">
+        Sentence shading is advisory. Per report&nbsp;07 the document verdict is the argmax of a
+        three-way head, not an aggregate of sentence scores, so a shaded sentence is a described
+        pattern and not a share of the score.
+      </p>
+      <p class="status-line" id="status-line" role="status" aria-live="polite">Idle.</p>
+    </div>
+  </section>
+
+  <!-- ─────────────────── instrument rail ─────────────────── -->
+  <aside class="rail" aria-label="Measurements">
+
+    <section class="panel dials-panel" aria-labelledby="dials-h">
+      <h2 class="panel-h" id="dials-h">Two dials, always</h2>
+      <div class="dials">
+        <figure class="dial" id="dial-risk">
+          <svg viewBox="0 0 120 68" class="gauge" aria-hidden="true">
+            <path class="gauge-track" d="M10 62 A50 50 0 0 1 110 62"></path>
+            <path class="gauge-fill gauge-fill-risk" d="M10 62 A50 50 0 0 1 110 62"></path>
+          </svg>
+          <figcaption>
+            <span class="dial-value num" id="risk-value">—</span>
+            <span class="dial-name">detection risk</span>
+            <span class="dial-source" id="risk-source">no measurement yet</span>
+          </figcaption>
+        </figure>
+
+        <figure class="dial" id="dial-quality">
+          <svg viewBox="0 0 120 68" class="gauge" aria-hidden="true">
+            <path class="gauge-track" d="M10 62 A50 50 0 0 1 110 62"></path>
+            <path class="gauge-fill gauge-fill-quality" d="M10 62 A50 50 0 0 1 110 62"></path>
+          </svg>
+          <figcaption>
+            <span class="dial-value num" id="quality-value">—</span>
+            <span class="dial-name">writing quality
+              <button class="info" type="button" id="quality-info" aria-expanded="false"
+                      aria-controls="quality-formula" aria-label="How writing quality is computed">?</button>
+            </span>
+            <span class="dial-source" id="quality-source">heuristic placeholder</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="formula" id="quality-formula" hidden>
+        <p><strong>Heuristic placeholder, not a trained essay scorer.</strong> Report&nbsp;09 records
+        QWK&nbsp;0.841 for a fine-tuned RoBERTa on PERSUADE&nbsp;2.0 and 0.042–0.081 for a frontier LLM
+        zero-shot; nothing here is either. This number is computed in the browser from the returned
+        features and findings so that risk is never shown alone.</p>
+        <p class="formula-body" id="quality-breakdown"></p>
+      </div>
+
+      <p class="reference-line" id="reference-line">No reference distribution selected.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="sel-h">
+      <h2 class="panel-h" id="sel-h">Selected sentence</h2>
+      <div id="sentence-inspector" class="inspector">
+        <p class="muted">Click a sentence, or move the caret into one, to see what was measured.</p>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="meas-h">
+      <h2 class="panel-h" id="meas-h">Measurements
+        <span class="panel-h-note">value · human academic band · state</span>
+      </h2>
+      <div id="measurements" class="measure-list">
+        <p class="muted">No analysis yet.</p>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="find-h">
+      <h2 class="panel-h" id="find-h">Findings
+        <span class="panel-h-note">each with its grade cost</span>
+      </h2>
+      <div id="findings" class="findings">
+        <p class="muted">No analysis yet.</p>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="flag-h">
+      <h2 class="panel-h" id="flag-h">Highest-risk sentences</h2>
+      <div id="flagged" class="flagged">
+        <p class="muted">No analysis yet.</p>
+      </div>
+    </section>
+
+  </aside>
+</main>
+
+<script src="app.js" defer></script>
+</body>
+</html>

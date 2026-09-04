@@ -20,6 +20,8 @@ syntax = ["spacy>=3.7"]
 detectors = ["torch>=2.0", "transformers>=4.40"]
 # Grammar/mechanics gating.
 quality = ["language-tool-python>=2.7"]
+# HTTP API and static frontend host. httpx is needed by fastapi's TestClient.
+api = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
 dev = ["pytest>=7.4"]
 
 [project.scripts]

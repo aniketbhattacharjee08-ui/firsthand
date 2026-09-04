@@ -5,6 +5,7 @@
     humanizer build-reference GENRE PATTERN --out FILE
     humanizer calibrate --scores FILE
     humanizer plan --mu 0.6 --target 0.99 --rho 0.2
+    humanizer serve --port 8000 --reference data/reference/academic.json
 """
 
 from __future__ import annotations
@@ -156,6 +157,24 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Serve the HTTP API and, when web/ exists, the static frontend."""
+    try:
+        from .api import run as run_server
+    except ImportError as exc:
+        print(
+            f"the API needs the 'api' extra: pip install -e '.[api]'  ({exc})",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"humanizer API on http://{args.host}:{args.port}")
+    if args.reference:
+        print(f"default reference: {args.reference}")
+    run_server(host=args.host, port=args.port, reference=args.reference)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="humanizer", description="Stage 0 analysis toolkit."
@@ -191,6 +210,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mu", type=float, default=0.6)
     p.add_argument("--target", type=float, default=0.99)
     p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("serve", help="run the HTTP API and web frontend")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument(
+        "--reference",
+        help="default reference distribution (name or path) for /api/analyze",
+    )
+    p.set_defaults(func=cmd_serve)
 
     return parser
 
