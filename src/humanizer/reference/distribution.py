@@ -145,25 +145,55 @@ class ReferenceDistribution:
 
     # -------------------------------------------------------------- distance
 
+    #: A feature must be non-zero in at least this share of reference
+    #: documents to be trusted for distance scoring.
+    MIN_NONZERO_SHARE = 0.15
+    #: ...and take at least this many distinct values.
+    MIN_DISTINCT_VALUES = 4
+
     def _active_mask(self, feats: Optional[Dict[str, float]] = None) -> np.ndarray:
         """Features usable for a distance computation.
 
-        A feature is usable when it varies in the reference corpus (constant
-        features carry no information and make the covariance singular) and,
-        when a candidate is supplied, is present and finite in that candidate.
-        Restricting to the intersection lets short or single-paragraph
-        documents still be scored on the features they do have, instead of
-        collapsing the whole distance to NaN.
+        Three conditions. The feature must vary in the reference corpus, since
+        constant features carry no information and make the covariance
+        singular. It must be *populated* often enough to support a stable
+        variance estimate. And when a candidate is supplied it must be present
+        and finite there too, so short or single-paragraph documents are still
+        scored on the features they do have rather than collapsing to NaN.
+
+        The population test is not decoration. On a 60-document corpus,
+        `question_mark_per_1k` is zero in nearly every article, so its variance
+        is a rounding artifact and a single question mark in a candidate
+        produced a z-score of +22 and pushed an otherwise ordinary excerpt to
+        the 100th distance percentile. Rare features need a much larger
+        reference corpus before they mean anything.
         """
         sd = self.sd
         scale = np.maximum(np.abs(self.mean), 1.0)
         mask = sd > (1e-6 * scale)
+
+        if self.n_documents >= 10:
+            nonzero_share = (np.abs(self.matrix) > 0).mean(axis=0)
+            mask = mask & (nonzero_share >= self.MIN_NONZERO_SHARE)
+            distinct = np.array(
+                [
+                    len(np.unique(np.round(self.matrix[:, i], 9)))
+                    for i in range(self.matrix.shape[1])
+                ]
+            )
+            mask = mask & (distinct >= self.MIN_DISTINCT_VALUES)
+
         if feats is not None:
             available = np.array(
                 [_finite(feats.get(name)) for name in self.feature_names]
             )
             mask = mask & available
         return mask
+
+    def excluded_features(self) -> List[str]:
+        """Reference features too sparse or too constant to score against."""
+        mask = self._active_mask()
+        return [n for n, keep in zip(self.feature_names, mask) if not keep]
 
     def _whitener(self, mask: Optional[np.ndarray] = None, shrinkage: float = 0.15):
         """Return (mask, mean, sd, inverse correlation matrix).

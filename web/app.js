@@ -157,19 +157,27 @@
   /* ── samples ───────────────────────────────────────────────────────────── */
 
   var SAMPLES = {
+    /* An AI-ish draft: uniform sentence lengths, formal connectives at the head
+       of every paragraph, weighted AI vocabulary, tricolons, "not X but Y", and
+       no concrete specifics anywhere. */
     ai: [
-      'In today\'s rapidly evolving academic landscape, the study of urban green space has become a pivotal area of inquiry. Researchers have begun to delve into the intricate relationship between vegetation cover and public health outcomes. Moreover, the topic underscores a broader shift in how cities are planned, managed, and understood. It is important to note that this shift is multifaceted, complex, and ongoing.',
-      'Furthermore, a comprehensive review of the literature reveals several key themes. First, green space is consistently associated with improved mental health indicators. Second, the effect appears robust across a range of demographic groups. Third, the mechanisms remain the subject of considerable debate. These findings collectively showcase the significance of the topic.',
-      'Additionally, it is worth noting that methodological challenges persist throughout this body of work. Many studies rely on cross-sectional designs that cannot establish causality. Consequently, the evidence base remains somewhat limited in scope. Nevertheless, the overall pattern of results is compelling and noteworthy.',
-      'In conclusion, urban green space represents a rich tapestry of environmental, social, and psychological factors. Future research should delve deeper into the causal mechanisms at play. Ultimately, such work will pave the way for more effective and equitable urban policy. This is not merely an academic exercise, but a pressing societal need.'
+      'The relationship between urban green space and public health has become a pivotal area of academic inquiry. Researchers across a range of disciplines have begun to delve into the mechanisms that connect vegetation cover to wellbeing. Moreover, this work underscores a broader shift in how modern cities are planned, managed and understood. It is important to note that this shift is multifaceted, ongoing and highly context dependent.',
+      'Furthermore, a comprehensive review of the existing literature reveals several recurring themes worth considering. First, access to green space is consistently associated with improved mental health indicators. Second, the observed effect appears robust across a wide range of demographic groups. Third, the underlying causal mechanisms remain the subject of considerable scholarly debate. These findings collectively demonstrate the significance of the topic for policy makers.',
+      'Additionally, it is worth noting that methodological challenges persist throughout this body of research. Many studies rely on cross sectional designs that cannot establish causal direction with confidence. Consequently, the strength of the evidence base remains somewhat limited in scope. Nevertheless, the overall pattern of reported results is compelling and deserves attention. Therefore, further investigation is not merely desirable but genuinely necessary.',
+      'The implications of these findings extend well beyond the boundaries of a single discipline. Planners, clinicians and community organisations all have a crucial stake in the eventual outcome. Similarly, the instruments used to measure exposure to green space deserve renewed scrutiny. Overall, the field now stands at an important juncture in its development.',
+      'In conclusion, urban green space represents an intricate intersection of environmental, social and psychological factors. Future research should explore the causal pathways at play in far greater depth. Ultimately, such work will pave the way for more effective and more equitable urban policy. This is not simply an academic exercise, but a pressing societal concern.'
     ].join('\n\n'),
 
+    /* A human-ish draft: sentence-length variation inside the human band with
+       no long/short alternation, paragraph lengths that vary widely, dated and
+       numbered specifics, nominalized and moderately passive academic register,
+       a stated counterargument, and no AI vocabulary. */
     human: [
-      'Between 1993 and 2011 the city of Leipzig lost roughly a fifth of its population, and the vacant lots left behind were converted, piecemeal and without much of a plan, into small parks. The conversions were documented well enough to support a natural experiment. Kabisch and Haase used them for exactly that.',
-      'Their result is modest. Residents living within 300 metres of a converted lot reported better general health on the SF-12 than residents 800 metres away, with an effect size of about 0.14 standard deviations after adjustment for income, age and prior health status. The gap widened slightly over the study period, though the confidence interval at the final wave includes zero, and the authors say so.',
-      'What makes the Leipzig data unusual is that the assignment of green space was determined by demolition schedules rather than by neighbourhood affluence, which breaks the confounding that damages most cross-sectional work in this literature. It does not break all of it. Demolition was concentrated in the northeast, and the northeast differed from the rest of the city in ways that were not measured at baseline.',
-      'A second objection is harder to dismiss. Self-reported health was collected by postal survey, and response rates near the converted lots ran eleven points higher than elsewhere. If people who felt healthier were also more inclined to return a survey about their neighbourhood park, the effect is inflated by an unknown amount. The authors acknowledge the problem in a footnote and do not attempt to correct for it.',
-      'I take the Leipzig study as suggestive rather than decisive. The design is better than what preceded it, the measured effect is small, and the direction of the likely bias is toward the finding. That combination argues for replication in a city where the demolition pattern was not spatially clustered.'
+      'Between 1993 and 2011 Leipzig lost close to a fifth of its population, and the vacant lots that demolition left behind were converted, piecemeal and without any coordinating plan, into small neighbourhood parks. The sequence of demolitions was determined by structural condition and by the availability of federal reconstruction money, not by the affluence of the surrounding blocks. That makes the allocation of new green space close to exogenous. Kabisch and Haase treated the sequence as a natural experiment, and the municipal documentation was complete enough to support the design. Their analysis covers 4,100 households across three survey waves. Attrition between the first wave and the last ran to eleven per cent, which is high but not unusual for a postal instrument of this length.',
+      'The measured effect is small. Residents within 300 metres of a converted lot reported better general health on the SF-12 than residents at 800 metres, by roughly 0.14 standard deviations after adjustment for income, age and prior diagnosis. The gap widened slightly across the study period. At the final wave the confidence interval includes zero, and the authors say so in the text rather than burying it in an appendix.',
+      'Two objections deserve more attention than the published discussion gives them. The first is spatial. Demolition was concentrated in the northeast of the city, and the northeast differed from the remaining districts in ways that were measured only imperfectly at baseline, among them the density of ground-floor commercial space and the proportion of households in receipt of housing assistance. The second objection is procedural, and it is harder to dismiss. Self-reported health was collected by postal questionnaire, and the response rate near the converted lots ran eleven points above the rate elsewhere. If residents in better health were also more willing to return a survey about their own neighbourhood park, the estimated benefit is inflated by an amount the data cannot recover. The authors acknowledge that problem in a footnote and make no attempt at correction.',
+      'None of this makes the study worthless. It makes the interpretation conditional.',
+      'On balance the Leipzig evidence is suggestive rather than decisive, and the reasons are worth stating precisely. The identification strategy is stronger than anything that preceded it in the German literature. The estimated benefit is small enough to be produced by residual confounding alone, and the direction of the likely selection bias runs toward the reported finding rather than against it. A replication in a city where demolition was dispersed rather than clustered would settle most of the remaining doubt. Halle offers a plausible setting, since its own demolition programme was administered building by building between 1999 and 2009.'
     ].join('\n\n')
   };
 
@@ -542,7 +550,9 @@
 
   var PASSIVE_RE = /\b(?:is|are|was|were|be|been|being|am)\s+(?:\w+ly\s+)?(?:\w+ed|born|known|shown|given|taken|seen|made|found|used|held|done|built|written|drawn|brought|thought)\b/g;
   var NOMINAL_RE = /\b\w{5,}(?:tion|tions|sion|sions|ment|ments|ness|ity|ities|ance|ence|ancy|ency|ism|isms)\b/g;
-  var CONTRACTION_RE = /\b\w+['’](?:s|t|re|ve|ll|d|m)\b/g;
+  /* possessive "today's" is not a contraction; only unambiguous suffixes,
+     plus pronoun + 's/'d, are counted */
+  var CONTRACTION_RE = /\b(?:\w+['’](?:re|ve|ll|m|t)|(?:it|he|she|that|there|here|what|who|where|when|how|let|one|nobody|somebody)['’](?:s|d))\b/gi;
 
   function mockAnalyze(text, referenceName) {
     var paras = paragraphRanges(text);
@@ -735,7 +745,7 @@
       if (/\b[A-Z][a-z]+\s+(?:and|&)?\s*[A-Z][a-z]+\b/.test(s.text)) local -= 0.04;
       return {
         index: s.index, text: s.text, paragraph_index: s.paragraph_index,
-        length: s.length, risk: clamp(base * 0.75 + local + 0.05, 0.02, 0.98)
+        length: s.length, risk: clamp(0.12 + 0.60 * base + local, 0.02, 0.98)
       };
     });
 

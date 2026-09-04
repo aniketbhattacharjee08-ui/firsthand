@@ -164,3 +164,45 @@ class TestPersistence:
         assert loaded.mahalanobis(feats) == pytest.approx(
             reference.mahalanobis(feats), rel=1e-9
         )
+
+
+class TestSparseFeatureGuard:
+    """Rare features need a big reference corpus before they mean anything.
+
+    On the 60-document PMC corpus, `question_mark_per_1k` is zero in nearly
+    every article. Its variance is then a rounding artifact, and one question
+    mark in a candidate produced a z-score of +22 that pushed an ordinary
+    excerpt to the 100th distance percentile.
+    """
+
+    def test_sparse_feature_is_excluded(self, reference):
+        rows = []
+        for i in range(40):
+            feats = {"dense": float(i), "sparse": 5.0 if i == 0 else 0.0}
+            rows.append(feats)
+        ref = ReferenceDistribution.from_feature_dicts("t", rows)
+        assert "sparse" in ref.excluded_features()
+        assert "dense" not in ref.excluded_features()
+
+    def test_low_cardinality_feature_is_excluded(self):
+        rows = [
+            {"dense": float(i), "binary": float(i % 2)} for i in range(40)
+        ]
+        ref = ReferenceDistribution.from_feature_dicts("t", rows)
+        assert "binary" in ref.excluded_features()
+
+    def test_guard_is_off_for_tiny_corpora(self):
+        # Under 10 documents there is no basis for calling anything sparse.
+        rows = [{"a": float(i), "b": 1.0 if i == 0 else 0.0} for i in range(5)]
+        ref = ReferenceDistribution.from_feature_dicts("t", rows)
+        assert "b" not in ref.excluded_features()
+
+    def test_discrimination_survives_the_guard(self, reference):
+        in_family = extract_features(synthetic_document(4242))
+        flat = " ".join(
+            ["The study shows a consistent effect across all measured groups."] * 40
+        )
+        assert (
+            reference.score(in_family)["distance"]
+            < reference.score(extract_features(flat))["distance"]
+        )
