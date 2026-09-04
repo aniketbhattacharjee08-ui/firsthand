@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "humanizer"
+version = "0.1.0"
+description = "Feature extraction, reference distributions, and detector bench for AI-text humanization research"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Clause-level syntax. Closes the parser gap flagged in research/10.
+syntax = ["spacy>=3.7"]
+# Local detector bench. Large download; only needed for Stage 3+.
+detectors = ["torch>=2.0", "transformers>=4.40"]
+# Grammar/mechanics gating.
+quality = ["language-tool-python>=2.7"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+humanizer = "humanizer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
