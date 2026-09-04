@@ -16,7 +16,11 @@ dependencies = [
 [project.optional-dependencies]
 # Clause-level syntax. Closes the parser gap flagged in research/10.
 syntax = ["spacy>=3.7"]
-# Local detector bench. Large download; only needed for Stage 3+.
+# Local detector bench: `humanizer.detectors.local`. Only needed for Stage 3+.
+# ~1.4GB of wheels, plus model weights fetched from the Hugging Face hub on
+# first score(): gpt2 525MB, openai-community/roberta-base-openai-detector
+# 480MB, distilgpt2 339MB if used. CPU-only; no CUDA build is required.
+# Everything degrades to available:false without this extra.
 detectors = ["torch>=2.0", "transformers>=4.40"]
 # Grammar/mechanics gating.
 quality = ["language-tool-python>=2.7"]

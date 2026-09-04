@@ -7,6 +7,7 @@ Endpoints
     POST /api/features            raw feature vector plus human-band verdicts
     GET  /api/references          reference distributions on disk
     GET  /api/reference/{name}    one distribution's summary statistics
+    POST /api/detect              run the local detectors over one document
     POST /api/plan                best-of-N table under candidate correlation
     GET  /                        the static frontend in web/, when present
 
@@ -35,12 +36,25 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
-from ..detectors import HeuristicDetector, pass_rate, required_n
+from ..detectors import (
+    ClassifierDetector,
+    EnsembleDetector,
+    HeuristicDetector,
+    PerplexityDetector,
+    backend_available,
+    pass_rate,
+    required_n,
+)
 from ..eval import analyze
 from ..features import band_report, extract_features
 from ..reference import ReferenceDistribution
 from ..text import Document
 from .models import AnalyzeRequest, FeaturesRequest, PlanRequest, json_safe
+
+try:  # pragma: no cover - `api.models` already raises a readable error first
+    from pydantic import BaseModel, Field
+except ImportError:  # pragma: no cover
+    raise
 
 # research/08 illustration grid, matching `humanizer plan` so the web view and
 # the CLI print the same rows.
@@ -245,6 +259,114 @@ def _ok(payload: Any) -> JSONResponse:
     return JSONResponse(content=json_safe(payload))
 
 
+# ------------------------------------------------------------ /api/detect
+
+# Detector name -> zero-argument factory. Factories, not instances, so that
+# nothing is constructed (and no 500MB of weights is touched) until a request
+# actually names the detector. Instances are then cached on app.state so the
+# model load is paid once per process rather than once per request.
+#
+# `perplexity` and `classifier` need the `detectors` extra (torch,
+# transformers). They are listed here unconditionally on purpose: the endpoint
+# reports `available: false` with the install command rather than pretending
+# the detector does not exist, which is what the frontend needs in order to
+# show a disabled control instead of silently dropping a feature.
+DETECTOR_FACTORIES: Dict[str, Any] = {
+    "heuristic": lambda: HeuristicDetector(),
+    "perplexity": lambda: PerplexityDetector(),
+    "classifier": lambda: ClassifierDetector(),
+    "ensemble": lambda: EnsembleDetector(),
+}
+
+#: Used when the request leaves `detectors` null. Excludes `ensemble` because
+#: it would double-count the three members that are already in the list.
+DEFAULT_DETECTORS = ("heuristic", "perplexity", "classifier")
+
+
+class DetectRequest(BaseModel):
+    """Body for POST /api/detect."""
+
+    text: str = Field(default="", description="Raw document text.")
+    detectors: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Detector names to run. Null runs "
+            f"{list(DEFAULT_DETECTORS)}. Valid names: "
+            f"{sorted(DETECTOR_FACTORIES)}."
+        ),
+    )
+
+
+def _detector_instance(app: FastAPI, name: str) -> Any:
+    """Get or build the process-wide instance of one detector."""
+    cache = app.state.detector_cache
+    if name not in cache:
+        cache[name] = DETECTOR_FACTORIES[name]()
+    return cache[name]
+
+
+def run_detector(app: FastAPI, name: str, text: str) -> Dict[str, Any]:
+    """Run one detector and describe the outcome, never raising.
+
+    A missing model is a normal state, not a server fault. research/01 §3.6 and
+    the module docstring of `detectors.local` are blunt that these local models
+    are weak; a caller that cannot get a score still needs the rest of the page
+    to render, so every failure path returns `available: false` plus a message
+    a human can act on, and the HTTP status stays 200.
+    """
+    row: Dict[str, Any] = {
+        "name": name,
+        "available": False,
+        "ai_probability": None,
+        "label": None,
+        "confidence": None,
+        "sentence_scores": [],
+        "raw": {},
+        "error": None,
+    }
+    if name not in DETECTOR_FACTORIES:
+        row["error"] = (
+            f"Unknown detector {name!r}. Valid names: "
+            f"{sorted(DETECTOR_FACTORIES)}."
+        )
+        return row
+
+    try:
+        detector = _detector_instance(app, name)
+    except Exception as exc:  # noqa: BLE001 - construction must not 500
+        row["error"] = f"{type(exc).__name__}: {exc}"
+        return row
+
+    if not detector.available():
+        reason = getattr(detector, "unavailable_reason", lambda: None)()
+        row["error"] = reason or (
+            f"Detector {name!r} reports itself unavailable. "
+            "Local model detectors need: pip install -e '.[detectors]'"
+        )
+        return row
+
+    try:
+        result = detector.score(text)
+    except Exception as exc:  # noqa: BLE001 - a missing download is not a bug
+        # `available()` for the local detectors flips to False after a failed
+        # load, so the next request answers instantly instead of retrying a
+        # download that is not going to work.
+        row["error"] = f"{type(exc).__name__}: {exc}"
+        return row
+
+    row.update(
+        {
+            "available": True,
+            "ai_probability": result.ai_probability,
+            "label": result.label,
+            "confidence": result.confidence,
+            "sentence_scores": list(result.sentence_scores),
+            "raw": result.raw,
+        }
+    )
+    return row
+
+
 # ----------------------------------------------------------------------- app
 
 
@@ -269,6 +391,9 @@ def create_app(
     )
     app.state.store = store
     app.state.default_reference = default_reference
+    # Detector instances are process-wide so that gpt2 and the RoBERTa
+    # detector are loaded once, not per request. Built on first use.
+    app.state.detector_cache = {}
 
     # The frontend is served from the same origin in production, but a dev
     # server on another port is the normal working setup, so localhost in any
@@ -348,6 +473,66 @@ def create_app(
                 "source": ref.source,
                 "n_documents": ref.n_documents,
                 "summary": ref.summary(),
+            }
+        )
+
+    @app.post("/api/detect")
+    def detect_endpoint(body: DetectRequest) -> JSONResponse:
+        """Score one document with each requested detector.
+
+        This endpoint never returns 5xx because a model is missing. Each row
+        carries its own `available` flag and `error` string, so a page can show
+        the heuristic score while the 500MB gpt2 download is still failing.
+
+        On what these detectors are: `heuristic` is the dependency-free
+        baseline, `perplexity` is GPTZero's *original* January-2023 method
+        (per-sentence perplexity under gpt2, burstiness = the SD of those), and
+        `classifier` is OpenAI's open RoBERTa GPT-2 output detector. None of
+        them is GPTZero, whose current model is a proprietary fine-tuned
+        transformer with a hierarchical multi-task head (research/07 §3). The
+        response says so on the wire in `disclaimer` rather than leaving it to
+        the docs, because a percentage on a screen reads as authoritative and
+        these percentages are not.
+        """
+        text = _require_text(body.text)
+        names = list(body.detectors) if body.detectors is not None else list(
+            DEFAULT_DETECTORS
+        )
+        if not names:
+            raise HTTPException(
+                status_code=400,
+                detail="'detectors' must be null or a non-empty list of names.",
+            )
+
+        results = [run_detector(app, name, text) for name in names]
+        doc = Document.parse(text)
+        return _ok(
+            {
+                "detectors": results,
+                "n_sentences": doc.n_sentences,
+                "n_words": doc.n_words,
+                "sentences": [s.text for s in doc.sentences],
+                # Capability flags live here rather than on /api/health,
+                # whose key set is pinned by an existing contract test.
+                # `backend_available` is torch+transformers being importable;
+                # it says nothing about whether the weights are on disk, which
+                # is what each row's own `available`/`error` reports.
+                "backend_available": backend_available(),
+                "known_detectors": sorted(DETECTOR_FACTORIES),
+                "is_gptzero": False,
+                "disclaimer": (
+                    "Not GPTZero. 'perplexity' reproduces GPTZero's original "
+                    "January-2023 published method (per-sentence GPT-2 "
+                    "perplexity plus burstiness, the SD of those "
+                    "per-sentence values); GPTZero abandoned that as a "
+                    "decision rule and today runs a proprietary fine-tuned "
+                    "transformer with a hierarchical multi-task head that "
+                    "cannot be reproduced locally. 'classifier' is OpenAI's "
+                    "2019 RoBERTa GPT-2 output detector. All probabilities "
+                    "here are uncalibrated heuristics; on this repo's own PMC "
+                    "corpus the perplexity method separates AI from human "
+                    "academic prose at 0.583 pairwise, where 0.5 is chance."
+                ),
             }
         )
 
