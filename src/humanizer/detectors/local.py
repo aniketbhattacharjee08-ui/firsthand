@@ -452,6 +452,13 @@ _MODEL_CACHE: Dict[Tuple[str, str], Any] = {}
 # be as fast and as quiet as `available()` implies.
 _LOAD_FAILURES: Dict[Tuple[str, str], str] = {}
 _CACHE_LOCK = threading.Lock()
+#: Held for the whole of a model load. `from_pretrained` is not safe to run
+#: concurrently in one process (transformers materialises weights through a
+#: process-global meta-device patch, and a half-imported module in one thread
+#: is visible to the other), and the API's sync endpoints run in a thread
+#: pool, so /api/detect and /api/analyze fired together used to race here and
+#: cache a broken model or remember a spurious failure for the process life.
+_LOAD_LOCK = threading.RLock()
 
 
 def backend_available() -> bool:
@@ -483,6 +490,12 @@ def clear_model_cache() -> None:
 
 
 def _load(kind: str, model_name: str) -> Tuple[Any, Any]:
+    """Serialised entry point; see `_LOAD_LOCK`."""
+    with _LOAD_LOCK:
+        return _load_unlocked(kind, model_name)
+
+
+def _load_unlocked(kind: str, model_name: str) -> Tuple[Any, Any]:
     """Load and cache `(tokenizer, model)`, in eval mode, on CPU.
 
     Raises `RuntimeError` with the original message when the backend is absent
@@ -691,6 +704,14 @@ def _modern_cache_name(model_name: str, head_override: Optional[str]) -> str:
 
 
 def _load_modern(
+    model_name: str, head_override: Optional[str] = None
+) -> Tuple[Any, Any, str, str, Dict[str, Any]]:
+    """Serialised entry point; see `_LOAD_LOCK`."""
+    with _LOAD_LOCK:
+        return _load_modern_unlocked(model_name, head_override)
+
+
+def _load_modern_unlocked(
     model_name: str, head_override: Optional[str] = None
 ) -> Tuple[Any, Any, str, str, Dict[str, Any]]:
     """Load `(tokenizer, model, head, head_source, load_check)`.

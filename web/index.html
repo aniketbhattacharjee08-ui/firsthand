@@ -3,78 +3,94 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>humanizer — Stage 0 measurement</title>
-<meta name="description" content="Per-sentence detection risk and writing quality, measured against human academic reference distributions.">
+<title>humanizer: measure your draft, then fix it</title>
+<meta name="description" content="Per-sentence detection risk and writing quality, measured against human academic reference distributions. Measure first, then rewrite.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231f6f5c'/><path d='M7 22a9 9 0 0 1 18 0' fill='none' stroke='%23fbfaf7' stroke-width='3' stroke-linecap='round'/><circle cx='16' cy='22' r='2.3' fill='%23fbfaf7'/></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Fraunces (display) · Newsreader (canvas) · IBM Plex Sans (chrome) · IBM Plex Mono (numbers).
+     Loaded non-blocking; styles.css carries full fallback stacks so a blocked or
+     unreachable CDN degrades to system faces rather than to a broken page. -->
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<noscript><link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"></noscript>
+
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <a class="skip-link" href="#editor">Skip to the writing canvas</a>
 
-<header class="bar" role="banner">
-  <div class="bar-left">
+<!-- ══════════════ masthead ══════════════ -->
+<header class="masthead" role="banner">
+  <div class="brand">
     <span class="wordmark">humanizer</span>
-    <span class="stage-tag">Stage&nbsp;0 · measurement only, no rewriting</span>
+    <span class="brand-rule" aria-hidden="true"></span>
+    <span class="brand-tag">See what reads as machine written, then fix it.</span>
   </div>
 
-  <div class="bar-right">
-    <p id="health" class="pill pill-wait" role="status" aria-live="polite">checking API…</p>
-
-    <label class="field">
-      <span class="field-label">Reference corpus</span>
-      <select id="reference-select">
-        <option value="">none (bands only)</option>
-      </select>
-    </label>
-
-    <label class="field">
-      <span class="field-label">Sample</span>
-      <select id="sample-select">
-        <option value="">load…</option>
-        <option value="ai">AI-ish draft</option>
-        <option value="human">Human-ish draft</option>
-        <option value="blank">Empty canvas</option>
-      </select>
-    </label>
-
-    <button id="analyze-btn" class="btn btn-primary" type="button">
-      Analyze <kbd class="kbd">Ctrl</kbd><kbd class="kbd">&crarr;</kbd>
-    </button>
-
-    <button id="theme-btn" class="btn" type="button" aria-label="Switch colour scheme" title="Switch colour scheme">
-      <span id="theme-label">Auto</span>
+  <div class="masthead-right">
+    <p id="health" class="pill" data-kind="wait" role="status" aria-live="polite">Checking the service...</p>
+    <button id="theme-btn" class="btn btn-quiet" type="button" aria-label="Colour scheme: follow system">
+      <span class="btn-sub">Theme</span><span id="theme-label">Auto</span>
     </button>
   </div>
 </header>
 
-<p id="mock-banner" class="banner" hidden>
-  <strong>Mock mode.</strong>
-  <span id="mock-banner-text">Numbers below come from a reduced in-browser reimplementation of the
-  Stage&nbsp;0 extractor, not from the Python service. Feature definitions match, thresholds are
-  abridged, and no reference distribution or trained detector is involved. Do not quote these figures.</span>
-  <button id="mock-exit" class="linkish" type="button">Try the live API again</button>
+<!-- ══════════════ banners ══════════════ -->
+<p id="offline-banner" class="banner banner-warn" role="status" hidden>
+  <strong>You are offline.</strong>
+  <span>The browser reports no network connection, so the service cannot be reached.
+  You can keep writing, and you can switch to mock mode to see the interface with in browser numbers.</span>
+  <button id="offline-mock" class="linkish" type="button">Switch to mock mode</button>
+</p>
+
+<p id="mock-banner" class="banner banner-mock" role="status" hidden>
+  <strong>Mock mode. These numbers are not from the service.</strong>
+  <span>They come from a reduced in browser reimplementation of the extractor. Feature definitions
+  match, thresholds are abridged, and there is no reference distribution and no trained detector
+  behind them. Do not quote these figures anywhere.</span>
+  <button id="mock-exit" class="linkish" type="button">Try the live service again</button>
 </p>
 
 <main class="layout">
 
-  <!-- ─────────────────── writing canvas ─────────────────── -->
-  <section class="canvas-col" aria-label="Writing canvas">
+  <!-- ─────────── the document ─────────── -->
+  <section class="canvas-col" aria-labelledby="canvas-h">
     <div class="canvas-head">
       <div class="canvas-head-left">
-        <h1 class="canvas-title">Document</h1>
-        <p class="canvas-sub" id="doc-counts">no text yet</p>
+        <p class="sec-num">01</p>
+        <h1 class="sec-title" id="canvas-h">Your draft</h1>
+        <p class="sec-sub" id="doc-counts">Nothing yet.</p>
       </div>
-      <div class="legend" aria-label="Risk ramp legend">
-        <span class="legend-label">sentence risk</span>
+
+      <div class="legend">
+        <span class="legend-label" id="legend-label">Sentence risk</span>
         <span class="ramp" aria-hidden="true">
           <i class="risk-0"></i><i class="risk-1"></i><i class="risk-2"></i><i class="risk-3"></i><i class="risk-4"></i><i class="risk-5"></i>
         </span>
-        <span class="legend-ends"><span>0.00</span><span>1.00</span></span>
-        <span class="legend-note">dotted = low confidence · green and red are reserved for the rewrite diff</span>
+        <span class="legend-ends"><span>0.00 calm</span><span>1.00 flagged</span></span>
       </div>
     </div>
 
-    <div class="canvas-scroll">
+    <div class="canvas-scroll" id="canvas-scroll">
+      <div class="empty-state" id="empty-state">
+        <p class="empty-kicker">Start here</p>
+        <h2 class="empty-title">Paste an essay, see which sentences read as machine written, then rewrite them in one click.</h2>
+        <p class="empty-body">
+          Every sentence is measured against distributions taken from real human academic prose.
+          Nothing is sent anywhere except your own local service.
+        </p>
+        <div class="empty-actions">
+          <button class="btn btn-primary" type="button" data-sample="ai">Try it with an example</button>
+          <button class="btn" type="button" data-sample="human">Try a human written one</button>
+        </div>
+        <p class="empty-hint">or just start typing. Analysis runs on its own about a second after you stop.</p>
+      </div>
+
       <div id="editor"
            class="canvas"
            contenteditable="true"
@@ -84,96 +100,209 @@
            aria-label="Essay text. Move the caret into a sentence to inspect its measurements."></div>
     </div>
 
-    <div class="canvas-foot">
-      <p class="advisory" id="advisory-note">
-        Sentence shading is advisory. Per report&nbsp;07 the document verdict is the argmax of a
-        three-way head, not an aggregate of sentence scores, so a shaded sentence is a described
-        pattern and not a share of the score.
-      </p>
-      <p class="status-line" id="status-line" role="status" aria-live="polite">Idle.</p>
+    <!-- ─────────── the stage checklist ───────────
+         Transient. Occupies the same grid cell as the canvas, so while a
+         rewrite runs it IS the middle of the page rather than a corner
+         spinner. Built by app.js from a stable list of backend stage names,
+         removed the moment the run ends. -->
+    <div class="progress-stage" id="progress" hidden>
+      <div class="progress-card">
+        <p class="progress-kicker" id="progress-kicker">Working</p>
+        <h2 class="progress-title" id="progress-title">Rewriting your draft</h2>
+
+        <p class="progress-meta">
+          <span id="progress-engine">Contacting the service</span>
+          <span class="progress-sep" aria-hidden="true"></span>
+          <span class="progress-elapsed num" id="progress-elapsed">0.0s</span>
+        </p>
+
+        <ol class="stages" id="stages"></ol>
+
+        <p class="progress-say sr-only" id="progress-say" role="status" aria-live="polite"></p>
+
+        <div class="progress-foot">
+          <button id="progress-cancel" class="btn" type="button">Stop and keep my draft</button>
+          <p class="progress-note" id="progress-note">Your draft is not touched until this finishes.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- the action bar: the point of the product, directly under the canvas -->
+    <div class="actionbar">
+      <div class="actionbar-main">
+        <button id="humanize-btn" class="btn btn-hero" type="button">
+          <span id="humanize-label">Humanize this draft</span>
+        </button>
+
+        <label class="field">
+          <span class="field-label">How hard</span>
+          <select id="aggressiveness">
+            <option value="light">Light</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="strong">Strong</option>
+          </select>
+        </label>
+
+        <button id="undo-btn" class="btn" type="button" hidden>Undo, put my draft back</button>
+
+        <div class="actionbar-spacer"></div>
+
+        <button id="analyze-btn" class="btn btn-quiet" type="button">
+          Re-measure <span class="kbd-set" aria-hidden="true"><kbd class="kbd">Ctrl</kbd><kbd class="kbd">&crarr;</kbd></span>
+        </button>
+      </div>
+      <p class="status-line" id="status-line" data-state="idle" role="status" aria-live="polite">Ready when you are.</p>
     </div>
   </section>
 
-  <!-- ─────────────────── instrument rail ─────────────────── -->
-  <aside class="rail" aria-label="Measurements">
+  <!-- ─────────── the rail: three things ─────────── -->
+  <aside class="rail" aria-label="Result">
 
-    <section class="panel dials-panel" aria-labelledby="dials-h">
-      <h2 class="panel-h" id="dials-h">Two dials, always</h2>
-      <div class="dials">
-        <figure class="dial" id="dial-risk">
-          <svg viewBox="0 0 120 68" class="gauge" aria-hidden="true">
-            <path class="gauge-track" d="M10 62 A50 50 0 0 1 110 62"></path>
-            <path class="gauge-fill gauge-fill-risk" d="M10 62 A50 50 0 0 1 110 62"></path>
-          </svg>
-          <figcaption>
-            <span class="dial-value num" id="risk-value">—</span>
-            <span class="dial-name">detection risk</span>
-            <span class="dial-source" id="risk-source">no measurement yet</span>
-          </figcaption>
-        </figure>
+    <section class="panel panel-error" id="error-box" hidden aria-live="assertive"></section>
 
-        <figure class="dial" id="dial-quality">
-          <svg viewBox="0 0 120 68" class="gauge" aria-hidden="true">
-            <path class="gauge-track" d="M10 62 A50 50 0 0 1 110 62"></path>
-            <path class="gauge-fill gauge-fill-quality" d="M10 62 A50 50 0 0 1 110 62"></path>
-          </svg>
-          <figcaption>
-            <span class="dial-value num" id="quality-value">—</span>
-            <span class="dial-name">writing quality
-              <button class="info" type="button" id="quality-info" aria-expanded="false"
-                      aria-controls="quality-formula" aria-label="How writing quality is computed">?</button>
-            </span>
-            <span class="dial-source" id="quality-source">heuristic placeholder</span>
-          </figcaption>
-        </figure>
+    <!-- 1 · the percentage -->
+    <section class="panel panel-hero" aria-labelledby="hero-h">
+      <h2 class="panel-h sr-only" id="hero-h">AI likelihood</h2>
+
+      <p class="hero-num num" id="hero-value">n/a</p>
+      <p class="hero-label">likely to read as AI written</p>
+
+      <p class="hero-engine" id="hero-engine">No measurement yet.</p>
+
+      <div class="hero-second">
+        <span class="hero-second-value num" id="quality-value">n/a</span>
+        <span class="hero-second-label">writing quality, a placeholder score
+          <button class="why" type="button" id="quality-why" aria-expanded="false" aria-controls="quality-explain">
+            <span class="sr-only">Explain writing quality</span>?</button>
+        </span>
       </div>
 
-      <div class="formula" id="quality-formula" hidden>
-        <p><strong>Heuristic placeholder, not a trained essay scorer.</strong> Report&nbsp;09 records
-        QWK&nbsp;0.841 for a fine-tuned RoBERTa on PERSUADE&nbsp;2.0 and 0.042–0.081 for a frontier LLM
-        zero-shot; nothing here is either. This number is computed in the browser from the returned
-        features and findings so that risk is never shown alone.</p>
-        <p class="formula-body" id="quality-breakdown"></p>
+      <div class="explain" id="quality-explain" hidden>
+        <p><strong>A placeholder formula, not an essay grader.</strong> It is computed in your browser
+        from the features the service returns, purely so risk is never shown on its own. For scale, a
+        fine tuned RoBERTa on PERSUADE 2.0 reaches QWK 0.841 and a frontier model scoring zero shot
+        reaches 0.042 to 0.081. Nothing derived from seven summary statistics belongs in either league.</p>
+        <pre class="explain-pre" id="quality-breakdown"></pre>
       </div>
 
-      <p class="reference-line" id="reference-line">No reference distribution selected.</p>
-    </section>
+      <!-- before / after, only after a humanize run -->
+      <div class="ba" id="ba-block" hidden>
+        <p class="ba-title" id="ba-title">Humanized</p>
+        <div class="ba-row">
+          <span class="ba-cell"><span class="ba-n num" id="ba-before">n/a</span><span class="ba-k">before</span></span>
+          <span class="ba-arrow" aria-hidden="true">&rarr;</span>
+          <span class="ba-cell"><span class="ba-n num" id="ba-after">n/a</span><span class="ba-k">after</span></span>
+          <span class="ba-delta num" id="ba-delta"></span>
+        </div>
 
-    <section class="panel" aria-labelledby="sel-h">
-      <h2 class="panel-h" id="sel-h">Selected sentence</h2>
-      <div id="sentence-inspector" class="inspector">
-        <p class="muted">Click a sentence, or move the caret into one, to see what was measured.</p>
+        <!-- the honest measure: a smaller probability is not a human verdict -->
+        <p class="ba-verdict" id="ba-verdict" hidden></p>
+        <p class="ba-engine" id="ba-engine" hidden></p>
+        <p class="ba-note" id="ba-note"></p>
       </div>
     </section>
 
-    <section class="panel" aria-labelledby="meas-h">
-      <h2 class="panel-h" id="meas-h">Measurements
-        <span class="panel-h-note">value · human academic band · state</span>
-      </h2>
-      <div id="measurements" class="measure-list">
-        <p class="muted">No analysis yet.</p>
-      </div>
-    </section>
-
-    <section class="panel" aria-labelledby="find-h">
-      <h2 class="panel-h" id="find-h">Findings
-        <span class="panel-h-note">each with its grade cost</span>
-      </h2>
-      <div id="findings" class="findings">
-        <p class="muted">No analysis yet.</p>
-      </div>
-    </section>
-
-    <section class="panel" aria-labelledby="flag-h">
-      <h2 class="panel-h" id="flag-h">Highest-risk sentences</h2>
+    <!-- 2 · top AI sentences -->
+    <section class="panel" aria-labelledby="top-h">
+      <header class="panel-head">
+        <p class="sec-num">02</p>
+        <h2 class="panel-h" id="top-h">Sentences reading as AI</h2>
+      </header>
       <div id="flagged" class="flagged">
         <p class="muted">No analysis yet.</p>
       </div>
     </section>
 
+    <!-- 3 · everything else, closed by default -->
+    <details class="more" id="more">
+      <summary class="more-summary">
+        <span class="more-title">Show more detail</span>
+        <span class="more-sub">measurements, findings, the engine, and every edit</span>
+      </summary>
+
+      <div class="more-body">
+
+        <section class="msection" aria-labelledby="edits-h" id="edits-section" hidden>
+          <h3 class="msection-h" id="edits-h">What was changed</h3>
+          <p class="msection-lede">Every edit, and what it costs your grade. Some edits pay twice.</p>
+          <div id="edits" class="edits"></div>
+        </section>
+
+        <section class="msection" aria-labelledby="engine-h">
+          <h3 class="msection-h" id="engine-h">The detection engine</h3>
+          <div id="engine-detail" class="engine-detail">
+            <p class="muted">No analysis yet.</p>
+          </div>
+          <div class="overlay-toggle" id="overlay-toggle" hidden>
+            <button id="heat-perplexity" class="btn btn-quiet" type="button" aria-pressed="false">
+              Shade the canvas by GPT-2 perplexity instead
+            </button>
+            <button id="heat-advisory" class="btn btn-quiet" type="button" aria-pressed="true" hidden>
+              Back to advisory risk shading
+            </button>
+            <p class="heat-note" id="heat-note">Advisory per sentence risk from the analyzer.</p>
+          </div>
+        </section>
+
+        <!-- Explanation, not detection. The wire says is_a_detector: false and
+             carries no aggregate, and neither does this panel. -->
+        <section class="msection" aria-labelledby="signals-h">
+          <h3 class="msection-h" id="signals-h">Which AI tells are present</h3>
+          <p class="msection-lede">Measured style signals, each with the research note it comes from.
+          They deliberately do not add up to anything. The percentage above is a detector's verdict;
+          these are patterns in your prose that you can actually go and change.</p>
+          <div id="style-signals" class="signals"><p class="muted">No analysis yet.</p></div>
+        </section>
+
+        <section class="msection" aria-labelledby="find-h">
+          <h3 class="msection-h" id="find-h">What to fix first</h3>
+          <p class="msection-lede">Sorted by severity, each with what fixing it does to your grade.</p>
+          <div id="findings" class="findings"><p class="muted">No analysis yet.</p></div>
+        </section>
+
+        <section class="msection" aria-labelledby="meas-h">
+          <h3 class="msection-h" id="meas-h">Measurements</h3>
+          <p class="msection-lede">Your value, the band human academic prose actually occupies, and
+          whether you are inside it. Click a row for the plain language version.</p>
+          <div id="measurements" class="measure-list"><p class="muted">No analysis yet.</p></div>
+          <p class="reference-line" id="reference-line">
+            No analysis yet.
+            <button class="why" type="button" id="reference-why" aria-expanded="false" aria-controls="reference-explain">
+              <span class="sr-only">Explain the reference distance</span>?</button>
+          </p>
+          <div class="explain" id="reference-explain" hidden>
+            <p><strong>How unusual your draft looks next to real human writing.</strong> The service holds
+            a corpus of human documents in the same genre, measures the same features on each, and
+            reports the Mahalanobis distance from your draft to the middle of that cloud. The percentile
+            answers one question: what share of the human corpus is less unusual than you?</p>
+          </div>
+        </section>
+
+        <section class="msection" aria-labelledby="sel-h">
+          <h3 class="msection-h" id="sel-h">The sentence you clicked</h3>
+          <div id="sentence-inspector" class="inspector">
+            <p class="muted">Click any sentence in your draft and the named patterns behind its
+            shading appear here.</p>
+          </div>
+        </section>
+
+      </div>
+    </details>
+
+    <footer class="rail-foot">
+      <p>The detector is a local heuristic baseline, not GPTZero, Turnitin or Pangram, and it is not
+      calibrated against any of them. The quality score is a placeholder formula. Sentence shading is
+      advisory: the document verdict is not a sum of sentence scores. Treat all of it as a rehearsal,
+      not a verdict.</p>
+    </footer>
+
   </aside>
 </main>
 
 <script src="app.js" defer></script>
+<!-- Progressive enhancement only. app.js renders everything; this module just
+     animates it. If the CDN is unreachable the imports throw, the catch runs,
+     data-anim is cleared and the page is simply static. -->
+<script type="module" src="anim.js"></script>
 </body>
 </html>

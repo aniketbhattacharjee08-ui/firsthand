@@ -28,6 +28,7 @@ from .calibration import (
 )
 from .gptzero import GPTZeroClient, estimate_cost
 from .heuristic import AiStyleSignals
+from . import yardstick
 from .local import (
     DEFAULT_CLASSIFIER_MODEL,
     DEFAULT_MODERN_MODEL,
@@ -55,6 +56,9 @@ __all__ = [
     "AiStyleSignals",
     "GPTZeroClient",
     "estimate_cost",
+    # The one detector the engines report against. GPTZero when a key is
+    # configured; a named local proxy otherwise, and it says which.
+    "yardstick",
     "Calibration",
     "calibrate",
     "pass_rate",

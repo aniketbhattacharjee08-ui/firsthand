@@ -785,3 +785,919 @@ def run(
         reference_dir=reference_dir, web_dir=web_dir, default_reference=reference
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+# ===========================================================================
+# LLM humanizer: POST /api/humanize/llm, POST /api/humanize/stream,
+#                POST /api/humanize/jobs, GET /api/humanize/stream?job=<id>
+#
+# Appended below `create_app` rather than edited into it, and wired in by
+# re-binding `create_app` at the bottom of this block. Two constraints force
+# that shape: the routes above are defined inside the factory, and the
+# StaticFiles mount at "/" matches every path, so anything registered after it
+# is unreachable. `_register_llm_routes` therefore adds its routes and then
+# moves any Mount back to the end of the router's ordered list.
+# ===========================================================================
+
+import json as _json
+import time as _time
+import uuid as _uuid
+from typing import Iterator as _Iterator
+
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
+#: What every LLM endpoint says when MLX or the model is not usable. The
+#: rule-based engine is a real fallback, not a consolation: it is the same
+#: transforms the LLM path runs as its scrub stage, and it needs no GPU.
+LLM_FALLBACK_NOTE = (
+    "The rule-based engine is available as a fallback at POST /api/humanize. "
+    "It applies the same deterministic transforms this pipeline uses as its "
+    "scrub stage (connectives, AI vocabulary, paragraph template) and needs "
+    "neither MLX nor a model download. Measured, it does not flip a "
+    "detector's verdict either -- see the response's own numbers."
+)
+
+#: Ceiling on documents accepted by the LLM path. At the measured batched rate
+#: (~200 tok/s aggregate on an M4 Pro) a 2,000-word document with six
+#: candidates per paragraph is already several minutes, far past the 30s the
+#: user accepted, so it is refused with a number rather than silently truncated.
+LLM_MAX_WORDS = 1200
+
+#: Cap on the number of queued SSE jobs kept in memory at once. Jobs are tiny
+#: (a string and a config) and are deleted when their stream starts, so this is
+#: a guard against a client that POSTs jobs and never connects, not a queue.
+LLM_MAX_JOBS = 64
+
+#: A queued job is discarded after this many seconds even if never collected.
+LLM_JOB_TTL_S = 900.0
+
+
+class LlmHumanizeRequest(BaseModel):
+    """Body for POST /api/humanize/llm, /api/humanize/stream and /jobs."""
+
+    text: str = Field(default="", description="Raw document text.")
+    n_candidates: int = Field(
+        default=6,
+        ge=1,
+        le=16,
+        description=(
+            "Diverse candidates per paragraph. Each gets its own persona and "
+            "structural instruction (research/08: candidate correlation, not "
+            "N, is the binding constraint)."
+        ),
+    )
+    style: str = Field(
+        default="faithful",
+        description=(
+            "'faithful' uses the instruction-tuned checkpoint and preserves "
+            "meaning. 'freeform' uses the base checkpoint, which scores lower "
+            "under the detector but was measured drifting off-topic badly "
+            "enough that the gates reject nearly every candidate."
+        ),
+    )
+    aggressiveness: str = Field(
+        default="strong",
+        description="Aggressiveness of the deterministic scrub that runs after the model.",
+    )
+    time_budget_s: float = Field(
+        default=30.0, gt=0.0, le=600.0, description="Soft wall-clock budget."
+    )
+    rounds: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        description=(
+            "Refinement rounds. Round 2 re-runs only the paragraphs still "
+            "above 0.5, and may not make a paragraph worse."
+        ),
+    )
+    model: Optional[str] = Field(
+        default=None, description="Override the MLX model id."
+    )
+
+
+def _llm_config(body: LlmHumanizeRequest) -> Any:
+    from ..humanize.pipeline import PipelineConfig
+
+    return PipelineConfig(
+        n_candidates=body.n_candidates,
+        style=body.style,
+        aggressiveness=body.aggressiveness,
+        time_budget_s=body.time_budget_s,
+        rounds=body.rounds,
+        model=body.model,
+    )
+
+
+def _llm_unavailable_payload(reason: str) -> Dict[str, Any]:
+    """The 503 body. Named so the two endpoints cannot drift apart."""
+    return {
+        "error": "llm_unavailable",
+        "detail": reason,
+        "available": False,
+        "fallback": LLM_FALLBACK_NOTE,
+        "fallback_endpoint": "/api/humanize",
+    }
+
+
+def llm_precheck(body: LlmHumanizeRequest) -> Optional[JSONResponse]:
+    """Validate a request without touching the GPU. None means "go ahead".
+
+    Returns a ready-to-send `JSONResponse` for every refusal so that the
+    blocking endpoint and the SSE endpoint reject identically. A missing model
+    is a 503 with the fallback named, never a 500: `humanizer` is expected to
+    run on machines with no Apple Silicon and no weights on disk.
+    """
+    from ..humanize import pipeline as pipeline_mod
+
+    if not body.text or not body.text.strip():
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "empty_text",
+                "detail": "Field 'text' is required and must not be empty.",
+            },
+        )
+    n_words = len(body.text.split())
+    if n_words > LLM_MAX_WORDS:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "too_long",
+                "detail": (
+                    "%d words exceeds the %d-word limit for the LLM path. "
+                    "Split the document, or use POST /api/humanize."
+                    % (n_words, LLM_MAX_WORDS)
+                ),
+                "n_words": n_words,
+                "limit": LLM_MAX_WORDS,
+                "fallback_endpoint": "/api/humanize",
+            },
+        )
+    if body.style not in ("faithful", "freeform"):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "unknown_style",
+                "detail": "'style' must be 'faithful' or 'freeform'.",
+            },
+        )
+    reason = pipeline_mod.pipeline_unavailable_reason()
+    if reason is not None:
+        return JSONResponse(
+            status_code=503, content=_llm_unavailable_payload(reason)
+        )
+    return None
+
+
+def sse_frame(event: str, data: Any) -> str:
+    """One Server-Sent Events frame.
+
+    `event:` then a single `data:` line carrying compact JSON, then the blank
+    line that terminates the frame. The JSON is emitted with `ensure_ascii` so
+    a curly quote in the document cannot produce a byte sequence that some
+    proxy re-chunks in the middle of a UTF-8 codepoint, and it is passed
+    through `json_safe` first because feature vectors legitimately contain NaN
+    (see `api.models.json_safe`) and NaN is not JSON.
+    """
+    body = _json.dumps(json_safe(data), ensure_ascii=True, separators=(",", ":"))
+    return "event: %s\ndata: %s\n\n" % (event, body)
+
+
+#: Headers that stop an SSE response being buffered into uselessness.
+#: `X-Accel-Buffering: no` is for nginx; `no-transform` stops compressing
+#: proxies from holding the stream until it closes.
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
+def llm_event_stream(body: LlmHumanizeRequest) -> _Iterator[str]:
+    """The SSE body: one `progress` frame per pipeline event, then `result`.
+
+    WIRE FORMAT -- this is the contract the frontend consumes.
+
+        Content-Type: text/event-stream
+
+        event: progress
+        data: {"stage":"analyze","status":"start","progress":0.0,
+               "detail":"reading the document","elapsed":0.004,"round":1}
+
+        ... one `progress` frame per event, in stage order ...
+
+        event: result
+        data: {<exactly the POST /api/humanize/llm body>}
+
+        event: done
+        data: {"ok":true}
+
+    Rules a client can rely on:
+
+    * `stage` is one of `analyze plan generate scrub score verify select
+      finalize`, always in that order. A stage may be absent (`score` is
+      skipped when no detector is installed) and the whole run repeats from
+      `generate` when `rounds > 1`, with `round` incremented.
+    * `status` is `start`, `progress`, `done` or `skip`. Every stage that runs
+      emits exactly one terminal event (`done` or `skip`).
+    * `progress` is 0.0-1.0 and never decreases inside one stage occurrence.
+    * `detail` is a human-readable sentence, safe to render verbatim.
+    * `elapsed` is seconds since the run started, monotonically increasing
+      across the whole stream.
+    * Exactly one `result` frame is sent, immediately before `done`.
+    * On failure a single `error` frame is sent instead of `result`, carrying
+      `{"error", "detail", "fallback", "fallback_endpoint"}`, and the HTTP
+      status is still 200 because the headers were already flushed. Clients
+      must branch on the event name, not on the status code.
+    """
+    from ..humanize import pipeline as pipeline_mod
+
+    try:
+        for event in pipeline_mod.stream(body.text, config=_llm_config(body)):
+            payload = event.as_dict()
+            result = payload.pop("result", None)
+            yield sse_frame("progress", payload)
+            if result is not None:
+                yield sse_frame("result", result)
+        yield sse_frame("done", {"ok": True})
+    except (RuntimeError, ValueError) as exc:
+        yield sse_frame("error", _llm_unavailable_payload(str(exc)))
+    except Exception as exc:  # noqa: BLE001 - the stream must not just stop
+        yield sse_frame(
+            "error",
+            {
+                "error": "pipeline_failed",
+                "detail": "%s: %s" % (type(exc).__name__, exc),
+                "fallback": LLM_FALLBACK_NOTE,
+                "fallback_endpoint": "/api/humanize",
+            },
+        )
+
+
+def _reap_jobs(jobs: Dict[str, Dict[str, Any]]) -> None:
+    """Drop expired jobs, then the oldest ones if the table is still over cap."""
+    now = _time.time()
+    for job_id in [k for k, v in jobs.items() if now - v["created"] > LLM_JOB_TTL_S]:
+        jobs.pop(job_id, None)
+    while len(jobs) > LLM_MAX_JOBS:
+        oldest = min(jobs, key=lambda k: jobs[k]["created"])
+        jobs.pop(oldest, None)
+
+
+def _register_llm_routes(app: FastAPI) -> FastAPI:
+    """Add the LLM routes to an app built by the original `create_app`."""
+    app.state.llm_jobs = {}
+
+    @app.get("/api/humanize/llm/health")
+    def llm_health() -> JSONResponse:
+        """Whether the LLM path can run, and what it would run.
+
+        Cheap: nothing is imported from MLX beyond the module itself and no
+        weights are touched. The frontend uses this to decide whether to offer
+        the LLM engine or fall straight through to the rule-based one.
+        """
+        from ..humanize import llm as llm_mod
+        from ..humanize import pipeline as pipeline_mod
+
+        reason = pipeline_mod.pipeline_unavailable_reason()
+        return _ok(
+            {
+                "available": reason is None,
+                "reason": reason,
+                "model": llm_mod.DEFAULT_MODEL,
+                "freeform_model": llm_mod.FREEFORM_MODEL,
+                "stages": list(pipeline_mod.STAGES),
+                "max_words": LLM_MAX_WORDS,
+                "fallback_endpoint": "/api/humanize",
+                "fallback": LLM_FALLBACK_NOTE,
+            }
+        )
+
+    @app.post("/api/humanize/llm")
+    def humanize_llm_endpoint(body: LlmHumanizeRequest) -> JSONResponse:
+        """Rewrite a document with the local LLM. Blocking; use /stream to watch.
+
+        The body is a superset of `POST /api/humanize`: `original`,
+        `humanized`, `edits`, `before`, `after` and `summary` mean the same
+        things, plus:
+
+        * `model` -- the MLX model id that produced the rewrite.
+        * `stages` -- one row per pipeline stage with `seconds` and `detail`.
+        * `paragraphs` -- per paragraph, the source, the winner, every
+          candidate, each candidate's AI probability, the gates it failed and
+          its quality numbers.
+
+        `summary` carries the numbers worth reading: `risk_delta` (after minus
+        before, so negative is an improvement), `label_before`/`label_after`,
+        `verdict_flipped`, `n_candidates_rejected` with `gate_rejections`
+        broken down by gate, and `quality_flags`.
+
+        **Read `verdict_flipped`, not `risk_delta`.** research/13's DUPE result
+        is that attacks which halve false-negative rates still produce almost
+        no actual "human" verdicts, and that is what was measured here too: the
+        candidates that score below 0.5 are the ones that drifted off the
+        source's content, and the gates reject them. This endpoint reports the
+        rejections rather than quietly returning the best-scoring text.
+
+        Returns 503 with `fallback_endpoint` when MLX or the model is missing,
+        413 when the document is over `LLM_MAX_WORDS`, never 500 for either.
+        """
+        refusal = llm_precheck(body)
+        if refusal is not None:
+            return refusal
+
+        from ..humanize import pipeline as pipeline_mod
+
+        try:
+            result = pipeline_mod.humanize_llm(body.text, config=_llm_config(body))
+        except RuntimeError as exc:
+            # Raised by the backend when the weights will not load.
+            return JSONResponse(
+                status_code=503, content=json_safe(_llm_unavailable_payload(str(exc)))
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "bad_request", "detail": str(exc)},
+            )
+        return _ok(result.as_dict())
+
+    @app.post("/api/humanize/stream")
+    def humanize_llm_stream_post(body: LlmHumanizeRequest) -> Any:
+        """Server-Sent Events over POST. See `llm_event_stream` for the format.
+
+        Use this from `fetch()` + `ReadableStream`. A browser `EventSource` can
+        only issue GET requests, so for that path POST to
+        `/api/humanize/jobs` first and then open
+        `GET /api/humanize/stream?job=<id>`; both routes emit byte-identical
+        frames from the same generator.
+
+        Refusals that can be detected before the stream opens (empty text, too
+        long, unknown style, MLX missing) are returned as an ordinary JSON
+        error with a real status code. Anything that fails after the first
+        byte arrives as an `error` frame with HTTP 200, because the status line
+        is long gone by then.
+        """
+        refusal = llm_precheck(body)
+        if refusal is not None:
+            return refusal
+        return StreamingResponse(
+            llm_event_stream(body),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+    @app.post("/api/humanize/jobs")
+    def humanize_llm_job(body: LlmHumanizeRequest) -> JSONResponse:
+        """Park a request and return a `job_id` for `EventSource`.
+
+        The job holds only the request body. Nothing runs until the matching
+        `GET /api/humanize/stream?job=<id>` connects, and the job is removed
+        the moment it does, so an id is single-use.
+        """
+        refusal = llm_precheck(body)
+        if refusal is not None:
+            return refusal
+        jobs = app.state.llm_jobs
+        _reap_jobs(jobs)
+        job_id = _uuid.uuid4().hex
+        jobs[job_id] = {"body": body, "created": _time.time()}
+        return _ok(
+            {
+                "job_id": job_id,
+                "stream_url": "/api/humanize/stream?job=%s" % job_id,
+                "expires_in_s": LLM_JOB_TTL_S,
+            }
+        )
+
+    @app.get("/api/humanize/stream")
+    def humanize_llm_stream_get(job: str = "") -> Any:
+        """`EventSource`-compatible SSE for a job parked by POST /api/humanize/jobs.
+
+        Emits exactly the frames documented on `llm_event_stream`. An unknown
+        or already-consumed job id is a 404 before the stream opens.
+        """
+        jobs = app.state.llm_jobs
+        _reap_jobs(jobs)
+        entry = jobs.pop(job, None)
+        if entry is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "unknown_job",
+                    "detail": (
+                        "No queued job %r. Ids are single-use and expire after "
+                        "%.0f seconds; POST /api/humanize/jobs for a new one."
+                        % (job, LLM_JOB_TTL_S)
+                    ),
+                },
+            )
+        return StreamingResponse(
+            llm_event_stream(entry["body"]),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+    # A Mount at "/" matches every path, so the static frontend has to sit
+    # behind the routes just added. Starlette matches in list order, so moving
+    # the mounts to the end is the whole fix.
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_llm = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+) -> FastAPI:
+    """Build the ASGI application, including the LLM humanizer routes.
+
+    Identical to the definition above plus `_register_llm_routes`. It is a
+    wrapper rather than an edit so that this whole LLM block is append-only
+    against the file it landed in; `_create_app_without_llm` is kept as the
+    unwrapped factory for tests that want the smaller surface.
+    """
+    app = _create_app_without_llm(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+    )
+    return _register_llm_routes(app)
+
+
+# ===========================================================================
+# Detector-guided decoding: POST /api/humanize/guided,
+#                           POST /api/humanize/guided/stream,
+#                           POST /api/humanize/guided/jobs,
+#                           GET  /api/humanize/guided/stream?job=<id>,
+#                           GET  /api/humanize/guided/health
+#
+# Appended below the LLM block for the same two reasons that block was
+# appended below `create_app`: the routes live inside a factory, and the
+# StaticFiles mount at "/" matches every path. `_register_guided_routes`
+# therefore adds its routes and then moves any Mount back to the end, exactly
+# as `_register_llm_routes` does, and `create_app` is re-bound once more at the
+# bottom. Nothing above this line was edited.
+#
+# The frames are byte-identical in shape to `llm_event_stream`'s: same event
+# names, same key set on `progress`, same `result`-then-`done` ordering, same
+# `error` frame on failure. A client that renders one renders the other.
+# ===========================================================================
+
+
+#: What the guided endpoints say when they cannot run. Two fallbacks are named
+#: because there are two different failures: no MLX means no generation at all
+#: (rule-based engine), while a working MLX with a missing guide falls back to
+#: the paragraph-level LLM path, which needs no guide.
+GUIDED_FALLBACK_NOTE = (
+    "Detector-guided decoding needs mlx-lm on Apple Silicon. Without it, POST "
+    "/api/humanize/llm runs the paragraph-level best-of-N pipeline (also MLX), "
+    "and POST /api/humanize runs the deterministic rule-based engine, which "
+    "needs no GPU and no model download. Measured, none of the three flips a "
+    "detector's verdict -- read the response's own numbers, not the marketing."
+)
+
+#: Guided decoding costs `beam x samples` generations *per sentence*, so the
+#: word ceiling is lower than the LLM path's 1200. At the measured ~2.0s per
+#: 12-prompt batch a 300-word paragraph is already ~20s.
+GUIDED_MAX_WORDS = 600
+
+
+class GuidedHumanizeRequest(BaseModel):
+    """Body for POST /api/humanize/guided and its streaming variants."""
+
+    text: str = Field(default="", description="Raw document text.")
+    beam_width: int = Field(
+        default=3,
+        ge=1,
+        le=6,
+        description=(
+            "Hypotheses carried between sentences. 1 is greedy. research/08 "
+            "§1.5: with an imperfect verifier the optimal number of sampling "
+            "attempts is usually under 10, and beam x samples is that number."
+        ),
+    )
+    n_samples: int = Field(
+        default=4,
+        ge=1,
+        le=8,
+        description="Continuations proposed per hypothesis per sentence.",
+    )
+    mode: str = Field(
+        default="segment",
+        description=(
+            "'segment' scores one candidate sentence at a time (tractable). "
+            "'token' is the published per-token method with the guide "
+            "throttled to every `guidance_interval` tokens; it cannot batch "
+            "and is far slower."
+        ),
+    )
+    guide_context: str = Field(
+        default="full",
+        description=(
+            "What the guide sees: 'full' (rewritten prefix + candidate + the "
+            "source's remaining sentences, constant length), 'prefix' "
+            "(prefix + candidate only) or 'sentence' (the candidate alone)."
+        ),
+    )
+    guidance_interval: int = Field(
+        default=8, ge=1, le=64, description="Tokens between guide calls in 'token' mode."
+    )
+    top_k: int = Field(
+        default=8, ge=2, le=32, description="Next tokens scored per guided step."
+    )
+    guidance_strength: float = Field(
+        default=4.0,
+        ge=0.0,
+        le=50.0,
+        description=(
+            "How hard the guide overrides the LM's own next-token ranking. "
+            "0.0 is plain sampling and is the control."
+        ),
+    )
+    aggressiveness: str = Field(
+        default="strong",
+        description="Aggressiveness of the deterministic scrub that runs after the search.",
+    )
+    time_budget_s: float = Field(
+        default=30.0, gt=0.0, le=600.0, description="Soft wall-clock budget."
+    )
+    model: Optional[str] = Field(
+        default=None, description="Override the MLX generation model id."
+    )
+    guide_model: Optional[str] = Field(
+        default=None, description="Override the in-loop guide detector."
+    )
+    use_guide: bool = Field(
+        default=True,
+        description=(
+            "False runs the same beam search with the same gates and no "
+            "guide. That is the control: it isolates how much of any movement "
+            "came from the guide rather than from resampling."
+        ),
+    )
+
+
+def _guided_config(body: GuidedHumanizeRequest) -> Any:
+    from ..humanize.guided import GUIDE_MODEL, GuidedConfig
+
+    return GuidedConfig(
+        beam_width=body.beam_width,
+        n_samples=body.n_samples,
+        mode=body.mode,
+        guide_context=body.guide_context,
+        guidance_interval=body.guidance_interval,
+        top_k=body.top_k,
+        guidance_strength=body.guidance_strength,
+        aggressiveness=body.aggressiveness,
+        time_budget_s=body.time_budget_s,
+        model=body.model,
+        guide_model=body.guide_model or GUIDE_MODEL,
+    )
+
+
+def _guided_unavailable_payload(reason: str) -> Dict[str, Any]:
+    """The 503 body. Named so every guided endpoint refuses identically."""
+    return {
+        "error": "guided_unavailable",
+        "detail": reason,
+        "available": False,
+        "fallback": GUIDED_FALLBACK_NOTE,
+        "fallback_endpoint": "/api/humanize/llm",
+        "fallback_endpoint_no_gpu": "/api/humanize",
+    }
+
+
+def guided_precheck(body: GuidedHumanizeRequest) -> Optional[JSONResponse]:
+    """Validate a guided request without touching the GPU. None means go.
+
+    Mirrors `llm_precheck` deliberately, including returning a ready-made
+    `JSONResponse` for every refusal so the blocking and streaming endpoints
+    cannot drift apart. A missing MLX is a 503 naming two fallbacks, never a
+    500.
+    """
+    from ..humanize import guided as guided_mod
+
+    if not body.text or not body.text.strip():
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "empty_text",
+                "detail": "Field 'text' is required and must not be empty.",
+            },
+        )
+    n_words = len(body.text.split())
+    if n_words > GUIDED_MAX_WORDS:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "too_long",
+                "detail": (
+                    "%d words exceeds the %d-word limit for guided decoding, "
+                    "which pays beam x samples generations per sentence. "
+                    "Split the document, or use POST /api/humanize/llm."
+                    % (n_words, GUIDED_MAX_WORDS)
+                ),
+                "n_words": n_words,
+                "limit": GUIDED_MAX_WORDS,
+                "fallback_endpoint": "/api/humanize/llm",
+            },
+        )
+    if body.mode not in guided_mod.GuideMode.ALL:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "unknown_mode",
+                "detail": "'mode' must be one of %s."
+                % (", ".join(guided_mod.GuideMode.ALL)),
+            },
+        )
+    if body.guide_context not in guided_mod.GuideContext.ALL:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "unknown_guide_context",
+                "detail": "'guide_context' must be one of %s."
+                % (", ".join(guided_mod.GuideContext.ALL)),
+            },
+        )
+    reason = guided_mod.guided_unavailable_reason()
+    if reason is not None:
+        return JSONResponse(
+            status_code=503, content=_guided_unavailable_payload(reason)
+        )
+    return None
+
+
+def guided_event_stream(body: GuidedHumanizeRequest) -> _Iterator[str]:
+    """The SSE body for guided decoding. Same wire format as `llm_event_stream`.
+
+    Frames, in order:
+
+        event: progress
+        data: {"stage":"analyze","status":"start","progress":0.0,
+               "detail":"reading the document","elapsed":0.004,"round":1}
+
+        ... one `progress` frame per event, in stage order ...
+
+        event: result
+        data: {<exactly the POST /api/humanize/guided body>}
+
+        event: done
+        data: {"ok":true}
+
+    Every rule documented on `llm_event_stream` holds here unchanged: the
+    stage vocabulary is the same eight names in the same order (guided
+    decoding reuses `pipeline.STAGES`, it does not invent its own), `status`
+    is `start`/`progress`/`done`/`skip` with exactly one terminal event per
+    stage that runs, `progress` never decreases inside a stage, `elapsed`
+    increases across the whole stream, exactly one `result` frame arrives
+    immediately before `done`, and a failure after the headers are flushed
+    arrives as a single `error` frame with HTTP 200.
+
+    `round` is always 1: guided decoding has no refinement rounds. It is still
+    emitted because the frontend reads it, and a client should not have to
+    branch on which pipeline produced the frame.
+    """
+    from ..humanize import guided as guided_mod
+
+    try:
+        for event in guided_mod.stream(
+            body.text,
+            config=_guided_config(body),
+            guide=None if body.use_guide else False,
+        ):
+            payload = event.as_dict()
+            result = payload.pop("result", None)
+            yield sse_frame("progress", payload)
+            if result is not None:
+                yield sse_frame("result", result)
+        yield sse_frame("done", {"ok": True})
+    except (RuntimeError, ValueError) as exc:
+        yield sse_frame("error", _guided_unavailable_payload(str(exc)))
+    except Exception as exc:  # noqa: BLE001 - the stream must not just stop
+        yield sse_frame(
+            "error",
+            {
+                "error": "guided_failed",
+                "detail": "%s: %s" % (type(exc).__name__, exc),
+                "fallback": GUIDED_FALLBACK_NOTE,
+                "fallback_endpoint": "/api/humanize/llm",
+                "fallback_endpoint_no_gpu": "/api/humanize",
+            },
+        )
+
+
+def _register_guided_routes(app: FastAPI) -> FastAPI:
+    """Add the detector-guided decoding routes to an already-built app."""
+    if not hasattr(app.state, "guided_jobs"):
+        app.state.guided_jobs = {}
+
+    @app.get("/api/humanize/guided/health")
+    def guided_health() -> JSONResponse:
+        """Whether guided decoding can run, and exactly what it would run.
+
+        Cheap: no weights are touched. Publishes `stages` so the frontend
+        builds its checklist from the service rather than from a hard-coded
+        list, and publishes `guide` and `yardstick` separately because the
+        distinction between the two is the whole design -- the guide steers
+        the search, the yardstick produces the number the response reports.
+        """
+        from ..humanize import guided as guided_mod
+        from ..humanize import llm as llm_mod
+
+        reason = guided_mod.guided_unavailable_reason()
+        guide_reason = guided_mod.guide_unavailable_reason()
+        return _ok(
+            {
+                "available": reason is None,
+                "reason": reason,
+                "model": llm_mod.DEFAULT_MODEL,
+                "stages": list(guided_mod.STAGES),
+                "modes": list(guided_mod.GuideMode.ALL),
+                "guide_contexts": list(guided_mod.GuideContext.ALL),
+                "guide": {
+                    "model": guided_mod.GUIDE_MODEL,
+                    "engine": guided_mod.GUIDE_ENGINE,
+                    "available": guide_reason is None,
+                    "reason": guide_reason,
+                    "role": (
+                        "in-loop search heuristic. Never reported as a "
+                        "verdict; it calls 8 of 14 genuine human PMC "
+                        "paragraphs AI on this repo's own bench."
+                    ),
+                },
+                "yardstick": {
+                    "model": guided_mod.YARDSTICK_MODEL,
+                    "role": (
+                        "the reported score. Every probability in the "
+                        "response body comes from here."
+                    ),
+                },
+                "max_words": GUIDED_MAX_WORDS,
+                "fallback_endpoint": "/api/humanize/llm",
+                "fallback_endpoint_no_gpu": "/api/humanize",
+                "fallback": GUIDED_FALLBACK_NOTE,
+            }
+        )
+
+    @app.post("/api/humanize/guided")
+    def humanize_guided_endpoint(body: GuidedHumanizeRequest) -> JSONResponse:
+        """Rewrite a document with detector-guided decoding. Blocking.
+
+        Generation runs sentence by sentence under a beam search whose
+        ordering comes from a fast guide detector
+        (`MayZhou/e5-small-lora-ai-generated-detector`, ~28 ms a document).
+        The finalists are scrubbed, gated by the *same* meaning gates
+        `POST /api/humanize/llm` uses, and then scored by the yardstick
+        (`desklib/ai-text-detector-v1.01`).
+
+        The body is shaped like `POST /api/humanize/llm`'s -- `original`,
+        `humanized`, `edits`, `before`, `after`, `summary`, `model`, `backend`,
+        `stages`, `paragraphs` -- plus a `guide` block. `edits` is always
+        empty: a sentence-by-sentence regeneration has no honest span-edit
+        representation, so diff `paragraphs[i].original` against
+        `paragraphs[i].humanized` instead.
+
+        **`after.ai_probability`, `summary.risk_delta` and
+        `summary.verdict_flipped` are the yardstick's numbers and never the
+        guide's.** The guide's opinion lives in `guide.probability_before` /
+        `guide.probability_after` and is labelled as a search heuristic.
+        `summary.guide_transfer` reports how far the two disagreed on this
+        run, because research/08 §3.2 measures detector-to-detector transfer
+        as "real but wildly uneven" and a mean improvement number against a
+        proxy is actively misleading on its own.
+
+        Returns 503 with both fallbacks named when MLX is missing, 413 over
+        `GUIDED_MAX_WORDS`, 400 on an unknown mode -- never 500 for any of
+        them.
+        """
+        refusal = guided_precheck(body)
+        if refusal is not None:
+            return refusal
+
+        from ..humanize import guided as guided_mod
+
+        try:
+            result = guided_mod.humanize_guided(
+                body.text,
+                config=_guided_config(body),
+                guide=None if body.use_guide else False,
+            )
+        except RuntimeError as exc:
+            return JSONResponse(
+                status_code=503,
+                content=json_safe(_guided_unavailable_payload(str(exc))),
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "bad_request", "detail": str(exc)},
+            )
+        return _ok(result.as_dict())
+
+    @app.post("/api/humanize/guided/stream")
+    def humanize_guided_stream_post(body: GuidedHumanizeRequest) -> Any:
+        """Server-Sent Events over POST. See `guided_event_stream` for the format.
+
+        Use from `fetch()` + `ReadableStream`. A browser `EventSource` issues
+        GET only, so for that path POST to `/api/humanize/guided/jobs` first
+        and open `GET /api/humanize/guided/stream?job=<id>`; both routes emit
+        byte-identical frames from the same generator.
+        """
+        refusal = guided_precheck(body)
+        if refusal is not None:
+            return refusal
+        return StreamingResponse(
+            guided_event_stream(body),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+    @app.post("/api/humanize/guided/jobs")
+    def humanize_guided_job(body: GuidedHumanizeRequest) -> JSONResponse:
+        """Park a guided request and return a single-use `job_id`."""
+        refusal = guided_precheck(body)
+        if refusal is not None:
+            return refusal
+        jobs = app.state.guided_jobs
+        _reap_jobs(jobs)
+        job_id = _uuid.uuid4().hex
+        jobs[job_id] = {"body": body, "created": _time.time()}
+        return _ok(
+            {
+                "job_id": job_id,
+                "stream_url": "/api/humanize/guided/stream?job=%s" % job_id,
+                "expires_in_s": LLM_JOB_TTL_S,
+            }
+        )
+
+    @app.get("/api/humanize/guided/stream")
+    def humanize_guided_stream_get(job: str = "") -> Any:
+        """`EventSource`-compatible SSE for a parked guided job.
+
+        Emits exactly the frames documented on `guided_event_stream`. An
+        unknown or already-consumed id is a 404 before the stream opens.
+        """
+        jobs = app.state.guided_jobs
+        _reap_jobs(jobs)
+        entry = jobs.pop(job, None)
+        if entry is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "unknown_job",
+                    "detail": (
+                        "No queued guided job %r. Ids are single-use and "
+                        "expire after %.0f seconds; POST "
+                        "/api/humanize/guided/jobs for a new one."
+                        % (job, LLM_JOB_TTL_S)
+                    ),
+                },
+            )
+        return StreamingResponse(
+            guided_event_stream(entry["body"]),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_guided = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+) -> FastAPI:
+    """Build the ASGI application, including the detector-guided routes.
+
+    Identical to the definition above plus `_register_guided_routes`. A
+    wrapper rather than an edit, so this whole block stays append-only against
+    the file it landed in; `_create_app_without_guided` is kept as the
+    LLM-only factory and `_create_app_without_llm` as the smallest one.
+    """
+    app = _create_app_without_guided(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+    )
+    return _register_guided_routes(app)

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from ..text import Document
-from . import lexical, punctuation, register, shape
+from . import lexical, punctuation, register, shape, structure
 
 __all__ = [
     "extract_features",
@@ -24,7 +24,7 @@ __all__ = [
     "FEATURE_ORDER",
 ]
 
-_MODULES = (shape, lexical, punctuation, register)
+_MODULES = (shape, lexical, punctuation, register, structure)
 
 # Non-stylistic bookkeeping fields: reported, but excluded from the feature
 # vector used for distance and sampling, since document size is not a style.
@@ -67,6 +67,7 @@ def band_report(feats: Dict[str, float]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     out.update(shape.band_report(feats))
     out.update(punctuation.band_report(feats))
+    out.update(structure.band_report(feats))
     if any(name.startswith("syn_") for name in feats):
         try:
             from . import syntax

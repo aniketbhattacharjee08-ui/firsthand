@@ -69,6 +69,8 @@ SIGNAL_SCALES: Dict[str, float] = {
     "negative_parallel": 2.0,
     "para_opener_formal": 0.12,
     "uniform_paragraphs": 0.2,
+    "metronome_run": 3.0,
+    "opener_repeat": 0.10,
 }
 
 #: Where each signal comes from, so a UI can cite it rather than assert it.
@@ -82,6 +84,8 @@ SIGNAL_SOURCES: Dict[str, str] = {
     "para_opener_formal": "research/04: formal paragraph openers",
     "uniform_paragraphs": "research/10: human paragraph-length CV 0.42-0.71",
     "no_contractions": "research/04: contraction absence",
+    "metronome_run": "research/06: 3+ consecutive 17-23-word sentences",
+    "opener_repeat": "research/06: consecutive sentences sharing a first word",
 }
 
 
@@ -112,6 +116,8 @@ class AiStyleSignals:
             ("tricolon", "tricolon_per_1k"),
             ("negative_parallel", "negative_parallel_per_1k"),
             ("para_opener_formal", "para_opener_formal_share"),
+            ("metronome_run", "struct_metronome_run_max"),
+            ("opener_repeat", "struct_opener_repeat_share"),
         ):
             out[name] = _sat(feats.get(feature), SIGNAL_SCALES[name])
 
