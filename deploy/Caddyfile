@@ -1,0 +1,45 @@
+# TLS termination and reverse proxy for ReadsHuman. Caddy fetches and renews
+# the certificate on its own. Replace the hostname; keep the header lines,
+# the gate reads X-Forwarded-For only when LONGHAND_TRUST_PROXY=1.
+
+longhand.example.com {
+    encode zstd gzip
+
+    # Server-Sent Events must not be buffered or compressed.
+    @sse path /api/humanize/stream /api/humanize/guided/stream
+    reverse_proxy @sse 127.0.0.1:8000 {
+        flush_interval -1
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+
+        # Content Security Policy, derived from what web/ loads on 2026-09-10:
+        #   fonts        fonts.googleapis.com (css) + fonts.gstatic.com (woff2)
+        #   modules      cdn.jsdelivr.net (motion, auto-animate, via import())
+        #   icon         data: SVG
+        #   inline       one `onload="this.media='all'"` on the font <link>
+        #                needs script-src-attr 'unsafe-inline'; app.js sets
+        #                style attributes, hence style-src-attr 'unsafe-inline'
+        # Shipped as Report-Only first. Watch the browser console on staging
+        # for a day, then rename the header to Content-Security-Policy.
+        Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; script-src-attr 'unsafe-inline'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    }
+
+    # Stripe posts webhooks here from its own IPs; nothing to whitelist,
+    # the signature check in the app is the authentication.
+    request_body {
+        max_size 2MB
+    }
+}

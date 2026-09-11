@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReadsHuman account module: demo</title>
+<meta name="color-scheme" content="dark">
+<link rel="stylesheet" href="../../web/styles.css">
+<link rel="stylesheet" href="account.css">
+<style>
+  /* demo-only layout; nothing here ships */
+  .demo-page { padding: var(--s-6) 0; display: grid; gap: var(--s-6); }
+  .demo-row { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+  .demo-h { font-size: var(--t-3); font-weight: 500; }
+  .demo-log { font-family: var(--mono); font-size: var(--t-1); color: var(--fg-2); display: grid; gap: 2px; max-height: 40vh; overflow: auto; padding: var(--s-3); background: var(--g2); border: 1px solid var(--line); border-radius: var(--r); }
+  .demo-log b { color: var(--fg); font-weight: 500; }
+  .demo-note { color: var(--fg-3); font-size: var(--t-1); max-width: 72ch; line-height: 1.5; }
+  .demo-out { color: var(--fg-2); font-size: var(--t-2); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top" role="banner">
+    <p class="wordmark">ReadsHuman</p>
+    <p class="lede">Account module demo. Every request below goes to an in-memory fake API; nothing leaves this page.</p>
+    <div class="top-tools">
+      <p id="health" class="pill" data-kind="ok" role="status">Fake service</p>
+    </div>
+  </header>
+
+  <main class="demo-page">
+    <section>
+      <h2 class="demo-h">Sign-in flow</h2>
+      <p class="demo-note">Click Sign in at the top right. Any address works. The fake server is in development mode, so the sheet offers the link directly. An address ending in @mailinator.com is refused as disposable; one starting with limit@ hits the daily signup limit.</p>
+      <div class="demo-row">
+        <button class="btn" type="button" data-go="?login_error=bad_token">Simulate a bad login link</button>
+        <button class="btn" type="button" data-go="?login_error=used_token">Simulate a used login link</button>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="demo-h">Engine responses</h2>
+      <p class="demo-note">These call window.fetch on /api/humanize/llm the way app.js does. The module intercepts the response; the raw result still reaches this page, shown below.</p>
+      <div class="demo-row">
+        <button class="btn btn-primary" type="button" data-run="ok">Run a charged rewrite</button>
+        <button class="btn" type="button" data-run="401">Simulate 401</button>
+        <button class="btn" type="button" data-run="402">Simulate 402</button>
+        <button class="btn" type="button" data-run="busy">Simulate busy</button>
+        <button class="btn" type="button" data-run="429">Simulate 429</button>
+      </div>
+      <p class="demo-out" id="out">No request yet.</p>
+    </section>
+
+    <section>
+      <h2 class="demo-h">Purchases</h2>
+      <p class="demo-note">Checkout returns a URL that brings the browser back here as Stripe would. Credits land about 2.5 seconds later, so the module's polling is exercised.</p>
+      <div class="demo-row">
+        <button class="btn" type="button" data-go="?purchase=success&demo_pay=starter">Simulate purchase success</button>
+        <button class="btn" type="button" data-go="?purchase=cancelled">Simulate purchase cancelled</button>
+        <button class="btn" type="button" id="stripe-toggle">Turn Stripe off</button>
+        <button class="btn" type="button" data-open="packs">Open the packs sheet</button>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="demo-h">Module</h2>
+      <div class="demo-row">
+        <button class="btn" type="button" data-open="account">Open the account panel</button>
+        <button class="btn" type="button" data-open="signin">Open sign in</button>
+        <button class="btn" type="button" id="cost">costFor(1234 words)</button>
+        <button class="btn" type="button" id="reset">Reset the demo</button>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="demo-h">Log</h2>
+      <div class="demo-log" id="log" aria-live="polite"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+/* The fake API. Installed before account.js so the module wraps it. */
+(function () {
+  'use strict';
+  var KEY = 'rha-demo';
+  var PACKS = [
+    { name: 'starter', credits: 20, label: 'Starter' },
+    { name: 'writer', credits: 60, label: 'Writer' },
+    { name: 'heavy', credits: 200, label: 'Heavy user' }
+  ];
+  var db;
+  try { db = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { db = null; }
+  if (!db) db = fresh();
+  function fresh() {
+    return { user: null, credits: 3, ledger: [{ id: 1, delta: 3, balance_after: 3, kind: 'manual', ref: 'welcome', created: Date.now() / 1000 - 86400 }], keys: [], stripe: true, force: null, rate: 0 };
+  }
+  function save() { try { sessionStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* private mode */ } }
+  function now() { return Date.now() / 1000; }
+  function log(line) {
+    var box = document.getElementById('log');
+    if (!box) return;
+    var p = document.createElement('p');
+    p.innerHTML = line;
+    box.insertBefore(p, box.firstChild);
+  }
+  function json(status, body, headers) {
+    var hs = { 'Content-Type': 'application/json' };
+    var k;
+    for (k in (headers || {})) if (headers.hasOwnProperty(k)) hs[k] = headers[k];
+    return new Response(JSON.stringify(body), { status: status, headers: hs });
+  }
+  function me() { return db.user ? { id: 'u_demo', email: db.user, credits: db.credits, is_admin: false, created: now() - 86400 * 3, session_expires: now() + 86400 * 30 } : null; }
+  function entry(delta, kind, ref) {
+    db.credits += delta;
+    db.ledger.unshift({ id: db.ledger.length + 1, delta: delta, balance_after: db.credits, kind: kind, ref: ref, created: now() });
+  }
+  function health() {
+    return { product: 'ReadsHuman', paywall: true, free_credits: 3, words_per_credit: 150, refund_unchanged: true, max_inflight: 1, stripe: db.stripe, packs: PACKS, mail: 'dev-links' };
+  }
+
+  function route(method, path, u, body) {
+    if (path === '/api/billing/health') return json(200, health());
+    if (path === '/api/me' && method === 'GET') return json(200, { user: me(), paywall: true });
+    if (path === '/api/me' && method === 'DELETE') {
+      if (!db.user) return json(401, { error: 'login_required', detail: 'Sign in first.' });
+      db = fresh(); save();
+      return json(200, { deleted: true });
+    }
+    if (path === '/api/auth/request-link') {
+      var email = String(body.email || '').trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) return json(400, { error: 'bad_email', detail: 'Enter a valid email address.' });
+      if (/@mailinator\.com$/.test(email)) return json(400, { error: 'blocked_email', detail: 'Disposable email addresses cannot be used.' });
+      if (/^limit@/.test(email)) return json(429, { error: 'signup_limit', detail: 'Too many new accounts from this address today.' });
+      return json(200, { sent: true, email: email, expires_in_minutes: 15, transport: 'dev-links', dev_link: 'demo.html?demo_verify=' + encodeURIComponent(email) });
+    }
+    if (path === '/api/auth/logout') { db.user = null; save(); return json(200, { logged_out: true }); }
+    if (path === '/api/auth/keys' && method === 'GET') {
+      if (!db.user) return json(401, { error: 'login_required', detail: 'Sign in first.' });
+      return json(200, { keys: db.keys });
+    }
+    if (path === '/api/auth/keys' && method === 'POST') {
+      if (!db.user) return json(401, { error: 'login_required', detail: 'Sign in first.' });
+      if (db.keys.length >= 10) return json(400, { error: 'too_many_keys', detail: 'Revoke an existing key first (limit 10).' });
+      var raw = 'lh_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      var k = { id: Math.random().toString(16).slice(2, 18), prefix: raw.slice(0, 11), label: String(body.label || '').slice(0, 80), created: now(), last_used: null };
+      db.keys.push(k); save();
+      return json(201, { id: k.id, key: raw, prefix: k.prefix, label: k.label, created: k.created, note: 'Store this key now.' });
+    }
+    if (path.indexOf('/api/auth/keys/') === 0 && method === 'DELETE') {
+      if (!db.user) return json(401, { error: 'login_required', detail: 'Sign in first.' });
+      var id = decodeURIComponent(path.slice('/api/auth/keys/'.length));
+      var before = db.keys.length;
+      db.keys = db.keys.filter(function (x) { return x.id !== id; });
+      save();
+      return before === db.keys.length ? json(404, { error: 'unknown_key', detail: 'No such key.' }) : json(200, { revoked: id });
+    }
+    if (path === '/api/billing/packs') return json(200, { stripe: db.stripe, words_per_credit: 150, packs: PACKS });
+    if (path === '/api/billing/checkout') {
+      if (!db.user) return json(401, { error: 'login_required', detail: 'Sign in before buying credits.' });
+      if (!db.stripe) return json(503, { error: 'stripe_unconfigured', detail: 'Payments are not configured on this server.' });
+      var pack = PACKS.filter(function (p) { return p.name === String(body.pack || '').toLowerCase(); })[0];
+      if (!pack) return json(400, { error: 'unknown_pack', detail: 'Choose one of: starter, writer, heavy' });
+      return json(200, { url: 'demo.html?purchase=success&demo_pay=' + pack.name, session_id: 'cs_demo', pack: pack.name });
+    }
+    if (path === '/api/billing/ledger') {
+      if (!db.user) return json(401, { error: 'login_required', detail: 'Sign in first.' });
+      return json(200, { balance: db.credits, entries: db.ledger });
+    }
+    if (/^\/api\/humanize\/(llm|stream|guided)$/.test(path) && method === 'POST') {
+      var force = db.force; db.force = null; save();
+      if (force === '429') return json(429, { error: 'rate_limited', detail: 'Too many requests from this address. Try again in 12 seconds.', retry_after_s: 11.4 }, { 'Retry-After': '12' });
+      if (force === '401' || !db.user) return json(401, { error: 'login_required', detail: 'Sign in to use this engine.', login: '/api/auth/request-link' });
+      var words = String(body.text || '').split(/\s+/).filter(Boolean).length;
+      var cost = Math.max(1, Math.ceil(words / 150));
+      if (force === '402' || cost > db.credits) return json(402, { error: 'insufficient_credits', detail: 'Not enough credits.', needed: force === '402' ? 3 : cost, balance: force === '402' ? Math.min(db.credits, 1) : db.credits, packs: '/api/billing/packs', checkout: '/api/billing/checkout' });
+      if (force === 'busy') return json(503, { error: 'busy', detail: 'The rewriter is busy with another document. Nothing was charged.', retry_after_s: 3 }, { 'Retry-After': '3' });
+      entry(-cost, 'charge', path + ' ' + Math.random().toString(16).slice(2, 14)); save();
+      return json(200, { humanized: 'A rewrite of ' + words + ' words.', summary: { paragraphs_rewritten: 1 } }, { 'X-Longhand-Credits-Charged': String(cost), 'X-Longhand-Credits-Balance': String(db.credits) });
+    }
+    return json(404, { error: 'not_found', detail: 'No fake route for ' + method + ' ' + path });
+  }
+
+  window.fetch = function (input, init) {
+    var u = new URL(typeof input === 'string' ? input : input.url, location.href);
+    var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    var body = {};
+    try { body = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { body = {}; }
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        var res = route(method, u.pathname, u, body);
+        log('<b>' + method + ' ' + u.pathname + '</b> ' + res.status);
+        resolve(res);
+      }, 220);
+    });
+  };
+
+  /* Query hooks that stand in for the email link and for Stripe's return. */
+  var q = new URLSearchParams(location.search);
+  if (q.get('demo_verify')) { db.user = q.get('demo_verify'); save(); }
+  if (q.get('demo_pay')) {
+    var pay = PACKS.filter(function (p) { return p.name === q.get('demo_pay'); })[0];
+    if (pay && db.user) setTimeout(function () { entry(pay.credits, 'purchase', 'cs_demo_' + pay.name); save(); log('<b>webhook</b> credited ' + pay.credits); }, 2500);
+  }
+  if (q.get('demo_verify') || q.get('demo_pay')) {
+    q['delete']('demo_verify'); q['delete']('demo_pay');
+    var s = q.toString();
+    try { history.replaceState(null, '', location.pathname + (s ? '?' + s : '') + location.hash); } catch (e) { /* file: in some browsers */ }
+  }
+
+  window.demoApi = {
+    force: function (what) { db.force = what; save(); },
+    toggleStripe: function () { db.stripe = !db.stripe; save(); return db.stripe; },
+    reset: function () { db = fresh(); save(); },
+    log: log
+  };
+})();
+</script>
+
+<script src="account.js"></script>
+
+<script>
+/* Demo controls: the same calls app.js would make. */
+(function () {
+  'use strict';
+  var out = document.getElementById('out');
+  var SAMPLE = 'The committee met on Tuesday and, after a long discussion of the budget, agreed to defer the decision until the autumn, when the figures would be clearer and the new members would have had time to read the previous reports.';
+
+  function run(kind) {
+    if (kind !== 'ok') window.demoApi.force(kind);
+    out.textContent = 'Request sent.';
+    var text = SAMPLE + ' ' + SAMPLE + ' ' + SAMPLE;
+    fetch('/api/humanize/llm', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ text: text }) })
+      .then(function (res) {
+        return res.text().then(function (t) {
+          var b = res.headers.get('X-Longhand-Credits-Balance');
+          out.textContent = 'The page received HTTP ' + res.status + (b !== null ? ' with balance header ' + b : '') + ': ' + t.slice(0, 120);
+        });
+      }, function (err) { out.textContent = 'The page received an error: ' + err.message; });
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest ? e.target.closest('button') : null;
+    if (!t) return;
+    if (t.getAttribute('data-run')) run(t.getAttribute('data-run'));
+    if (t.getAttribute('data-go')) location.assign('demo.html' + t.getAttribute('data-go'));
+    if (t.getAttribute('data-open')) window.readshumanAccount.open(t.getAttribute('data-open'));
+  });
+  document.getElementById('stripe-toggle').addEventListener('click', function () {
+    var on = window.demoApi.toggleStripe();
+    this.textContent = on ? 'Turn Stripe off' : 'Turn Stripe on';
+    location.reload();
+  });
+  document.getElementById('cost').addEventListener('click', function () {
+    out.textContent = 'costFor(1234) = ' + window.readshumanAccount.costFor(1234) + ' credits at 150 words per credit.';
+  });
+  document.getElementById('reset').addEventListener('click', function () { window.demoApi.reset(); location.assign('demo.html'); });
+  document.addEventListener('readshuman:account', function (e) {
+    var u = e.detail && e.detail.user;
+    window.demoApi.log('<b>readshuman:account</b> ' + (u ? u.email + ', ' + u.credits + ' credits' : 'signed out'));
+  });
+})();
+</script>
+</body>
+</html>

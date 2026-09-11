@@ -1,0 +1,24 @@
+# Linux service for a box without Apple Silicon: the measurement, detectors
+# and rule-based rewrite run; the MLX engines report unavailable (503) and
+# the gate refunds those requests. Install:
+#   sudo cp deploy/systemd/longhand.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now longhand
+[Unit]
+Description=Longhand API (humanizer with paywall)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=longhand
+WorkingDirectory=/opt/humanizer
+EnvironmentFile=/opt/humanizer/deploy/.env
+ExecStart=/opt/humanizer/.venv/bin/python -m humanizer.billing --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/longhand /opt/humanizer/data
+
+[Install]
+WantedBy=multi-user.target
