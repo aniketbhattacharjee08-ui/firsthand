@@ -362,3 +362,15 @@ three or more `!` in a row).
 - `deploy/merge-day.md` §4, §10
 - `src/humanizer/humanize/llm.py` (`FREEFORM_MODEL`, `FREEFORM_STOPS`, `clean_completion`, `backend_for`)
 - research/24 §6.4 to §6.8, §6.14, §6.16; research/23 §3.2, §7; research/21 findings 1 to 5, §10.1; research/00 §19; research/19 §2
+
+## 10. The last non-commercial reference (2026-09-11)
+
+`llm.DEFAULT_MODEL`, used by the `faithful` style and the repair stage's
+bridge draft, pointed at Qwen2.5-3B-Instruct, which carries the same Qwen
+Research licence as the 3B base. It now defaults to
+`mlx-community/Qwen2.5-7B-Instruct-4bit` (Apache 2.0, 4 GB), overridable with
+`HUMANIZER_INSTRUCT_MODEL`. Smoke-tested through `humanize_llm`: freeform (7B
+base plus adapter r4) rewrote a three-sentence draft in 20 s, faithful (7B
+Instruct) in 10 s. Every checkpoint the product loads by default is now
+Apache 2.0 or MIT; the licence table is in the 2026-09-11 session notes and
+`deploy/merge-day.md` §4.

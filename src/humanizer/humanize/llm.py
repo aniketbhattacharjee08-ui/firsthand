@@ -100,9 +100,12 @@ __all__ = [
 ]
 
 
-#: 4-bit Qwen2.5-3B-Instruct. Measured on an M4 Pro: 0.5s warm load, 61.8 tok/s
-#: single-stream, 200-210 tok/s aggregate at batch 6. ~1.7GB on disk.
-DEFAULT_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+#: 4-bit Qwen2.5-7B-Instruct (Apache 2.0), used by the `faithful` style and by
+#: the repair stage's bridge draft. Replaced Qwen2.5-3B-Instruct on 2026-09-11
+#: because the 3B checkpoints carry the non-commercial Qwen Research licence;
+#: same family as the shipped base, ~4GB on disk. Override with
+#: HUMANIZER_INSTRUCT_MODEL.
+DEFAULT_MODEL = __import__("os").environ.get("HUMANIZER_INSTRUCT_MODEL", "mlx-community/Qwen2.5-7B-Instruct-4bit")
 
 #: The same model without instruction tuning, for `style="freeform"`. This
 #: is the only checkpoint on the machine whose output GPTZero has read as
