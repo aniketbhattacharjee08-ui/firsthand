@@ -114,7 +114,7 @@ def run(text=SOURCE, backend=None, detector=False, **config_kwargs):
 # ------------------------------------------------------- prompt construction
 
 
-def test_stage_names_are_the_documented_eight():
+def test_stage_names_are_the_documented_nine():
     assert pipe.STAGES == (
         "analyze",
         "plan",
@@ -123,6 +123,7 @@ def test_stage_names_are_the_documented_eight():
         "score",
         "verify",
         "select",
+        "repair",
         "finalize",
     )
 
@@ -152,13 +153,30 @@ def test_faithful_prompt_puts_the_draft_last():
 
 
 def test_freeform_prompt_is_a_fewshot_continuation():
+    from humanizer.humanize.exemplars import FREEFORM_SHOTS
+
     spec = llm.FREEFORM_SPECS[0]
     prompt = llm.build_prompt(FIRST_PARAGRAPH, spec)
     assert prompt.kind == "text"
-    assert prompt.text.count("DRAFT:") == 2  # the example and the real one
-    assert prompt.text.count("HUMAN:") == 2
+    k = len(FREEFORM_SHOTS)
+    assert prompt.text.count("DRAFT:") == k + 1  # the exemplars and the real one
+    assert prompt.text.count("NOTES:") == k + 1
+    assert prompt.text.count("HUMAN:") == k + 1
     assert prompt.text.rstrip().endswith("HUMAN:")
-    assert llm.STYLE_EXEMPLAR in prompt.text
+    assert llm._FREEFORM_NO_NOTES in prompt.text
+    # The author's facts fill the notes slot of the final entry.
+    with_facts = llm.build_prompt(FIRST_PARAGRAPH, spec, facts="Smith (2021): 40 sites").text
+    assert with_facts.rstrip().endswith("Smith (2021): 40 sites\n\nHUMAN:")
+    assert llm._FREEFORM_NO_NOTES not in with_facts
+    # A completion that starts inventing the next entry is cut at any label.
+    assert llm.clean_completion("A rewrite.\n\nNOTES:\n- invented", stops=llm.FREEFORM_STOPS) == "A rewrite."
+
+
+def test_completions_never_carry_em_or_en_dashes():
+    assert llm.clean_completion("Costs rose — sharply — in 2019.") == "Costs rose, sharply, in 2019."
+    assert llm.clean_completion("Costs rose–then fell.") == "Costs rose, then fell."
+    assert llm.clean_completion("Costs rose -- then fell.") == "Costs rose, then fell."
+    assert "—" not in llm.clean_completion("A—B—C.")
 
 
 def test_build_prompt_refuses_an_empty_paragraph():
@@ -433,6 +451,7 @@ def test_events_arrive_in_the_documented_stage_order():
         "score",
         "verify",
         "select",
+        "repair",
         "finalize",
     ]
 
@@ -762,7 +781,7 @@ from humanizer.api import server as server_mod  # noqa: E402
 
 @pytest.fixture()
 def client():
-    return TestClient(server_mod.create_app(web_dir=None))
+    return TestClient(server_mod.create_app(web_dir=None, auth=False))
 
 
 def _fake_stream(text, config=None, backend=None, detector=None):
@@ -925,7 +944,7 @@ def test_unknown_job_id_is_a_404_before_the_stream_opens(client):
 def test_llm_routes_sit_in_front_of_the_static_mount(tmp_path):
     """A Mount at "/" matches every path, so ordering is the whole contract."""
     (tmp_path / "index.html").write_text("<html></html>")
-    app = server_mod.create_app(web_dir=tmp_path)
+    app = server_mod.create_app(web_dir=tmp_path, auth=False)
     paths = [getattr(r, "path", None) for r in app.router.routes]
     assert "/api/humanize/llm" in paths
     assert paths.index("/api/humanize/llm") < paths.index("")
@@ -945,3 +964,178 @@ def test_rule_based_endpoint_still_works_alongside_the_llm_one(client):
         "after",
         "summary",
     }
+
+
+# ------------------------------------------------- author-supplied facts
+
+
+def test_invariants_allow_only_facts_the_author_supplied():
+    src = "The trial enrolled patients in 2019 and reported a 12% gain [4]."
+    added = src + " The 2021 audit counted 40 sites."
+    # New numbers with no facts: rejected.
+    assert pipe._invariant_failures(src, added) == ["numbers"]
+    # The same numbers, vouched for by the author: allowed.
+    assert pipe._invariant_failures(src, added, facts="2021 audit: 40 sites") == []
+    # A partial match is still a rejection: 40 is vouched for, 2021 is not.
+    assert pipe._invariant_failures(src, added, facts="40 sites") == ["numbers"]
+    # A source number vanishing is a failure whatever the facts say.
+    dropped = "The trial reported a 12% gain [4]. The 2021 audit counted 40 sites."
+    assert pipe._invariant_failures(src, dropped, facts="2021 audit: 40 sites") == ["numbers"]
+    # Empty facts is the exact-multiset check it always was.
+    assert pipe._invariant_failures(src, src, facts="") == []
+
+
+def test_new_specifics_names_what_a_reader_would_have_to_verify():
+    src = "Microplastics threaten freshwater life."
+    cand = (
+        "Microplastics are about 90 percent of waste, and 8 million tons reach "
+        "European rivers each year, said Dr Jackson."
+    )
+    assert pipe.new_specifics(src, cand) == ["90", "8", "European", "Dr Jackson"]
+    assert pipe.new_specifics(src, cand, facts="Dr Jackson, 8 million tons") == ["90", "European"]
+    assert pipe.new_specifics(src, src) == []
+
+
+def test_facts_block_sits_ahead_of_the_draft_in_both_chat_shapes():
+    facts = "Smith (2020) surveyed 40 sites"
+    for spec in (llm.REGISTER_SPECS[0], llm.CANDIDATE_SPECS[0]):
+        with_facts = llm.build_prompt(FIRST_PARAGRAPH, spec, facts=facts).rendered()
+        without = llm.build_prompt(FIRST_PARAGRAPH, spec).rendered()
+        assert "FACTS FROM THE AUTHOR" in with_facts
+        assert facts in with_facts
+        assert "FACTS FROM THE AUTHOR" not in without
+        # The draft stays last, where the adapter saw it in training.
+        assert with_facts.index(facts) < with_facts.rindex(FIRST_PARAGRAPH)
+        assert with_facts.rstrip().endswith(FIRST_PARAGRAPH)
+    # Blank facts change nothing at all.
+    assert llm.build_prompt(FIRST_PARAGRAPH, llm.REGISTER_SPECS[0], facts="   ").rendered() == (
+        llm.build_prompt(FIRST_PARAGRAPH, llm.REGISTER_SPECS[0]).rendered()
+    )
+
+
+def _anchoring_backend(request):
+    """A model that anchors the paragraph in a figure the draft lacks."""
+    return echo_source(request) + " A 2021 audit of 40 sites found the same."
+
+
+def test_without_facts_an_invented_figure_is_refused_and_named():
+    detector = FakeDetector(lambda t: 0.1 if "2021 audit" in t else 0.9)
+    _, result = run(
+        FIRST_PARAGRAPH, backend=fixed_backend(_anchoring_backend), detector=detector,
+        n_candidates=2, rounds=1, style="faithful",
+    )
+    para = result.paragraphs[0]
+    assert not para.changed
+    assert "invariant:numbers" in para.fallback_reason
+    assert para.unverified_specifics == ["2021", "40"]
+    assert "2021, 40" in para.fallback_reason
+    assert result.summary["unverified_specifics"] == ["2021", "40"]
+    assert result.summary["facts_supplied"] is False
+    assert para.as_dict()["unverified_specifics"] == ["2021", "40"]
+
+
+def test_with_facts_the_same_figure_is_allowed_and_the_paragraph_flips():
+    detector = FakeDetector(lambda t: 0.1 if "2021 audit" in t else 0.9)
+    _, result = run(
+        FIRST_PARAGRAPH, backend=fixed_backend(_anchoring_backend), detector=detector,
+        n_candidates=2, rounds=1, style="faithful", facts="2021 audit, 40 sites",
+    )
+    para = result.paragraphs[0]
+    assert para.changed
+    assert "2021 audit of 40 sites" in result.humanized
+    assert para.unverified_specifics == []
+    assert result.summary["facts_supplied"] is True
+    assert result.summary["unverified_specifics"] == []
+    # And the prompt the model saw carried the facts.
+    assert result.summary["verdict_flipped"] is True
+
+
+def test_facts_do_not_license_dropping_source_evidence():
+    def dropper(request):
+        return "Machine learning helps clinicians. A 2021 audit of 40 sites found the same."
+    detector = FakeDetector(lambda t: 0.1)
+    _, result = run(
+        FIRST_PARAGRAPH, backend=fixed_backend(dropper), detector=detector,
+        n_candidates=2, rounds=1, style="faithful", facts="2021 audit, 40 sites",
+    )
+    para = result.paragraphs[0]
+    assert not para.changed
+    assert any(g.startswith("invariant:") for c in para.candidates for g in c.gates)
+
+
+def test_freeform_backend_takes_an_optional_base_adapter(monkeypatch):
+    import os
+
+    # Unset: the shipped adapter when its directory exists, else the plain base.
+    monkeypatch.delenv("HUMANIZER_BASE_ADAPTER", raising=False)
+    expected = llm.DEFAULT_BASE_ADAPTER if os.path.isdir(llm.DEFAULT_BASE_ADAPTER) else None
+    assert llm.default_backend("freeform").adapter_path == expected
+    # Empty string: explicitly the plain base.
+    monkeypatch.setenv("HUMANIZER_BASE_ADAPTER", "")
+    assert llm.default_backend("freeform").adapter_path is None
+    monkeypatch.setenv("HUMANIZER_BASE_ADAPTER", "/tmp/hip-adapter")
+    assert llm.default_backend("freeform").adapter_path == "/tmp/hip-adapter"
+    assert llm.default_backend("faithful").adapter_path is None
+
+
+def test_retry_adapter_is_read_from_the_environment_and_ignored_with_a_supplied_backend(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_BASE_ADAPTER_RETRY", raising=False)
+    assert pipe.PipelineConfig().retry_adapter is None
+    monkeypatch.setenv("HUMANIZER_BASE_ADAPTER_RETRY", "/tmp/hip-adapter")
+    cfg = pipe.PipelineConfig(style="freeform", rounds=3, n_candidates=2)
+    assert cfg.retry_adapter == "/tmp/hip-adapter"
+    # An explicit backend serves every round; nothing MLX is built.
+    called = []
+    monkeypatch.setattr(llm, "backend_for", lambda *a, **k: called.append(a) or None)
+    _, result = run(FIRST_PARAGRAPH, backend=fixed_backend(), detector=FakeDetector(lambda t: 0.9),
+                    style="freeform", rounds=3, n_candidates=2)
+    assert called == []
+    assert result is not None
+
+
+def test_default_backend_adapter_argument_overrides_the_environment(monkeypatch):
+    monkeypatch.setenv("HUMANIZER_BASE_ADAPTER", "/tmp/env-adapter")
+    assert llm.default_backend("freeform").adapter_path == "/tmp/env-adapter"
+    assert llm.default_backend("freeform", adapter="/tmp/explicit").adapter_path == "/tmp/explicit"
+    assert llm.default_backend("freeform", adapter="").adapter_path is None
+
+
+def test_a_supplied_fact_may_be_used_more_than_once():
+    src = "Temperatures rose across the region."
+    cand = "Temperatures rose by 1 to 3 degrees, and 3 degrees is the figure that matters."
+    assert pipe._invariant_failures(src, cand, facts="warming of 1 to 3 degrees") == []
+    assert pipe.new_specifics(src, cand, facts="warming of 1 to 3 degrees") == []
+    # A number in neither the draft nor the facts is still refused.
+    assert pipe._invariant_failures(src, cand + " Some 400 stations agree.", facts="1 to 3 degrees") == ["numbers"]
+
+
+def test_evade_preset_values_are_the_measured_ones():
+    cfg = pipe.PipelineConfig(objective=pipe.OBJECTIVE_EVADE)
+    assert (cfg.min_content_overlap, cfg.max_length_ratio_delta, cfg.min_length_ratio) == (0.25, 0.45, 0.55)
+    faithful = pipe.PipelineConfig(objective=pipe.OBJECTIVE_FAITHFUL)
+    assert (faithful.min_content_overlap, faithful.max_length_ratio_delta, faithful.min_length_ratio) == (0.45, 0.25, 0.70)
+
+
+def test_pass_threshold_defaults_to_the_calibrated_value_and_drives_reruns(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_PASS_THRESHOLD", raising=False)
+    cfg = pipe.PipelineConfig()
+    assert cfg.pass_threshold == 0.15
+    assert cfg.rounds == 3
+    monkeypatch.setenv("HUMANIZER_PASS_THRESHOLD", "0.5")
+    assert pipe.PipelineConfig().pass_threshold == 0.5
+    monkeypatch.delenv("HUMANIZER_PASS_THRESHOLD", raising=False)
+    # A winner at 0.4 is not a pass: the paragraph is re-run in round 2.
+    calls = []
+    def backend_text(request):
+        calls.append(request.tag)
+        return echo_source(request) + " Extra sentence here."
+    # repair_attempts=0: this counts the rounds' calls, not the repair stage's.
+    _, result = run(FIRST_PARAGRAPH, backend=fixed_backend(backend_text), detector=FakeDetector(lambda t: 0.4),
+                    style="faithful", rounds=2, n_candidates=2, repair_attempts=0)
+    assert result.summary["rounds"] == 2 if "rounds" in result.summary else True
+    assert len(calls) == 4  # two candidates in each of two rounds
+    # At 0.05 the first round satisfies the threshold and round 2 is skipped.
+    calls.clear()
+    _, result = run(FIRST_PARAGRAPH, backend=fixed_backend(backend_text), detector=FakeDetector(lambda t: 0.05),
+                    style="faithful", rounds=2, n_candidates=2)
+    assert len(calls) == 2

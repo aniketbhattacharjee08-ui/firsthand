@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Nightly 03:00 UTC-ish backup (launchd uses local time). Install like
+     the API job; edit the paths. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.longhand.backup</string>
+  <key>UserName</key><string>longhand</string>
+  <key>WorkingDirectory</key><string>/Users/longhand/humanizer</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/longhand/humanizer/deploy/backup.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/longhand/Library/Logs/longhand.backup.log</string>
+  <key>StandardErrorPath</key><string>/Users/longhand/Library/Logs/longhand.backup.log</string>
+</dict>
+</plist>

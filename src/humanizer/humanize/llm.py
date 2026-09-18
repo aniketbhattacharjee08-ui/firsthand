@@ -60,13 +60,22 @@ rather than hiding them.
 from __future__ import annotations
 
 import re
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from ..memory import max_resident, release_memory
 
 __all__ = [
     "DEFAULT_MODEL",
     "FREEFORM_MODEL",
+    "REGISTER_MODEL",
+    "FACTS_BLOCK",
+    "REGISTER_ADAPTER",
+    "REGISTER_SPECS",
+    "register_model_path",
     "BANNED_VOCABULARY",
     "STYLE_EXEMPLAR",
     "CandidateSpec",
@@ -84,15 +93,88 @@ __all__ = [
     "mlx_unavailable_reason",
     "clean_completion",
     "estimate_max_tokens",
+    "default_backend",
+    "backend_for",
+    "loaded_backends",
+    "release_backends",
 ]
 
 
-#: 4-bit Qwen2.5-3B-Instruct. Measured on an M4 Pro: 0.5s warm load, 61.8 tok/s
-#: single-stream, 200-210 tok/s aggregate at batch 6. ~1.7GB on disk.
-DEFAULT_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+#: 4-bit Qwen2.5-7B-Instruct (Apache 2.0), used by the `faithful` style and by
+#: the repair stage's bridge draft. Replaced Qwen2.5-3B-Instruct on 2026-09-11
+#: because the 3B checkpoints carry the non-commercial Qwen Research licence;
+#: same family as the shipped base, ~4GB on disk. Override with
+#: HUMANIZER_INSTRUCT_MODEL.
+DEFAULT_MODEL = __import__("os").environ.get("HUMANIZER_INSTRUCT_MODEL", "mlx-community/Qwen2.5-7B-Instruct-4bit")
 
-#: The same model without instruction tuning, for `style="freeform"`.
-FREEFORM_MODEL = "mlx-community/Qwen2.5-3B-4bit"
+#: The same model without instruction tuning, for `style="freeform"`. This
+#: is the only checkpoint on the machine whose output GPTZero has read as
+#: human (research/24 §6.2: 6 of 12 raw candidates at 0.000-0.079, against
+#: 0 of 24 for the two instruct checkpoints), which is research/00 finding 5
+#: (base 96-99% human on GPTZero, instruct 17-30%) reproduced locally.
+#: Override with HUMANIZER_BASE_MODEL. The default moved from the 3B to the
+#: 7B base on 2026-09-10 (research/26): Qwen2.5-3B is under the Qwen Research
+#: licence (non-commercial) and Qwen2.5-7B is Apache 2.0, and with the HIP
+#: adapter below the 7B base passed 9 of 9 bench paragraphs on own-key GPTZero
+#: against the plain 7B's 6 of 9 the same day and the 3B's 81% over three runs.
+FREEFORM_MODEL = __import__("os").environ.get("HUMANIZER_BASE_MODEL", "mlx-community/Qwen2.5-7B-4bit")
+
+
+#: `style="register"`: Qwen3-4B-Instruct with a LoRA adapter trained on
+#: hand-written rewrites in the one register that has flipped the local
+#: detector AND the held-out ones (academic, fakespot, RADAR) on the bench:
+#: short plain sentences, a real name, year or figure in almost every
+#: sentence, a limiting or sceptical judgement, no transition words, no
+#: closing summary. The particulars come from `PipelineConfig.facts`: the
+#: round-1 adapter invented them and the shipping gates refused every
+#: candidate (research/24 §5.2). Round 4 was trained on 59 fidelity-first
+#: targets (content overlap >= 0.50 with the draft, every particular traceable
+#: to the draft or the prompt's FACTS block, desklib < 0.5) and, benched
+#: through the shipped pipeline with author facts (research/24 §5.5): 8/9
+#: desklib flips, 8/9 fakespot, 9/9 academic, 8/9 RADAR, 0/5 human paragraphs
+#: harmed, mean content overlap 0.59, no invented specifics. Without facts it
+#: returns the draft and names what it would have needed.
+#: The checkpoint is quantised to 4-bit on first use into data/cache/models.
+REGISTER_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+_REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[3]
+REGISTER_MODEL_DIR = str(_REPO_ROOT / "data" / "cache" / "models" / "qwen3-4b-instruct-4bit")
+#: The LoRA that ships on the base checkpoint (research/26; trained in
+#: `.hip7b/`, terse-notes data, step 200). `HUMANIZER_BASE_ADAPTER` overrides
+#: it; set it to an empty string for the plain base. Absent on disk means the
+#: plain base, so a checkout without `data/adapters/` still starts.
+DEFAULT_BASE_ADAPTER = str(_REPO_ROOT / "data" / "adapters" / "hip7b-r4-it200")
+#: Override with HUMANIZER_REGISTER_ADAPTER to bench another round
+#: (register-r3, 6/9, is kept alongside for comparison).
+REGISTER_ADAPTER = __import__("os").environ.get(
+    "HUMANIZER_REGISTER_ADAPTER",
+    str(_REPO_ROOT / "data" / "adapters" / "register-r4"),
+)
+
+
+def register_model_path() -> str:
+    """Local 4-bit MLX copy of `REGISTER_MODEL`, converted on first call.
+
+    The conversion reads the Hugging Face checkpoint (downloaded to the hub
+    cache if absent) and writes about 2.1GB. Raises `RuntimeError` with a
+    user-facing message when neither the converted copy nor a conversion is
+    possible.
+    """
+    import os
+
+    if os.path.isfile(os.path.join(REGISTER_MODEL_DIR, "config.json")):
+        return REGISTER_MODEL_DIR
+    try:
+        from mlx_lm import convert  # noqa: WPS433 - deliberately lazy
+
+        os.makedirs(os.path.dirname(REGISTER_MODEL_DIR), exist_ok=True)
+        convert(REGISTER_MODEL, mlx_path=REGISTER_MODEL_DIR, quantize=True, q_bits=4)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Could not prepare {REGISTER_MODEL!r} for mlx-lm ({exc}). The register "
+            "style needs the 4-bit copy in data/cache/models; the faithful style "
+            "and the rule-based engine at POST /api/humanize work without it."
+        ) from exc
+    return REGISTER_MODEL_DIR
 
 
 # --------------------------------------------------------------- the prompts
@@ -160,7 +242,22 @@ STYLE_CONTRACT = """STYLE CONTRACT - follow every line of it:
    (Although..., When..., Because...) and at least one on a concrete noun.
 10. Never three sentences in a row of similar length. Follow a long sentence
    with a short one.
-11. No lists of three ("X, Y, and Z"), no "not just X but Y"."""
+11. No lists of three ("X, Y, and Z"), no "not just X but Y".
+12. Read the draft for its meaning first. Then say that meaning in your own
+   sentences as if you had never seen the wording. Do not swap synonyms into
+   the draft's sentences; rebuild them.
+13. Hedge every claim the draft states as fact without a number or a
+   citation: "can play", "may affect", "appears", "is believed to", "is
+   likely to". Never hedge a number, a date or a quoted claim.
+14. Where the draft states a claim flat, one sentence may name a limit, a
+   condition or a competing reading that the draft already implies. Never
+   invent a study, a source or a citation.
+15. No two consecutive sentences may share a shape: not the same opener
+   kind, not within three words of the same length, not both closing on an
+   "X and Y" pair. Merge or rebuild one of them.
+16. Delete any clause that adds no proposition: "in various contexts",
+   "plays an important role", "it is important to note", "overall
+   well-being"."""
 
 
 @dataclass(frozen=True)
@@ -198,50 +295,77 @@ def _spec(index: int, persona: str, constraint: str, temperature: float) -> Cand
 #: index 0 is the most conservative, and the personas alternate between
 #: "revise" and "re-say".
 CANDIDATE_SPECS: Tuple[CandidateSpec, ...] = (
+    # The manual method of research/24 leads the ladder, so that the default
+    # six-candidate run (three instruct candidates under `mixed`) always
+    # contains it. Three specs, one per family of moves: re-say from memory,
+    # hedge and qualify, break the repeated beat.
     _spec(
         0,
+        "a supervisor who read the paragraph once and is now saying it back from memory",
+        "Close the draft. State its meaning in your own sentences without reusing "
+        "any of its clause structures. Keep every fact, number and name.",
+        0.80,
+    ),
+    _spec(
+        1,
+        "a peer reviewer who hedges what the evidence cannot carry",
+        "Turn each absolute claim into a hedged one (can, may, appears, is "
+        "believed to) and add one sentence naming a limit or competing reading "
+        "the draft already implies.",
+        0.85,
+    ),
+    _spec(
+        2,
+        "an editor who listens for repeated beats",
+        "Give consecutive sentences different shapes: a different opener kind "
+        "each time, never two similar lengths in a row, and merge any two "
+        "sentences that both close on an 'X and Y' pair.",
+        0.90,
+    ),
+    _spec(
+        3,
         "a careful researcher revising your own draft for clarity",
         "Open on the most concrete noun in the draft, not on a general claim.",
         0.70,
     ),
     _spec(
-        1,
+        4,
         "a domain expert writing plainly for a colleague who already knows the field",
         "Put the main claim in the middle of the paragraph, not in the first sentence.",
         0.80,
     ),
     _spec(
-        2,
+        5,
         "an editor cutting filler out of someone else's prose",
         "Delete every transition. Let the sentences sit next to each other unglued.",
         0.90,
     ),
     _spec(
-        3,
+        6,
         "a working journalist on deadline, writing for an informed reader",
         "Split the longest sentence into one long sentence and one very short one.",
         1.00,
     ),
     _spec(
-        4,
+        7,
         "a practitioner writing from experience rather than from a textbook",
         "Replace each abstract noun with the concrete thing it stands for.",
         0.85,
     ),
     _spec(
-        5,
+        8,
         "a graduate student turning lecture notes back into prose",
         "State the consequence first and the cause second.",
         0.95,
     ),
     _spec(
-        6,
+        9,
         "a reviewer rewriting a passage you found badly organised",
         "Drop the draft's opening move entirely and begin on its second idea.",
         0.75,
     ),
     _spec(
-        7,
+        10,
         "an author revising a passage a copy-editor flagged as flat",
         "Let one clause trail into a parenthetical aside; hedge one claim explicitly.",
         1.05,
@@ -252,7 +376,7 @@ CANDIDATE_SPECS: Tuple[CandidateSpec, ...] = (
     # tricolons, a metronomic 18-24 word mean. These specs attack each one
     # directly rather than leaving it to the style contract's rule 9-11.
     _spec(
-        8,
+        11,
         "a writer who hears the rhythm of a paragraph before its argument",
         "Begin every sentence with a different kind of word: a noun, then a "
         "subordinate clause, then a verb-ish participle, then a pronoun. Never "
@@ -260,7 +384,7 @@ CANDIDATE_SPECS: Tuple[CandidateSpec, ...] = (
         0.90,
     ),
     _spec(
-        9,
+        12,
         "an essayist who distrusts symmetry",
         "Make one sentence a single clause of six words or fewer and the next a "
         "three-clause sentence of thirty or more. No sentence may sit between "
@@ -268,7 +392,7 @@ CANDIDATE_SPECS: Tuple[CandidateSpec, ...] = (
         1.00,
     ),
     _spec(
-        10,
+        13,
         "a historian who front-loads circumstance",
         "Open at least two sentences with a fronted adverbial or subordinate "
         "clause (Because..., After..., Where..., Although...) before the "
@@ -276,7 +400,7 @@ CANDIDATE_SPECS: Tuple[CandidateSpec, ...] = (
         0.85,
     ),
     _spec(
-        11,
+        14,
         "a plain-spoken lecturer who breaks lists apart",
         "Dissolve every list of three into separate sentences or a pair. Put "
         "the least expected item first.",
@@ -296,6 +420,42 @@ FREEFORM_SPECS: Tuple[CandidateSpec, ...] = tuple(
         style="freeform",
     )
     for i, t in enumerate((0.80, 0.90, 0.95, 1.00, 1.05, 1.10, 0.85, 1.15))
+)
+
+
+#: The `register` prompt. These two strings are the exact prompt the adapter
+#: was trained with (.flip/anchor/build_data.py); changing a word here moves
+#: the model off its training distribution.
+REGISTER_SYSTEM = (
+    "You are an experienced editor. You turn generic draft paragraphs into the kind of paragraph a well-read specialist "
+    "writes: plain, concrete, sceptical where the evidence is thin, with real names, dates and figures, and no filler."
+)
+REGISTER_USER = (
+    "Rewrite this draft. Keep every claim in order. Short plain sentences, a real name, year or figure in almost every "
+    "sentence, a limiting or sceptical judgement where warranted, no transition words, no closing summary.\n\nDRAFT:\n{d}"
+)
+
+#: Inserted ahead of the draft (the draft stays last, where the adapter saw
+#: it in training) when the author supplied `PipelineConfig.facts`. The
+#: adapter invents particulars otherwise; the gates refuse invented ones, so
+#: this block is the only way a register candidate gets to add a figure.
+FACTS_BLOCK = (
+    "FACTS FROM THE AUTHOR - the only names, dates, figures and sources you may "
+    "add beyond what the draft already contains. Use them where they fit. "
+    "Invent nothing else.\n{f}\n\n"
+)
+
+#: The `register` ladder: one prompt, the sampler is the only knob, so the
+#: candidates differ in temperature only. 0.9 was the evaluation setting.
+REGISTER_SPECS: Tuple[CandidateSpec, ...] = tuple(
+    CandidateSpec(
+        index=i,
+        persona="a well-read specialist rewriting a generic draft",
+        constraint="the trained register",
+        temperature=t,
+        style="register",
+    )
+    for i, t in enumerate((0.90, 0.80, 1.00, 0.85, 0.95, 0.75, 1.05, 0.90))
 )
 
 
@@ -332,7 +492,7 @@ def specs_for(n: int, style: str = "faithful") -> List[CandidateSpec]:
                 )
             )
         return out
-    ladder = FREEFORM_SPECS if style == "freeform" else CANDIDATE_SPECS
+    ladder = {"freeform": FREEFORM_SPECS, "register": REGISTER_SPECS}.get(style, CANDIDATE_SPECS)
     out = []
     for i in range(n):
         base = ladder[i % len(ladder)]
@@ -393,9 +553,23 @@ _SYSTEM_FAITHFUL = (
     + "\n\nOutput only the revision of the draft the user gives you."
 )
 
-#: The `freeform` few-shot. One pair: a stereotypically generated paragraph and
-#: a human-voiced rewrite of it. The header frames the task as a log the model
-#: is continuing, which is the only framing a base model reliably picks up.
+#: The `freeform` few-shot, three (draft, notes, rewrite) triples from
+#: `exemplars.FREEFORM_SHOTS`. The header frames the task as a pattern the
+#: model is continuing, which is the only framing a base model reliably picks
+#: up. Measured 2026-09-07 with GPTZero scoring every candidate (research/24
+#: §6.3-6.4): one draft/rewrite pair, no notes: 9 of 18 candidates human, 1
+#: also through the gates; three pairs with the author's notes in the
+#: pattern: 16 of 54 human, 6 of 9 paragraphs with a gated human candidate
+#: at best-of-6. The notes slot carries `PipelineConfig.facts`.
+_FREEFORM_HEADER = (
+    "Each draft below was rewritten by its author in their own words: same "
+    "claims, same order, plainer and more exact, using only the particulars "
+    "in the author's notes, with the author's own judgement where the "
+    "evidence is thin.\n\n"
+)
+_FREEFORM_NO_NOTES = "(none: use only what the draft already says)"
+
+#: Kept for the faithful system turn's calibration passage and for tests.
 _FREEFORM_DRAFT = (
     "In today's rapidly evolving digital landscape, artificial intelligence "
     "has become an increasingly important tool for organizations of all sizes. "
@@ -406,40 +580,106 @@ _FREEFORM_DRAFT = (
     "to transparency, accountability, and continuous improvement."
 )
 
-_FREEFORM_HEADER = (
-    "Editing log. Each entry pairs a machine-written draft with the version a "
-    "human writer produced from it. The human version keeps every fact, every "
-    "number and every name, and throws out the transitions, the abstractions "
-    "and the tidy closing sentence.\n\n"
-)
-
 #: Where a base-model completion stops. It has no end-of-turn token, so it will
-#: happily invent the next log entry.
-FREEFORM_STOPS = ("\nDRAFT:", "\nEditing log", "\nHUMAN:")
+#: happily invent the next entry.
+FREEFORM_STOPS = ("\nDRAFT:", "\nNOTES:", "\nHUMAN:", "\nEditing log")
 
 
-def build_prompt(paragraph: str, spec: CandidateSpec) -> Prompt:
+def _freeform_shots(shots: Optional[Sequence[Tuple[str, str, str, str]]] = None) -> str:
+    """The few-shot block. `shots` overrides `exemplars.FREEFORM_SHOTS`.
+
+    The repair stage (`repair.py`) passes a subset or a reordering: the two
+    shortest triples when candidates drift, the reversed order when every
+    passer reads as AI, so the base model sees a different pattern rather
+    than the same one at a different temperature.
+    """
+    if shots is None:
+        from .exemplars import FREEFORM_SHOTS
+
+        shots = FREEFORM_SHOTS
+    return "".join(
+        f"DRAFT:\n{draft}\n\nNOTES:\n{notes}\n\nHUMAN:\n{rewrite}\n\n"
+        for _topic, draft, notes, rewrite in shots
+    )
+
+
+#: Label for the repair stage's instruction inside a chat prompt.
+EDITOR_NOTES_BLOCK = "NOTES FROM THE EDITOR, after a failed attempt:\n{n}\n\n"
+
+
+def _with_block(user: str, marker: str, block: str) -> str:
+    """Insert `block` immediately before `marker` in a user turn."""
+    idx = user.rfind(marker)
+    if idx < 0:  # pragma: no cover - every chat prompt here carries the marker
+        return user + "\n\n" + block.rstrip()
+    return user[:idx] + block + user[idx:]
+
+
+def _with_facts(user: str, marker: str, facts: str) -> str:
+    """Insert `FACTS_BLOCK` immediately before `marker` in a user turn."""
+    if not facts or not facts.strip():
+        return user
+    block = FACTS_BLOCK.format(f=facts.strip())
+    idx = user.rfind(marker)
+    if idx < 0:  # pragma: no cover - every chat prompt here carries the marker
+        return user + "\n\n" + block.rstrip()
+    return user[:idx] + block + user[idx:]
+
+
+def build_prompt(
+    paragraph: str,
+    spec: CandidateSpec,
+    facts: str = "",
+    extra_notes: str = "",
+    shots: Optional[Sequence[Tuple[str, str, str, str]]] = None,
+) -> Prompt:
     """The prompt for one candidate rewrite of one paragraph.
+
+    `extra_notes` is the repair stage's one-line instruction for a retry
+    ("use only the listed particulars", "match the draft's length"). In the
+    freeform shape it is appended to the NOTES slot, which is the only place
+    a base model reads an instruction from; in the chat shapes it is a block
+    ahead of the draft. `shots` replaces the freeform exemplar triples.
 
     The paragraph is placed last in both shapes. Instruction-following degrades
     with distance from the end of the context, and the rules are what we most
     need obeyed, so the rules sit next to the draft rather than at the top of a
     long system message.
+
+    `facts` (see `PipelineConfig.facts`) is inserted ahead of the draft in the
+    two chat shapes. The freeform base-model shape ignores it: its few-shot
+    continuation format has no place for an instruction, and base candidates
+    are gated on exactly the same invariants regardless.
     """
     if not paragraph or not paragraph.strip():
         raise ValueError("paragraph must not be empty")
 
+    extra = (extra_notes or "").strip()
+
+    if spec.style == "register":
+        user = _with_facts(REGISTER_USER.format(d=paragraph.strip()), "DRAFT:\n", facts)
+        if extra:
+            user = _with_block(user, "DRAFT:\n", EDITOR_NOTES_BLOCK.format(n=extra))
+        return Prompt(
+            kind="chat",
+            messages=(("system", REGISTER_SYSTEM), ("user", user)),
+        )
+
     if spec.style == "freeform":
+        notes = facts.strip() if facts and facts.strip() else _FREEFORM_NO_NOTES
+        if extra:
+            # A NOTES line, in the pattern's own vocabulary: the exemplar
+            # notes are "- " bullets, so the instruction is one more bullet.
+            notes = notes + "\n- " + extra
         return Prompt(
             kind="text",
             text=(
                 _FREEFORM_HEADER
+                + _freeform_shots(shots)
                 + "DRAFT:\n"
-                + _FREEFORM_DRAFT
-                + "\n\nHUMAN:\n"
-                + STYLE_EXEMPLAR
-                + "\n\nDRAFT:\n"
                 + paragraph.strip()
+                + "\n\nNOTES:\n"
+                + notes
                 + "\n\nHUMAN:\n"
             ),
         )
@@ -450,9 +690,15 @@ def build_prompt(paragraph: str, spec: CandidateSpec) -> Prompt:
         + spec.persona
         + ".\nStructural move: "
         + spec.constraint
-        + "\n\nRewrite the draft below and nothing else.\n\nDRAFT TO REVISE:\n"
+        + "\n\nMethod: read the draft below once for what it says. Then put it "
+        "aside and write what it says in your own sentences, keeping every "
+        "fact, number, name, quotation and citation. Output the rewrite and "
+        "nothing else.\n\nDRAFT TO REVISE:\n"
         + paragraph.strip()
     )
+    user = _with_facts(user, "DRAFT TO REVISE:\n", facts)
+    if extra:
+        user = _with_block(user, "DRAFT TO REVISE:\n", EDITOR_NOTES_BLOCK.format(n=extra))
     return Prompt(
         kind="chat",
         messages=(("system", _SYSTEM_FAITHFUL), ("user", user)),
@@ -471,6 +717,7 @@ _PREAMBLE_RE = re.compile(
     re.IGNORECASE,
 )
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
+_DASH_RE = re.compile(r"\s*[—–]\s*|\s+--\s+")
 _LABEL_RE = re.compile(r"^\s*(?:HUMAN|DRAFT|REVISION|OUTPUT)\s*:\s*", re.IGNORECASE)
 _TRAILING_NOTE_RE = re.compile(
     r"\n\s*(?:\(?note[:\s]|let me know|i hope this|this revision\b|"
@@ -506,6 +753,10 @@ def clean_completion(raw: str, stops: Sequence[str] = ()) -> str:
     text = _LABEL_RE.sub("", text, count=1)
     text = _PREAMBLE_RE.sub("", text, count=1)
     text = _TRAILING_NOTE_RE.sub("", text)
+    # No em or en dashes in output, ever: research/23 §4 lists dash density
+    # among GPTZero's published bypasser signatures and the product owner's
+    # rule is absolute. A spaced dash becomes a comma; a closed one too.
+    text = _DASH_RE.sub(", ", text)
     text = text.strip()
 
     for open_q, close_q in (('"', '"'), ("“", "”")):
@@ -648,8 +899,11 @@ class MlxBackend(Backend):
         top_p: float = 0.95,
         max_batch: int = 8,
         temperature_groups: int = 2,
+        adapter_path: Optional[str] = None,
     ):
         self.model_name = model_name
+        #: LoRA adapter directory passed to `mlx_lm.load`, or None.
+        self.adapter_path = adapter_path
         self.top_p = top_p
         self.temperature_groups = max(1, int(temperature_groups))
         #: Cap on prompts per batched call. 24GB of unified memory holds far
@@ -660,6 +914,10 @@ class MlxBackend(Backend):
         self._tokenizer: Any = None
         self._batch_fn: Any = None
         self._load_error: Optional[str] = None
+        #: Held for the whole of a `generate()` and of an `unload()`, so an
+        #: eviction from `backend_for` cannot drop the weights out from
+        #: under a batch that another request is decoding with them.
+        self._gen_lock = threading.RLock()
 
     # -- availability ------------------------------------------------------
 
@@ -691,7 +949,9 @@ class MlxBackend(Backend):
         try:
             from mlx_lm import load as mlx_load
 
-            self._model, self._tokenizer = mlx_load(self.model_name)
+            self._model, self._tokenizer = mlx_load(
+                self.model_name, adapter_path=self.adapter_path
+            )
         except Exception as exc:  # noqa: BLE001
             self._load_error = (
                 f"Could not load {self.model_name!r} with mlx-lm: {exc}. "
@@ -704,6 +964,25 @@ class MlxBackend(Backend):
             self._batch_fn = batch_generate
         except ImportError:
             self._batch_fn = None
+
+    def unload(self) -> None:
+        """Drop the weights and hand the MLX allocator cache back.
+
+        The reverse of `load()`: afterwards `loaded` is False and the next
+        `load()` reads the checkpoint again. A recorded load error is kept, so
+        an unloaded backend that could never load still says why.
+        """
+        with self._gen_lock:
+            model, tokenizer, batch_fn = self._model, self._tokenizer, self._batch_fn
+            self._model = None
+            self._tokenizer = None
+            self._batch_fn = None
+        release_memory(model, tokenizer, batch_fn)
+
+    @property
+    def loaded(self) -> bool:
+        """True while the weights are resident."""
+        return self._model is not None
 
     @property
     def batched(self) -> bool:
@@ -763,6 +1042,10 @@ class MlxBackend(Backend):
         return cohorts
 
     def generate(self, requests: Sequence[GenerationRequest]) -> GenerationBatch:
+        with self._gen_lock:
+            return self._generate_locked(requests)
+
+    def _generate_locked(self, requests: Sequence[GenerationRequest]) -> GenerationBatch:
         requests = list(requests)
         if not requests:
             return GenerationBatch(
@@ -868,11 +1151,98 @@ class EchoBackend(Backend):
         )
 
 
-def default_backend(style: str = "faithful", model: Optional[str] = None) -> MlxBackend:
-    """The MLX backend for a style, without loading anything yet."""
+def default_backend(
+    style: str = "faithful", model: Optional[str] = None, adapter: Optional[str] = None
+) -> MlxBackend:
+    """A fresh MLX backend for a style, without loading anything yet.
+
+    Not memoised: two calls give two backends and, once loaded, two copies of
+    the weights. Long-lived callers want `backend_for`. `adapter` is a LoRA
+    directory for the `freeform` base checkpoint; None reads
+    HUMANIZER_BASE_ADAPTER, and an empty string means the plain base.
+    """
+    if style == "register":
+        path = register_model_path() if model in (None, REGISTER_MODEL) else model
+        return MlxBackend(model_name=path, adapter_path=REGISTER_ADAPTER)
     if model is None:
         model = FREEFORM_MODEL if style == "freeform" else DEFAULT_MODEL
+    if style == "freeform":
+        # An optional LoRA on the base checkpoint (the HIP-style fine-tune of
+        # research/17 §A.11 and research/24 §6.6).
+        if adapter is None:
+            env = __import__("os").environ.get("HUMANIZER_BASE_ADAPTER")
+            if env is None:
+                adapter = DEFAULT_BASE_ADAPTER if __import__("os").path.isdir(DEFAULT_BASE_ADAPTER) else None
+            else:
+                adapter = env or None
+        return MlxBackend(model_name=model, adapter_path=adapter or None)
     return MlxBackend(model_name=model)
+
+
+# ------------------------------------------------------------ backend registry
+
+#: Environment variable naming the cap on resident MLX backends.
+MAX_RESIDENT_ENV = "HUMANIZER_MAX_RESIDENT_LLM"
+#: (style, resolved model path, adapter path or None) -> backend, LRU first.
+_BACKENDS: "OrderedDict[Tuple[str, str, Optional[str]], MlxBackend]" = OrderedDict()
+_BACKENDS_LOCK = threading.Lock()
+
+
+def _max_resident_backends() -> int:
+    """The cap, read from `MAX_RESIDENT_ENV` on every call; 0 = unlimited."""
+    return max_resident(MAX_RESIDENT_ENV, 2)
+
+
+def backend_for(
+    style: str = "faithful", model: Optional[str] = None, adapter: Optional[str] = None
+) -> MlxBackend:
+    """The process-wide backend for `(style, model)`, built on first use.
+
+    The same arguments return the same object, so the weights are read once
+    per process rather than once per request. Each Qwen 4-bit checkpoint is
+    1.7-2.2GB resident and every style has its own, so when the registry grows
+    past `HUMANIZER_MAX_RESIDENT_LLM` (default 2, so the `mixed` style's two
+    checkpoints coexist without reloading per paragraph) the least-recently-requested
+    backends are `unload()`ed. They stay usable -- `load()` simply reads the
+    checkpoint again -- so a caller still holding an evicted backend keeps
+    working, at the cost of a reload.
+    """
+    fresh = default_backend(style, model, adapter)
+    key = (style, fresh.model_name, fresh.adapter_path)
+    evicted: List[MlxBackend] = []
+    with _BACKENDS_LOCK:
+        backend = _BACKENDS.get(key)
+        if backend is None:
+            backend = fresh
+            _BACKENDS[key] = backend
+        _BACKENDS.move_to_end(key)
+        cap = _max_resident_backends()
+        while cap and len(_BACKENDS) > cap:
+            _, old = _BACKENDS.popitem(last=False)
+            evicted.append(old)
+    for old in evicted:
+        old.unload()
+    return backend
+
+
+def loaded_backends() -> List[str]:
+    """`style:model` for each registered backend, loaded ones first-class.
+
+    Only backends whose weights are resident are listed; a registered backend
+    that has never been `load()`ed costs nothing and would be misleading here.
+    """
+    with _BACKENDS_LOCK:
+        items = list(_BACKENDS.items())
+    return [f"{style}:{model}" for (style, model, _), b in items if b.loaded]
+
+
+def release_backends() -> None:
+    """Unload and forget every registered backend."""
+    with _BACKENDS_LOCK:
+        dropped = list(_BACKENDS.values())
+        _BACKENDS.clear()
+    for backend in dropped:
+        backend.unload()
 
 
 #: Exposed for `pipeline.py`, which needs the stop list when cleaning a
@@ -880,4 +1250,5 @@ def default_backend(style: str = "faithful", model: Optional[str] = None) -> Mlx
 STOPS_FOR_STYLE: Dict[str, Tuple[str, ...]] = {
     "faithful": (),
     "freeform": FREEFORM_STOPS,
+    "register": (),
 }

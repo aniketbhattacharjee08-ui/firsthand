@@ -1,0 +1,2149 @@
+{
+ "all": {
+  "n": 1500,
+  "hw": {
+   "n": 1500,
+   "mean": 158.541,
+   "median": 140.5,
+   "p10": 89.0,
+   "p90": 263.1
+  },
+  "dw": {
+   "n": 1500,
+   "mean": 177.695,
+   "median": 160.0,
+   "p10": 97.0,
+   "p90": 284.1
+  },
+  "ratio": {
+   "n": 1500,
+   "mean": 0.92,
+   "median": 0.95,
+   "p10": 0.66,
+   "p90": 1.113
+  },
+  "overlap": {
+   "n": 1500,
+   "mean": 0.636,
+   "median": 0.643,
+   "p10": 0.486,
+   "p90": 0.774
+  },
+  "fre_h": {
+   "n": 1500,
+   "mean": 27.428,
+   "median": 27.4,
+   "p10": 7.5,
+   "p90": 47.04
+  },
+  "fre_d": {
+   "n": 1500,
+   "mean": 21.799,
+   "median": 22.15,
+   "p10": 2.49,
+   "p90": 40.81
+  },
+  "cv_h": {
+   "n": 1500,
+   "mean": 0.372,
+   "median": 0.353,
+   "p10": 0.212,
+   "p90": 0.547
+  },
+  "cv_d": {
+   "n": 1500,
+   "mean": 0.358,
+   "median": 0.342,
+   "p10": 0.204,
+   "p90": 0.525
+  },
+  "n_sent_h": {
+   "n": 1500,
+   "mean": 6.874,
+   "median": 6.0,
+   "p10": 4.0,
+   "p90": 11.0
+  },
+  "min_sent": {
+   "n": 1500,
+   "mean": 12.765,
+   "median": 12.0,
+   "p10": 7.0,
+   "p90": 20.0
+  },
+  "max_sent": {
+   "n": 1500,
+   "mean": 38.849,
+   "median": 36.0,
+   "p10": 26.0,
+   "p90": 54.1
+  },
+  "connectives_h": {
+   "n": 1500,
+   "mean": 0.559,
+   "median": 0.0,
+   "p10": 0.0,
+   "p90": 2.0
+  },
+  "penalty_h": {
+   "n": 1500,
+   "mean": 0.068,
+   "median": 0.057,
+   "p10": 0.0,
+   "p90": 0.153
+  },
+  "penalty_d": {
+   "n": 1500,
+   "mean": 0.071,
+   "median": 0.064,
+   "p10": 0.0,
+   "p90": 0.147
+  },
+  "hedges_h": {
+   "n": 1500,
+   "mean": 9.608,
+   "median": 7.015,
+   "p10": 0.0,
+   "p90": 25.0
+  },
+  "hedges_d": {
+   "n": 1500,
+   "mean": 10.246,
+   "median": 8.06,
+   "p10": 0.0,
+   "p90": 24.856
+  },
+  "the_share_h": {
+   "n": 1500,
+   "mean": 0.368,
+   "median": 0.333,
+   "p10": 0.0,
+   "p90": 0.667
+  },
+  "n_notes": {
+   "n": 1500,
+   "mean": 1.237,
+   "median": 1.0,
+   "p10": 0.0,
+   "p90": 3.0
+  },
+  "notes_words": {
+   "n": 1500,
+   "mean": 15.57,
+   "median": 12.0,
+   "p10": 0.0,
+   "p90": 40.0
+  },
+  "n_new_specifics_with_notes": {
+   "n": 1500,
+   "mean": 0.393,
+   "median": 0.0,
+   "p10": 0.0,
+   "p90": 1.0
+  },
+  "n_new_specifics_bare": {
+   "n": 1500,
+   "mean": 1.693,
+   "median": 1.0,
+   "p10": 0.0,
+   "p90": 4.1
+  },
+  "share_no_notes": 0.375,
+  "share_with_new_specifics_despite_notes": 0.193,
+  "share_evade_gate_ok": 0.321,
+  "invariant_failure_kinds": {
+   "quotations": 201,
+   "entities": 802,
+   "numbers": 469,
+   "citations": 43,
+   "dates": 24
+  },
+  "residue_flag_counts": {
+   "et_al_bare": 134,
+   "asterisk_markup": 6,
+   "we_our_study": 232,
+   "orphan_punct": 272,
+   "numeric_cite": 9,
+   "no_terminal": 22,
+   "dangling_paren": 43,
+   "lowercase_start": 21,
+   "table_like": 42,
+   "fig_table_ref": 21,
+   "url_or_doi": 16
+  },
+  "share_any_residue": 0.429,
+  "share_fre_h_below_30": 0.565,
+  "share_human_shorter_than_draft": 0.627,
+  "share_closer_summary": 0.008
+ },
+ "kept": {
+  "n": 628,
+  "hw": {
+   "n": 628,
+   "mean": 142.783,
+   "median": 131.0,
+   "p10": 87.0,
+   "p90": 218.3
+  },
+  "dw": {
+   "n": 628,
+   "mean": 150.559,
+   "median": 139.5,
+   "p10": 93.0,
+   "p90": 226.0
+  },
+  "ratio": {
+   "n": 628,
+   "mean": 0.953,
+   "median": 0.952,
+   "p10": 0.812,
+   "p90": 1.093
+  },
+  "overlap": {
+   "n": 628,
+   "mean": 0.647,
+   "median": 0.652,
+   "p10": 0.509,
+   "p90": 0.772
+  },
+  "fre_h": {
+   "n": 628,
+   "mean": 33.198,
+   "median": 31.7,
+   "p10": 19.5,
+   "p90": 49.3
+  },
+  "fre_d": {
+   "n": 628,
+   "mean": 26.576,
+   "median": 25.65,
+   "p10": 12.67,
+   "p90": 42.83
+  },
+  "cv_h": {
+   "n": 628,
+   "mean": 0.378,
+   "median": 0.355,
+   "p10": 0.217,
+   "p90": 0.553
+  },
+  "cv_d": {
+   "n": 628,
+   "mean": 0.345,
+   "median": 0.337,
+   "p10": 0.191,
+   "p90": 0.506
+  },
+  "n_sent_h": {
+   "n": 628,
+   "mean": 6.373,
+   "median": 6.0,
+   "p10": 4.0,
+   "p90": 10.0
+  },
+  "min_sent": {
+   "n": 628,
+   "mean": 12.301,
+   "median": 12.0,
+   "p10": 7.0,
+   "p90": 18.0
+  },
+  "max_sent": {
+   "n": 628,
+   "mean": 37.382,
+   "median": 35.0,
+   "p10": 25.0,
+   "p90": 52.0
+  },
+  "connectives_h": {
+   "n": 628,
+   "mean": 0.274,
+   "median": 0.0,
+   "p10": 0.0,
+   "p90": 1.0
+  },
+  "penalty_h": {
+   "n": 628,
+   "mean": 0.07,
+   "median": 0.06,
+   "p10": 0.0,
+   "p90": 0.153
+  },
+  "penalty_d": {
+   "n": 628,
+   "mean": 0.073,
+   "median": 0.067,
+   "p10": 0.0,
+   "p90": 0.15
+  },
+  "hedges_h": {
+   "n": 628,
+   "mean": 9.226,
+   "median": 6.45,
+   "p10": 0.0,
+   "p90": 23.867
+  },
+  "hedges_d": {
+   "n": 628,
+   "mean": 10.2,
+   "median": 7.905,
+   "p10": 0.0,
+   "p90": 24.001
+  },
+  "the_share_h": {
+   "n": 628,
+   "mean": 0.384,
+   "median": 0.375,
+   "p10": 0.0,
+   "p90": 0.75
+  },
+  "n_notes": {
+   "n": 628,
+   "mean": 1.188,
+   "median": 1.0,
+   "p10": 0.0,
+   "p90": 3.0
+  },
+  "notes_words": {
+   "n": 628,
+   "mean": 15.057,
+   "median": 12.0,
+   "p10": 0.0,
+   "p90": 39.0
+  },
+  "n_new_specifics_with_notes": {
+   "n": 628,
+   "mean": 0.389,
+   "median": 0.0,
+   "p10": 0.0,
+   "p90": 1.0
+  },
+  "n_new_specifics_bare": {
+   "n": 628,
+   "mean": 1.604,
+   "median": 1.0,
+   "p10": 0.0,
+   "p90": 4.0
+  },
+  "share_no_notes": 0.366,
+  "share_with_new_specifics_despite_notes": 0.225,
+  "share_evade_gate_ok": 0.369,
+  "invariant_failure_kinds": {
+   "quotations": 92,
+   "entities": 274,
+   "numbers": 174,
+   "citations": 21,
+   "dates": 9
+  },
+  "residue_flag_counts": {
+   "et_al_bare": 66,
+   "we_our_study": 90,
+   "numeric_cite": 7,
+   "lowercase_start": 14,
+   "table_like": 13,
+   "no_terminal": 10,
+   "url_or_doi": 6,
+   "orphan_punct": 5,
+   "fig_table_ref": 2,
+   "dangling_paren": 7,
+   "asterisk_markup": 1
+  },
+  "share_any_residue": 0.29,
+  "share_fre_h_below_30": 0.443,
+  "share_human_shorter_than_draft": 0.661,
+  "share_closer_summary": 0.0
+ },
+ "dropped": {
+  "n": 872,
+  "hw": {
+   "n": 872,
+   "mean": 169.889,
+   "median": 148.0,
+   "p10": 90.0,
+   "p90": 295.8
+  },
+  "dw": {
+   "n": 872,
+   "mean": 197.237,
+   "median": 179.0,
+   "p10": 103.0,
+   "p90": 313.0
+  },
+  "ratio": {
+   "n": 872,
+   "mean": 0.896,
+   "median": 0.946,
+   "p10": 0.532,
+   "p90": 1.132
+  },
+  "overlap": {
+   "n": 872,
+   "mean": 0.627,
+   "median": 0.635,
+   "p10": 0.467,
+   "p90": 0.777
+  },
+  "fre_h": {
+   "n": 872,
+   "mean": 23.272,
+   "median": 23.6,
+   "p10": 2.71,
+   "p90": 45.59
+  },
+  "fre_d": {
+   "n": 872,
+   "mean": 18.358,
+   "median": 17.6,
+   "p10": -1.29,
+   "p90": 39.47
+  },
+  "cv_h": {
+   "n": 872,
+   "mean": 0.368,
+   "median": 0.352,
+   "p10": 0.206,
+   "p90": 0.544
+  },
+  "cv_d": {
+   "n": 872,
+   "mean": 0.367,
+   "median": 0.344,
+   "p10": 0.216,
+   "p90": 0.543
+  },
+  "n_sent_h": {
+   "n": 872,
+   "mean": 7.235,
+   "median": 6.0,
+   "p10": 4.0,
+   "p90": 12.0
+  },
+  "min_sent": {
+   "n": 872,
+   "mean": 13.1,
+   "median": 13.0,
+   "p10": 7.0,
+   "p90": 20.0
+  },
+  "max_sent": {
+   "n": 872,
+   "mean": 39.906,
+   "median": 37.0,
+   "p10": 26.1,
+   "p90": 56.0
+  },
+  "connectives_h": {
+   "n": 872,
+   "mean": 0.764,
+   "median": 0.0,
+   "p10": 0.0,
+   "p90": 2.0
+  },
+  "penalty_h": {
+   "n": 872,
+   "mean": 0.067,
+   "median": 0.054,
+   "p10": 0.0,
+   "p90": 0.153
+  },
+  "penalty_d": {
+   "n": 872,
+   "mean": 0.07,
+   "median": 0.06,
+   "p10": 0.0,
+   "p90": 0.14
+  },
+  "hedges_h": {
+   "n": 872,
+   "mean": 9.884,
+   "median": 7.235,
+   "p10": 0.0,
+   "p90": 25.41
+  },
+  "hedges_d": {
+   "n": 872,
+   "mean": 10.279,
+   "median": 8.145,
+   "p10": 0.0,
+   "p90": 25.0
+  },
+  "the_share_h": {
+   "n": 872,
+   "mean": 0.357,
+   "median": 0.333,
+   "p10": 0.0,
+   "p90": 0.667
+  },
+  "n_notes": {
+   "n": 872,
+   "mean": 1.273,
+   "median": 1.0,
+   "p10": 0.0,
+   "p90": 3.0
+  },
+  "notes_words": {
+   "n": 872,
+   "mean": 15.939,
+   "median": 12.0,
+   "p10": 0.0,
+   "p90": 41.0
+  },
+  "n_new_specifics_with_notes": {
+   "n": 872,
+   "mean": 0.397,
+   "median": 0.0,
+   "p10": 0.0,
+   "p90": 1.0
+  },
+  "n_new_specifics_bare": {
+   "n": 872,
+   "mean": 1.757,
+   "median": 1.0,
+   "p10": 0.0,
+   "p90": 5.0
+  },
+  "share_no_notes": 0.381,
+  "share_with_new_specifics_despite_notes": 0.17,
+  "share_evade_gate_ok": 0.287,
+  "invariant_failure_kinds": {
+   "quotations": 109,
+   "entities": 528,
+   "numbers": 295,
+   "dates": 15,
+   "citations": 22
+  },
+  "residue_flag_counts": {
+   "asterisk_markup": 5,
+   "we_our_study": 142,
+   "orphan_punct": 267,
+   "no_terminal": 12,
+   "dangling_paren": 36,
+   "et_al_bare": 68,
+   "table_like": 29,
+   "fig_table_ref": 19,
+   "numeric_cite": 2,
+   "url_or_doi": 10,
+   "lowercase_start": 7
+  },
+  "share_any_residue": 0.53,
+  "share_fre_h_below_30": 0.654,
+  "share_human_shorter_than_draft": 0.603,
+  "share_closer_summary": 0.014
+ },
+ "drop_reasons": {
+  "human_length": 152,
+  "fre": 271,
+  "ratio": 178,
+  "tokenised_spacing": 138,
+  "connectives": 110,
+  "overlap": 8,
+  "closer": 5,
+  "citation_marks": 10
+ },
+ "drop_reasons_by_source": {
+  "pmc": {
+   "ratio": 41,
+   "fre": 60,
+   "tokenised_spacing": 45,
+   "connectives": 33,
+   "human_length": 17,
+   "closer": 1,
+   "citation_marks": 2
+  },
+  "pmc2": {
+   "fre": 206,
+   "human_length": 48,
+   "ratio": 125,
+   "tokenised_spacing": 92,
+   "connectives": 75,
+   "closer": 4,
+   "overlap": 6,
+   "citation_marks": 8
+  },
+  "wiki": {
+   "human_length": 87,
+   "overlap": 2,
+   "fre": 5,
+   "ratio": 12,
+   "connectives": 2,
+   "tokenised_spacing": 1
+  }
+ },
+ "kept_by_source": {
+  "pmc": {
+   "n": 141,
+   "hw": {
+    "n": 141,
+    "mean": 130.482,
+    "median": 121.0,
+    "p10": 85.0,
+    "p90": 197.0
+   },
+   "dw": {
+    "n": 141,
+    "mean": 136.546,
+    "median": 125.0,
+    "p10": 87.0,
+    "p90": 204.0
+   },
+   "ratio": {
+    "n": 141,
+    "mean": 0.964,
+    "median": 0.956,
+    "p10": 0.813,
+    "p90": 1.11
+   },
+   "overlap": {
+    "n": 141,
+    "mean": 0.646,
+    "median": 0.65,
+    "p10": 0.508,
+    "p90": 0.778
+   },
+   "fre_h": {
+    "n": 141,
+    "mean": 30.852,
+    "median": 29.2,
+    "p10": 18.4,
+    "p90": 46.8
+   },
+   "fre_d": {
+    "n": 141,
+    "mean": 24.363,
+    "median": 23.5,
+    "p10": 12.5,
+    "p90": 39.2
+   },
+   "cv_h": {
+    "n": 141,
+    "mean": 0.36,
+    "median": 0.347,
+    "p10": 0.209,
+    "p90": 0.503
+   },
+   "cv_d": {
+    "n": 141,
+    "mean": 0.332,
+    "median": 0.318,
+    "p10": 0.175,
+    "p90": 0.503
+   },
+   "n_sent_h": {
+    "n": 141,
+    "mean": 5.915,
+    "median": 5.0,
+    "p10": 4.0,
+    "p90": 8.0
+   },
+   "min_sent": {
+    "n": 141,
+    "mean": 12.631,
+    "median": 12.0,
+    "p10": 7.0,
+    "p90": 19.0
+   },
+   "max_sent": {
+    "n": 141,
+    "mean": 35.418,
+    "median": 34.0,
+    "p10": 25.0,
+    "p90": 47.0
+   },
+   "connectives_h": {
+    "n": 141,
+    "mean": 0.326,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "penalty_h": {
+    "n": 141,
+    "mean": 0.069,
+    "median": 0.057,
+    "p10": 0.0,
+    "p90": 0.158
+   },
+   "penalty_d": {
+    "n": 141,
+    "mean": 0.073,
+    "median": 0.067,
+    "p10": 0.0,
+    "p90": 0.15
+   },
+   "hedges_h": {
+    "n": 141,
+    "mean": 8.102,
+    "median": 6.21,
+    "p10": 0.0,
+    "p90": 21.05
+   },
+   "hedges_d": {
+    "n": 141,
+    "mean": 10.191,
+    "median": 8.77,
+    "p10": 0.0,
+    "p90": 22.35
+   },
+   "the_share_h": {
+    "n": 141,
+    "mean": 0.372,
+    "median": 0.333,
+    "p10": 0.0,
+    "p90": 0.667
+   },
+   "n_notes": {
+    "n": 141,
+    "mean": 0.915,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 2.0
+   },
+   "notes_words": {
+    "n": 141,
+    "mean": 11.475,
+    "median": 8.0,
+    "p10": 0.0,
+    "p90": 34.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 141,
+    "mean": 0.255,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 141,
+    "mean": 1.199,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 3.0
+   },
+   "share_no_notes": 0.44,
+   "share_with_new_specifics_despite_notes": 0.191,
+   "share_evade_gate_ok": 0.411,
+   "invariant_failure_kinds": {
+    "entities": 56,
+    "numbers": 49,
+    "citations": 4,
+    "dates": 6,
+    "quotations": 10
+   },
+   "residue_flag_counts": {
+    "table_like": 7,
+    "we_our_study": 32,
+    "et_al_bare": 22,
+    "no_terminal": 2,
+    "numeric_cite": 2,
+    "lowercase_start": 3,
+    "url_or_doi": 1,
+    "dangling_paren": 1
+   },
+   "share_any_residue": 0.39,
+   "share_fre_h_below_30": 0.525,
+   "share_human_shorter_than_draft": 0.617,
+   "share_closer_summary": 0.0
+  },
+  "pmc2": {
+   "n": 360,
+   "hw": {
+    "n": 360,
+    "mean": 131.708,
+    "median": 122.5,
+    "p10": 86.0,
+    "p90": 196.0
+   },
+   "dw": {
+    "n": 360,
+    "mean": 139.772,
+    "median": 132.5,
+    "p10": 91.0,
+    "p90": 198.1
+   },
+   "ratio": {
+    "n": 360,
+    "mean": 0.945,
+    "median": 0.946,
+    "p10": 0.812,
+    "p90": 1.074
+   },
+   "overlap": {
+    "n": 360,
+    "mean": 0.643,
+    "median": 0.649,
+    "p10": 0.509,
+    "p90": 0.768
+   },
+   "fre_h": {
+    "n": 360,
+    "mean": 31.23,
+    "median": 30.2,
+    "p10": 19.29,
+    "p90": 44.1
+   },
+   "fre_d": {
+    "n": 360,
+    "mean": 24.065,
+    "median": 23.9,
+    "p10": 11.38,
+    "p90": 37.81
+   },
+   "cv_h": {
+    "n": 360,
+    "mean": 0.382,
+    "median": 0.349,
+    "p10": 0.216,
+    "p90": 0.59
+   },
+   "cv_d": {
+    "n": 360,
+    "mean": 0.349,
+    "median": 0.335,
+    "p10": 0.195,
+    "p90": 0.519
+   },
+   "n_sent_h": {
+    "n": 360,
+    "mean": 5.864,
+    "median": 5.0,
+    "p10": 4.0,
+    "p90": 9.0
+   },
+   "min_sent": {
+    "n": 360,
+    "mean": 12.467,
+    "median": 12.0,
+    "p10": 7.0,
+    "p90": 18.0
+   },
+   "max_sent": {
+    "n": 360,
+    "mean": 37.419,
+    "median": 35.0,
+    "p10": 25.0,
+    "p90": 53.1
+   },
+   "connectives_h": {
+    "n": 360,
+    "mean": 0.311,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "penalty_h": {
+    "n": 360,
+    "mean": 0.073,
+    "median": 0.067,
+    "p10": 0.0,
+    "p90": 0.16
+   },
+   "penalty_d": {
+    "n": 360,
+    "mean": 0.075,
+    "median": 0.067,
+    "p10": 0.0,
+    "p90": 0.16
+   },
+   "hedges_h": {
+    "n": 360,
+    "mean": 9.619,
+    "median": 6.115,
+    "p10": 0.0,
+    "p90": 25.906
+   },
+   "hedges_d": {
+    "n": 360,
+    "mean": 10.293,
+    "median": 7.38,
+    "p10": 0.0,
+    "p90": 26.064
+   },
+   "the_share_h": {
+    "n": 360,
+    "mean": 0.406,
+    "median": 0.4,
+    "p10": 0.143,
+    "p90": 0.75
+   },
+   "n_notes": {
+    "n": 360,
+    "mean": 1.022,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 3.0
+   },
+   "notes_words": {
+    "n": 360,
+    "mean": 13.225,
+    "median": 9.5,
+    "p10": 0.0,
+    "p90": 36.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 360,
+    "mean": 0.411,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 360,
+    "mean": 1.492,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 4.0
+   },
+   "share_no_notes": 0.411,
+   "share_with_new_specifics_despite_notes": 0.208,
+   "share_evade_gate_ok": 0.383,
+   "invariant_failure_kinds": {
+    "quotations": 29,
+    "entities": 158,
+    "numbers": 95,
+    "citations": 7
+   },
+   "residue_flag_counts": {
+    "et_al_bare": 44,
+    "we_our_study": 58,
+    "numeric_cite": 5,
+    "lowercase_start": 11,
+    "no_terminal": 5,
+    "url_or_doi": 5,
+    "orphan_punct": 5,
+    "table_like": 6,
+    "fig_table_ref": 2,
+    "dangling_paren": 6
+   },
+   "share_any_residue": 0.342,
+   "share_fre_h_below_30": 0.494,
+   "share_human_shorter_than_draft": 0.686,
+   "share_closer_summary": 0.0
+  },
+  "wiki": {
+   "n": 127,
+   "hw": {
+    "n": 127,
+    "mean": 187.835,
+    "median": 188.0,
+    "p10": 124.0,
+    "p90": 249.0
+   },
+   "dw": {
+    "n": 127,
+    "mean": 196.693,
+    "median": 198.0,
+    "p10": 125.4,
+    "p90": 257.4
+   },
+   "ratio": {
+    "n": 127,
+    "mean": 0.964,
+    "median": 0.964,
+    "p10": 0.816,
+    "p90": 1.104
+   },
+   "overlap": {
+    "n": 127,
+    "mean": 0.659,
+    "median": 0.664,
+    "p10": 0.526,
+    "p90": 0.792
+   },
+   "fre_h": {
+    "n": 127,
+    "mean": 41.38,
+    "median": 41.2,
+    "p10": 25.1,
+    "p90": 57.48
+   },
+   "fre_d": {
+    "n": 127,
+    "mean": 36.153,
+    "median": 35.0,
+    "p10": 22.2,
+    "p90": 50.44
+   },
+   "cv_h": {
+    "n": 127,
+    "mean": 0.387,
+    "median": 0.386,
+    "p10": 0.24,
+    "p90": 0.512
+   },
+   "cv_d": {
+    "n": 127,
+    "mean": 0.346,
+    "median": 0.357,
+    "p10": 0.223,
+    "p90": 0.46
+   },
+   "n_sent_h": {
+    "n": 127,
+    "mean": 8.323,
+    "median": 8.0,
+    "p10": 5.0,
+    "p90": 11.0
+   },
+   "min_sent": {
+    "n": 127,
+    "mean": 11.465,
+    "median": 11.0,
+    "p10": 6.0,
+    "p90": 18.0
+   },
+   "max_sent": {
+    "n": 127,
+    "mean": 39.457,
+    "median": 38.0,
+    "p10": 27.0,
+    "p90": 53.4
+   },
+   "connectives_h": {
+    "n": 127,
+    "mean": 0.11,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "penalty_h": {
+    "n": 127,
+    "mean": 0.063,
+    "median": 0.054,
+    "p10": 0.0,
+    "p90": 0.132
+   },
+   "penalty_d": {
+    "n": 127,
+    "mean": 0.067,
+    "median": 0.067,
+    "p10": 0.02,
+    "p90": 0.115
+   },
+   "hedges_h": {
+    "n": 127,
+    "mean": 9.36,
+    "median": 7.69,
+    "p10": 0.0,
+    "p90": 22.332
+   },
+   "hedges_d": {
+    "n": 127,
+    "mean": 9.948,
+    "median": 8.33,
+    "p10": 0.0,
+    "p90": 22.476
+   },
+   "the_share_h": {
+    "n": 127,
+    "mean": 0.331,
+    "median": 0.3,
+    "p10": 0.0,
+    "p90": 0.667
+   },
+   "n_notes": {
+    "n": 127,
+    "mean": 1.961,
+    "median": 2.0,
+    "p10": 0.0,
+    "p90": 4.0
+   },
+   "notes_words": {
+    "n": 127,
+    "mean": 24.228,
+    "median": 22.0,
+    "p10": 0.0,
+    "p90": 50.2
+   },
+   "n_new_specifics_with_notes": {
+    "n": 127,
+    "mean": 0.472,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 127,
+    "mean": 2.37,
+    "median": 2.0,
+    "p10": 0.0,
+    "p90": 5.0
+   },
+   "share_no_notes": 0.157,
+   "share_with_new_specifics_despite_notes": 0.307,
+   "share_evade_gate_ok": 0.283,
+   "invariant_failure_kinds": {
+    "entities": 60,
+    "numbers": 30,
+    "citations": 10,
+    "quotations": 53,
+    "dates": 3
+   },
+   "residue_flag_counts": {
+    "no_terminal": 3,
+    "asterisk_markup": 1
+   },
+   "share_any_residue": 0.031,
+   "share_fre_h_below_30": 0.205,
+   "share_human_shorter_than_draft": 0.638,
+   "share_closer_summary": 0.0
+  }
+ },
+ "dropped_by_source": {
+  "pmc": {
+   "n": 199,
+   "hw": {
+    "n": 199,
+    "mean": 157.538,
+    "median": 143.0,
+    "p10": 89.0,
+    "p90": 251.4
+   },
+   "dw": {
+    "n": 199,
+    "mean": 182.146,
+    "median": 164.0,
+    "p10": 98.8,
+    "p90": 292.6
+   },
+   "ratio": {
+    "n": 199,
+    "mean": 0.904,
+    "median": 0.957,
+    "p10": 0.555,
+    "p90": 1.129
+   },
+   "overlap": {
+    "n": 199,
+    "mean": 0.619,
+    "median": 0.613,
+    "p10": 0.466,
+    "p90": 0.771
+   },
+   "fre_h": {
+    "n": 199,
+    "mean": 22.688,
+    "median": 23.6,
+    "p10": 4.08,
+    "p90": 41.62
+   },
+   "fre_d": {
+    "n": 199,
+    "mean": 17.262,
+    "median": 15.9,
+    "p10": 1.18,
+    "p90": 37.56
+   },
+   "cv_h": {
+    "n": 199,
+    "mean": 0.367,
+    "median": 0.351,
+    "p10": 0.185,
+    "p90": 0.542
+   },
+   "cv_d": {
+    "n": 199,
+    "mean": 0.366,
+    "median": 0.341,
+    "p10": 0.217,
+    "p90": 0.55
+   },
+   "n_sent_h": {
+    "n": 199,
+    "mean": 6.729,
+    "median": 6.0,
+    "p10": 4.0,
+    "p90": 11.0
+   },
+   "min_sent": {
+    "n": 199,
+    "mean": 12.935,
+    "median": 12.0,
+    "p10": 7.0,
+    "p90": 19.0
+   },
+   "max_sent": {
+    "n": 199,
+    "mean": 39.437,
+    "median": 38.0,
+    "p10": 26.0,
+    "p90": 54.0
+   },
+   "connectives_h": {
+    "n": 199,
+    "mean": 0.869,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 2.0
+   },
+   "penalty_h": {
+    "n": 199,
+    "mean": 0.064,
+    "median": 0.05,
+    "p10": 0.0,
+    "p90": 0.125
+   },
+   "penalty_d": {
+    "n": 199,
+    "mean": 0.066,
+    "median": 0.05,
+    "p10": 0.0,
+    "p90": 0.138
+   },
+   "hedges_h": {
+    "n": 199,
+    "mean": 10.652,
+    "median": 8.16,
+    "p10": 0.0,
+    "p90": 26.796
+   },
+   "hedges_d": {
+    "n": 199,
+    "mean": 11.005,
+    "median": 8.85,
+    "p10": 0.0,
+    "p90": 26.24
+   },
+   "the_share_h": {
+    "n": 199,
+    "mean": 0.356,
+    "median": 0.333,
+    "p10": 0.0,
+    "p90": 0.625
+   },
+   "n_notes": {
+    "n": 199,
+    "mean": 1.131,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 3.0
+   },
+   "notes_words": {
+    "n": 199,
+    "mean": 14.442,
+    "median": 11.0,
+    "p10": 0.0,
+    "p90": 38.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 199,
+    "mean": 0.402,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 199,
+    "mean": 1.603,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 4.0
+   },
+   "share_no_notes": 0.402,
+   "share_with_new_specifics_despite_notes": 0.166,
+   "share_evade_gate_ok": 0.332,
+   "invariant_failure_kinds": {
+    "numbers": 70,
+    "entities": 115,
+    "quotations": 9,
+    "dates": 2,
+    "citations": 2
+   },
+   "residue_flag_counts": {
+    "no_terminal": 2,
+    "orphan_punct": 76,
+    "et_al_bare": 21,
+    "dangling_paren": 9,
+    "fig_table_ref": 9,
+    "we_our_study": 48,
+    "table_like": 4,
+    "url_or_doi": 2,
+    "lowercase_start": 1,
+    "asterisk_markup": 1
+   },
+   "share_any_residue": 0.643,
+   "share_fre_h_below_30": 0.704,
+   "share_human_shorter_than_draft": 0.598,
+   "share_closer_summary": 0.015
+  },
+  "pmc2": {
+   "n": 564,
+   "hw": {
+    "n": 564,
+    "mean": 153.33,
+    "median": 137.0,
+    "p10": 90.0,
+    "p90": 243.7
+   },
+   "dw": {
+    "n": 564,
+    "mean": 186.746,
+    "median": 165.5,
+    "p10": 99.3,
+    "p90": 300.1
+   },
+   "ratio": {
+    "n": 564,
+    "mean": 0.871,
+    "median": 0.928,
+    "p10": 0.493,
+    "p90": 1.11
+   },
+   "overlap": {
+    "n": 564,
+    "mean": 0.618,
+    "median": 0.629,
+    "p10": 0.458,
+    "p90": 0.765
+   },
+   "fre_h": {
+    "n": 564,
+    "mean": 19.94,
+    "median": 19.6,
+    "p10": 1.09,
+    "p90": 42.54
+   },
+   "fre_d": {
+    "n": 564,
+    "mean": 15.293,
+    "median": 15.4,
+    "p10": -3.17,
+    "p90": 35.24
+   },
+   "cv_h": {
+    "n": 564,
+    "mean": 0.362,
+    "median": 0.348,
+    "p10": 0.2,
+    "p90": 0.544
+   },
+   "cv_d": {
+    "n": 564,
+    "mean": 0.363,
+    "median": 0.344,
+    "p10": 0.203,
+    "p90": 0.535
+   },
+   "n_sent_h": {
+    "n": 564,
+    "mean": 6.433,
+    "median": 6.0,
+    "p10": 4.0,
+    "p90": 10.0
+   },
+   "min_sent": {
+    "n": 564,
+    "mean": 13.635,
+    "median": 13.0,
+    "p10": 7.0,
+    "p90": 21.0
+   },
+   "max_sent": {
+    "n": 564,
+    "mean": 39.431,
+    "median": 36.0,
+    "p10": 26.0,
+    "p90": 56.0
+   },
+   "connectives_h": {
+    "n": 564,
+    "mean": 0.84,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 2.0
+   },
+   "penalty_h": {
+    "n": 564,
+    "mean": 0.067,
+    "median": 0.05,
+    "p10": 0.0,
+    "p90": 0.165
+   },
+   "penalty_d": {
+    "n": 564,
+    "mean": 0.071,
+    "median": 0.063,
+    "p10": 0.0,
+    "p90": 0.143
+   },
+   "hedges_h": {
+    "n": 564,
+    "mean": 9.975,
+    "median": 7.435,
+    "p10": 0.0,
+    "p90": 25.823
+   },
+   "hedges_d": {
+    "n": 564,
+    "mean": 10.408,
+    "median": 8.21,
+    "p10": 0.0,
+    "p90": 25.0
+   },
+   "the_share_h": {
+    "n": 564,
+    "mean": 0.355,
+    "median": 0.333,
+    "p10": 0.0,
+    "p90": 0.667
+   },
+   "n_notes": {
+    "n": 564,
+    "mean": 1.037,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 3.0
+   },
+   "notes_words": {
+    "n": 564,
+    "mean": 13.321,
+    "median": 8.5,
+    "p10": 0.0,
+    "p90": 36.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 564,
+    "mean": 0.3,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 564,
+    "mean": 1.406,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 4.0
+   },
+   "share_no_notes": 0.429,
+   "share_with_new_specifics_despite_notes": 0.144,
+   "share_evade_gate_ok": 0.305,
+   "invariant_failure_kinds": {
+    "numbers": 190,
+    "entities": 335,
+    "quotations": 38,
+    "citations": 10,
+    "dates": 2
+   },
+   "residue_flag_counts": {
+    "we_our_study": 94,
+    "orphan_punct": 191,
+    "dangling_paren": 25,
+    "et_al_bare": 47,
+    "table_like": 23,
+    "fig_table_ref": 10,
+    "numeric_cite": 2,
+    "url_or_doi": 8,
+    "no_terminal": 3,
+    "asterisk_markup": 3,
+    "lowercase_start": 6
+   },
+   "share_any_residue": 0.573,
+   "share_fre_h_below_30": 0.729,
+   "share_human_shorter_than_draft": 0.645,
+   "share_closer_summary": 0.016
+  },
+  "wiki": {
+   "n": 109,
+   "hw": {
+    "n": 109,
+    "mean": 278.119,
+    "median": 298.0,
+    "p10": 174.4,
+    "p90": 334.0
+   },
+   "dw": {
+    "n": 109,
+    "mean": 279.073,
+    "median": 279.0,
+    "p10": 198.0,
+    "p90": 357.4
+   },
+   "ratio": {
+    "n": 109,
+    "mean": 1.009,
+    "median": 1.03,
+    "p10": 0.675,
+    "p90": 1.262
+   },
+   "overlap": {
+    "n": 109,
+    "mean": 0.688,
+    "median": 0.689,
+    "p10": 0.543,
+    "p90": 0.838
+   },
+   "fre_h": {
+    "n": 109,
+    "mean": 41.583,
+    "median": 42.8,
+    "p10": 25.46,
+    "p90": 58.2
+   },
+   "fre_d": {
+    "n": 109,
+    "mean": 36.218,
+    "median": 35.7,
+    "p10": 20.06,
+    "p90": 53.74
+   },
+   "cv_h": {
+    "n": 109,
+    "mean": 0.4,
+    "median": 0.385,
+    "p10": 0.273,
+    "p90": 0.544
+   },
+   "cv_d": {
+    "n": 109,
+    "mean": 0.392,
+    "median": 0.363,
+    "p10": 0.261,
+    "p90": 0.584
+   },
+   "n_sent_h": {
+    "n": 109,
+    "mean": 12.312,
+    "median": 12.0,
+    "p10": 7.0,
+    "p90": 17.0
+   },
+   "min_sent": {
+    "n": 109,
+    "mean": 10.633,
+    "median": 10.0,
+    "p10": 5.0,
+    "p90": 16.0
+   },
+   "max_sent": {
+    "n": 109,
+    "mean": 43.22,
+    "median": 41.0,
+    "p10": 30.8,
+    "p90": 62.2
+   },
+   "connectives_h": {
+    "n": 109,
+    "mean": 0.174,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "penalty_h": {
+    "n": 109,
+    "mean": 0.072,
+    "median": 0.067,
+    "p10": 0.0,
+    "p90": 0.138
+   },
+   "penalty_d": {
+    "n": 109,
+    "mean": 0.071,
+    "median": 0.067,
+    "p10": 0.022,
+    "p90": 0.123
+   },
+   "hedges_h": {
+    "n": 109,
+    "mean": 8.012,
+    "median": 6.47,
+    "p10": 0.0,
+    "p90": 19.404
+   },
+   "hedges_d": {
+    "n": 109,
+    "mean": 8.288,
+    "median": 7.07,
+    "p10": 0.0,
+    "p90": 18.074
+   },
+   "the_share_h": {
+    "n": 109,
+    "mean": 0.366,
+    "median": 0.35,
+    "p10": 0.1,
+    "p90": 0.644
+   },
+   "n_notes": {
+    "n": 109,
+    "mean": 2.752,
+    "median": 3.0,
+    "p10": 1.0,
+    "p90": 5.0
+   },
+   "notes_words": {
+    "n": 109,
+    "mean": 32.22,
+    "median": 32.0,
+    "p10": 3.8,
+    "p90": 63.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 109,
+    "mean": 0.89,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 2.2
+   },
+   "n_new_specifics_bare": {
+    "n": 109,
+    "mean": 3.853,
+    "median": 3.0,
+    "p10": 0.0,
+    "p90": 8.0
+   },
+   "share_no_notes": 0.092,
+   "share_with_new_specifics_despite_notes": 0.312,
+   "share_evade_gate_ok": 0.11,
+   "invariant_failure_kinds": {
+    "quotations": 62,
+    "entities": 78,
+    "numbers": 35,
+    "dates": 11,
+    "citations": 10
+   },
+   "residue_flag_counts": {
+    "asterisk_markup": 1,
+    "dangling_paren": 2,
+    "no_terminal": 7,
+    "table_like": 2
+   },
+   "share_any_residue": 0.101,
+   "share_fre_h_below_30": 0.174,
+   "share_human_shorter_than_draft": 0.394,
+   "share_closer_summary": 0.0
+  }
+ },
+ "all_by_source": {
+  "pmc": {
+   "n": 340,
+   "hw": {
+    "n": 340,
+    "mean": 146.318,
+    "median": 133.0,
+    "p10": 87.0,
+    "p90": 230.0
+   },
+   "dw": {
+    "n": 340,
+    "mean": 163.235,
+    "median": 146.0,
+    "p10": 93.0,
+    "p90": 257.0
+   },
+   "ratio": {
+    "n": 340,
+    "mean": 0.929,
+    "median": 0.956,
+    "p10": 0.678,
+    "p90": 1.129
+   },
+   "overlap": {
+    "n": 340,
+    "mean": 0.63,
+    "median": 0.63,
+    "p10": 0.48,
+    "p90": 0.778
+   },
+   "fre_h": {
+    "n": 340,
+    "mean": 26.074,
+    "median": 25.65,
+    "p10": 8.55,
+    "p90": 44.64
+   },
+   "fre_d": {
+    "n": 340,
+    "mean": 20.207,
+    "median": 20.55,
+    "p10": 4.36,
+    "p90": 38.25
+   },
+   "cv_h": {
+    "n": 340,
+    "mean": 0.364,
+    "median": 0.349,
+    "p10": 0.197,
+    "p90": 0.531
+   },
+   "cv_d": {
+    "n": 340,
+    "mean": 0.352,
+    "median": 0.334,
+    "p10": 0.195,
+    "p90": 0.536
+   },
+   "n_sent_h": {
+    "n": 340,
+    "mean": 6.391,
+    "median": 6.0,
+    "p10": 4.0,
+    "p90": 10.0
+   },
+   "min_sent": {
+    "n": 340,
+    "mean": 12.809,
+    "median": 12.0,
+    "p10": 7.0,
+    "p90": 19.0
+   },
+   "max_sent": {
+    "n": 340,
+    "mean": 37.771,
+    "median": 36.0,
+    "p10": 25.0,
+    "p90": 52.0
+   },
+   "connectives_h": {
+    "n": 340,
+    "mean": 0.644,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 2.0
+   },
+   "penalty_h": {
+    "n": 340,
+    "mean": 0.066,
+    "median": 0.053,
+    "p10": 0.0,
+    "p90": 0.143
+   },
+   "penalty_d": {
+    "n": 340,
+    "mean": 0.069,
+    "median": 0.057,
+    "p10": 0.0,
+    "p90": 0.147
+   },
+   "hedges_h": {
+    "n": 340,
+    "mean": 9.595,
+    "median": 7.465,
+    "p10": 0.0,
+    "p90": 25.32
+   },
+   "hedges_d": {
+    "n": 340,
+    "mean": 10.667,
+    "median": 8.83,
+    "p10": 0.0,
+    "p90": 25.122
+   },
+   "the_share_h": {
+    "n": 340,
+    "mean": 0.363,
+    "median": 0.333,
+    "p10": 0.0,
+    "p90": 0.667
+   },
+   "n_notes": {
+    "n": 340,
+    "mean": 1.041,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 3.0
+   },
+   "notes_words": {
+    "n": 340,
+    "mean": 13.212,
+    "median": 9.5,
+    "p10": 0.0,
+    "p90": 36.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 340,
+    "mean": 0.341,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 340,
+    "mean": 1.435,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 4.0
+   },
+   "share_no_notes": 0.418,
+   "share_with_new_specifics_despite_notes": 0.176,
+   "share_evade_gate_ok": 0.365,
+   "invariant_failure_kinds": {
+    "entities": 171,
+    "numbers": 119,
+    "quotations": 19,
+    "citations": 6,
+    "dates": 8
+   },
+   "residue_flag_counts": {
+    "no_terminal": 4,
+    "orphan_punct": 76,
+    "et_al_bare": 43,
+    "table_like": 11,
+    "dangling_paren": 10,
+    "fig_table_ref": 9,
+    "we_our_study": 80,
+    "numeric_cite": 2,
+    "lowercase_start": 4,
+    "url_or_doi": 3,
+    "asterisk_markup": 1
+   },
+   "share_any_residue": 0.538,
+   "share_fre_h_below_30": 0.629,
+   "share_human_shorter_than_draft": 0.606,
+   "share_closer_summary": 0.009
+  },
+  "pmc2": {
+   "n": 924,
+   "hw": {
+    "n": 924,
+    "mean": 144.906,
+    "median": 130.0,
+    "p10": 87.0,
+    "p90": 220.0
+   },
+   "dw": {
+    "n": 924,
+    "mean": 168.445,
+    "median": 148.0,
+    "p10": 95.0,
+    "p90": 266.0
+   },
+   "ratio": {
+    "n": 924,
+    "mean": 0.9,
+    "median": 0.938,
+    "p10": 0.59,
+    "p90": 1.095
+   },
+   "overlap": {
+    "n": 924,
+    "mean": 0.628,
+    "median": 0.639,
+    "p10": 0.475,
+    "p90": 0.766
+   },
+   "fre_h": {
+    "n": 924,
+    "mean": 24.338,
+    "median": 25.2,
+    "p10": 5.7,
+    "p90": 43.4
+   },
+   "fre_d": {
+    "n": 924,
+    "mean": 18.71,
+    "median": 19.3,
+    "p10": -0.1,
+    "p90": 36.47
+   },
+   "cv_h": {
+    "n": 924,
+    "mean": 0.37,
+    "median": 0.348,
+    "p10": 0.204,
+    "p90": 0.559
+   },
+   "cv_d": {
+    "n": 924,
+    "mean": 0.357,
+    "median": 0.341,
+    "p10": 0.2,
+    "p90": 0.53
+   },
+   "n_sent_h": {
+    "n": 924,
+    "mean": 6.211,
+    "median": 6.0,
+    "p10": 4.0,
+    "p90": 10.0
+   },
+   "min_sent": {
+    "n": 924,
+    "mean": 13.18,
+    "median": 13.0,
+    "p10": 7.0,
+    "p90": 20.0
+   },
+   "max_sent": {
+    "n": 924,
+    "mean": 38.647,
+    "median": 36.0,
+    "p10": 26.0,
+    "p90": 55.0
+   },
+   "connectives_h": {
+    "n": 924,
+    "mean": 0.634,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 2.0
+   },
+   "penalty_h": {
+    "n": 924,
+    "mean": 0.069,
+    "median": 0.057,
+    "p10": 0.0,
+    "p90": 0.16
+   },
+   "penalty_d": {
+    "n": 924,
+    "mean": 0.073,
+    "median": 0.067,
+    "p10": 0.0,
+    "p90": 0.15
+   },
+   "hedges_h": {
+    "n": 924,
+    "mean": 9.836,
+    "median": 7.055,
+    "p10": 0.0,
+    "p90": 25.871
+   },
+   "hedges_d": {
+    "n": 924,
+    "mean": 10.363,
+    "median": 7.87,
+    "p10": 0.0,
+    "p90": 25.287
+   },
+   "the_share_h": {
+    "n": 924,
+    "mean": 0.375,
+    "median": 0.333,
+    "p10": 0.0,
+    "p90": 0.714
+   },
+   "n_notes": {
+    "n": 924,
+    "mean": 1.031,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 3.0
+   },
+   "notes_words": {
+    "n": 924,
+    "mean": 13.284,
+    "median": 9.0,
+    "p10": 0.0,
+    "p90": 36.0
+   },
+   "n_new_specifics_with_notes": {
+    "n": 924,
+    "mean": 0.343,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "n_new_specifics_bare": {
+    "n": 924,
+    "mean": 1.439,
+    "median": 1.0,
+    "p10": 0.0,
+    "p90": 4.0
+   },
+   "share_no_notes": 0.422,
+   "share_with_new_specifics_despite_notes": 0.169,
+   "share_evade_gate_ok": 0.335,
+   "invariant_failure_kinds": {
+    "quotations": 67,
+    "numbers": 285,
+    "entities": 493,
+    "citations": 17,
+    "dates": 2
+   },
+   "residue_flag_counts": {
+    "et_al_bare": 91,
+    "we_our_study": 152,
+    "orphan_punct": 196,
+    "numeric_cite": 7,
+    "dangling_paren": 31,
+    "lowercase_start": 17,
+    "table_like": 29,
+    "no_terminal": 8,
+    "url_or_doi": 13,
+    "fig_table_ref": 12,
+    "asterisk_markup": 3
+   },
+   "share_any_residue": 0.483,
+   "share_fre_h_below_30": 0.637,
+   "share_human_shorter_than_draft": 0.661,
+   "share_closer_summary": 0.01
+  },
+  "wiki": {
+   "n": 236,
+   "hw": {
+    "n": 236,
+    "mean": 229.534,
+    "median": 231.0,
+    "p10": 131.5,
+    "p90": 323.0
+   },
+   "dw": {
+    "n": 236,
+    "mean": 234.742,
+    "median": 236.5,
+    "p10": 142.0,
+    "p90": 317.5
+   },
+   "ratio": {
+    "n": 236,
+    "mean": 0.984,
+    "median": 0.985,
+    "p10": 0.771,
+    "p90": 1.165
+   },
+   "overlap": {
+    "n": 236,
+    "mean": 0.673,
+    "median": 0.673,
+    "p10": 0.535,
+    "p90": 0.821
+   },
+   "fre_h": {
+    "n": 236,
+    "mean": 41.474,
+    "median": 42.0,
+    "p10": 25.1,
+    "p90": 57.7
+   },
+   "fre_d": {
+    "n": 236,
+    "mean": 36.183,
+    "median": 35.65,
+    "p10": 22.05,
+    "p90": 51.05
+   },
+   "cv_h": {
+    "n": 236,
+    "mean": 0.393,
+    "median": 0.386,
+    "p10": 0.255,
+    "p90": 0.515
+   },
+   "cv_d": {
+    "n": 236,
+    "mean": 0.367,
+    "median": 0.358,
+    "p10": 0.235,
+    "p90": 0.502
+   },
+   "n_sent_h": {
+    "n": 236,
+    "mean": 10.165,
+    "median": 10.0,
+    "p10": 5.0,
+    "p90": 15.0
+   },
+   "min_sent": {
+    "n": 236,
+    "mean": 11.081,
+    "median": 10.0,
+    "p10": 5.0,
+    "p90": 17.0
+   },
+   "max_sent": {
+    "n": 236,
+    "mean": 41.195,
+    "median": 40.0,
+    "p10": 28.5,
+    "p90": 56.5
+   },
+   "connectives_h": {
+    "n": 236,
+    "mean": 0.14,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 1.0
+   },
+   "penalty_h": {
+    "n": 236,
+    "mean": 0.067,
+    "median": 0.061,
+    "p10": 0.0,
+    "p90": 0.135
+   },
+   "penalty_d": {
+    "n": 236,
+    "mean": 0.069,
+    "median": 0.067,
+    "p10": 0.02,
+    "p90": 0.122
+   },
+   "hedges_h": {
+    "n": 236,
+    "mean": 8.737,
+    "median": 6.735,
+    "p10": 0.0,
+    "p90": 21.86
+   },
+   "hedges_d": {
+    "n": 236,
+    "mean": 9.181,
+    "median": 7.675,
+    "p10": 0.0,
+    "p90": 20.425
+   },
+   "the_share_h": {
+    "n": 236,
+    "mean": 0.347,
+    "median": 0.323,
+    "p10": 0.077,
+    "p90": 0.657
+   },
+   "n_notes": {
+    "n": 236,
+    "mean": 2.326,
+    "median": 2.0,
+    "p10": 0.0,
+    "p90": 5.0
+   },
+   "notes_words": {
+    "n": 236,
+    "mean": 27.919,
+    "median": 24.5,
+    "p10": 0.0,
+    "p90": 57.5
+   },
+   "n_new_specifics_with_notes": {
+    "n": 236,
+    "mean": 0.665,
+    "median": 0.0,
+    "p10": 0.0,
+    "p90": 2.0
+   },
+   "n_new_specifics_bare": {
+    "n": 236,
+    "mean": 3.055,
+    "median": 2.0,
+    "p10": 0.0,
+    "p90": 7.0
+   },
+   "share_no_notes": 0.127,
+   "share_with_new_specifics_despite_notes": 0.309,
+   "share_evade_gate_ok": 0.203,
+   "invariant_failure_kinds": {
+    "entities": 138,
+    "quotations": 115,
+    "numbers": 65,
+    "citations": 20,
+    "dates": 14
+   },
+   "residue_flag_counts": {
+    "asterisk_markup": 2,
+    "dangling_paren": 2,
+    "no_terminal": 10,
+    "table_like": 2
+   },
+   "share_any_residue": 0.064,
+   "share_fre_h_below_30": 0.191,
+   "share_human_shorter_than_draft": 0.525,
+   "share_closer_summary": 0.0
+  }
+ },
+ "kept_docs": 192,
+ "kept_docs_by_source": {
+  "pmc": 41,
+  "pmc2": 115,
+  "wiki": 36
+ },
+ "kept_per_doc_max": 8
+}
