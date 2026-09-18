@@ -30,7 +30,11 @@ for m in ("mlx-community/Qwen2.5-7B-4bit", "mlx-community/Qwen2.5-7B-Instruct-4b
 PY
 mkdir -p data/cache/models data/reference
 if [ -d data/cache/models/gptzero-surrogate ]; then echo "== free detector present"; else
-  echo "== free detector missing: unzip firsthand-weights.zip here to add data/cache/models/gptzero-surrogate"; fi
+  echo "== downloading the free detector (480 MB) from the GitHub release"
+  curl -L -o firsthand-weights.zip https://github.com/aniketbhattacharjee08-ui/firsthand/releases/download/v0.1.0/firsthand-weights.zip \
+    && unzip -oq firsthand-weights.zip && rm -f firsthand-weights.zip && echo "== free detector installed" \
+    || echo "== could not download the detector; the app still rewrites, without the free reading"
+fi
 [ -d data/adapters/hip7b-r4-it200 ] && echo "== adapter present: data/adapters/hip7b-r4-it200" || echo "== adapter missing (pull the repo again)"
 echo "== creating your admin account"
 .venv/bin/humanizer account master "${FIRSTHAND_ADMIN_EMAIL:-you@example.com}" || true
