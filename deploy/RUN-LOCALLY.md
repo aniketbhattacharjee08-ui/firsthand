@@ -16,7 +16,7 @@ key.
 ## Install
 
 ```bash
-git clone <repo-url> firsthand
+git clone https://github.com/aniketbhattacharjee08-ui/firsthand.git firsthand
 cd firsthand
 sh deploy/install-local.sh
 ```
@@ -29,9 +29,10 @@ uses a placeholder you can reset later with
 
 The trained adapter that makes the 7B base pass detectors ships in the repo at
 `data/adapters/hip7b-r4-it200`. The free detector, a 480 MB model trained on
-GPTZero verdicts, does not fit in git. The owner shares it as
-`firsthand-weights.zip`; unzip it at the repo root so that
-`data/cache/models/gptzero-surrogate/` exists. Without it the app still
+GPTZero verdicts, is too large for git; the installer downloads it from the
+repository's release page
+(https://github.com/aniketbhattacharjee08-ui/firsthand/releases) and unpacks
+it to `data/cache/models/gptzero-surrogate/`. Without it the app still
 rewrites, but shows no free reading; a user's own GPTZero key still works.
 
 ## Run
@@ -47,3 +48,9 @@ loads the model (about 30 s), then a paragraph takes 45 to 90 s.
 
 - Google and Apple sign-in need the operator's own keys (`deploy/README.md`).
 - The credit paywall (`humanizer.billing`) is off; the local copy is free.
+
+## Licence
+
+PolyForm Noncommercial 1.0.0 (see `LICENSE`): personal and other
+noncommercial use, modification and sharing are allowed; selling it or
+running it as a service needs the author's permission.

@@ -1,0 +1,20 @@
+Firsthand
+Copyright 2026 Aniket Bhattacharjee
+
+Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE): you may
+use, run, modify and share this software for noncommercial purposes; any
+commercial use, including offering it as a service, needs the copyright
+holder's permission (aniket_b@berkeley.edu).
+
+Third-party components, each under its own licence:
+- Qwen2.5-7B and Qwen2.5-7B-Instruct (Alibaba Cloud), Apache License 2.0. The
+  adapter in data/adapters/hip7b-r4-it200 is a derivative work distributed
+  under this repository's licence.
+- Qwen3-4B-Instruct (Alibaba Cloud), Apache License 2.0 (register style).
+- fakespot-ai/roberta-base-ai-text-detection-v1, Apache License 2.0 (base of
+  the free detector in data/cache/models/gptzero-surrogate, shipped as a
+  release asset).
+- desklib/ai-text-detector-v1.01, MIT; MayZhou/e5-small-lora-ai-generated-detector, MIT.
+- MLX and mlx-lm (Apple), MIT. FastAPI, MIT. Torch and Transformers, BSD and Apache 2.0.
+- Fonts loaded from Google Fonts under the SIL Open Font License.
+GPTZero is a third-party service used only with the operator's or a user's own API key.

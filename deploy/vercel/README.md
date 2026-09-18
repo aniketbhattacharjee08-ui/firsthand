@@ -35,7 +35,7 @@ Keep the Mac awake while plugged in (one-time, needs your password):
 export PATH="$HOME/.local/node/bin:$PATH"                 # node + vercel CLI live here (no Homebrew)
 ~/bin/cloudflared tunnel --url http://127.0.0.1:8000 --no-autoupdate &   # prints the *.trycloudflare.com address
 deploy/vercel/make-site.sh https://<that-address>          # rewrites vercel.json
-cd deploy/vercel/site && vercel deploy --prod --yes        # ~10 s
+cd deploy/vercel/site && vercel deploy --prod --yes --scope asha22   # ~10 s; the scope is required
 ```
 
 The quick tunnel's address changes every time it restarts, so those three
