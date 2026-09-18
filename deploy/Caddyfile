@@ -1,4 +1,4 @@
-# TLS termination and reverse proxy for ReadsHuman. Caddy fetches and renews
+# TLS termination and reverse proxy for Firsthand. Caddy fetches and renews
 # the certificate on its own. Replace the hostname; keep the header lines,
 # the gate reads X-Forwarded-For only when LONGHAND_TRUST_PROXY=1.
 

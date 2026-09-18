@@ -1,4 +1,4 @@
-/* ReadsHuman account module: sign-in, credits and purchases.
+/* Firsthand account module: sign-in, credits and purchases.
 
    Drop-in. Links account.css, mounts a pill into .top-tools (or a fixed
    corner), wraps window.fetch so app.js needs no edits, and exposes

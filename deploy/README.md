@@ -70,6 +70,28 @@ The session cookie is HttpOnly and `SameSite=Lax`; `fetch` on the same origin
 sends it automatically. Programmatic callers use
 `Authorization: Bearer lh_...` from `POST /api/auth/keys`.
 
+## Google and Apple sign-in
+
+The sign-in page shows "Continue with Google" and "Continue with Apple". Each
+works once its keys are in `.env`; until then the button sends the person back
+with a plain "not set up on this server yet" message.
+
+- **Google**: create an OAuth client of type Web application in the Google
+  Cloud console, add `https://<host>/api/auth/oauth/google/callback` as an
+  authorised redirect URI, and set `GOOGLE_CLIENT_ID` and
+  `GOOGLE_CLIENT_SECRET`. Works on `http://localhost:8000` too for testing.
+- **Apple**: needs a paid Apple Developer account. Create an App ID with the
+  Sign in with Apple capability, a Services ID (this is `APPLE_CLIENT_ID`)
+  with the return URL `https://<host>/api/auth/oauth/apple/callback` (Apple
+  refuses http), and a Sign in with Apple key; download the `.p8` once. Set
+  `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` (path or PEM). Install
+  the extra: `pip install -e '.[oauth]'` (cryptography, for the ES256 client
+  secret). Apple hides the email behind a relay address when the person
+  chooses "Hide my email"; the account is created under that relay address.
+
+Both flows are the standard authorization-code flow (PKCE for Google,
+`form_post` for Apple); `GET /api/auth/providers` tells the page which are on.
+
 ## Stripe setup
 
 1. Create one Product per pack with a one-time Price. Copy each `price_...`
@@ -85,6 +107,36 @@ sends it automatically. Programmatic callers use
 Credits are granted from the Checkout Session's `metadata.credits`, which the
 server sets when it creates the session, so a tampered client cannot change
 the amount. Webhook event ids are stored, so a retried event credits once.
+
+## Public in ten minutes: a Cloudflare tunnel from the Mac you already have
+
+Before renting anything, the running server can be public over https with no
+router changes. `cloudflared` is installed at `~/bin/cloudflared` (downloaded
+from Cloudflare's GitHub releases; no Homebrew on this machine).
+
+```bash
+~/bin/cloudflared tunnel --url http://127.0.0.1:8000 --no-autoupdate   # random *.trycloudflare.com address, no account
+```
+
+For your own domain, sign in once and bind a named tunnel (the browser opens
+for the login):
+
+```bash
+~/bin/cloudflared tunnel login
+~/bin/cloudflared tunnel create firsthand
+~/bin/cloudflared tunnel route dns firsthand app.<your-domain>
+HUMANIZER_PUBLIC_URL=https://app.<your-domain> humanizer serve --port 8000 &
+~/bin/cloudflared tunnel run --url http://127.0.0.1:8000 firsthand
+```
+
+The session cookie turns Secure behind the tunnel because Cloudflare sends
+`X-Forwarded-Proto: https`. Verified 2026-09-13 through a quick tunnel: landing,
+sign-up, app, engine health and legal pages all answered, and the cookie was
+set with HttpOnly, SameSite=Lax and Secure. Limits: the Mac must stay awake and
+connected, and there is no queue in front of the single GPU. Note this Mac's
+own resolver sometimes returns NXDOMAIN for fresh tunnel hostnames while the
+rest of the internet resolves them; test from a phone or with
+`curl --resolve <host>:443:104.16.230.132`.
 
 ## Hosting
 
@@ -142,6 +194,36 @@ rest are told busy at once.
 sheet, credits pill, packs sheet, account panel) that wrap `fetch` so
 `app.js` needs no edits. `demo.html` fakes the API so every state can be
 clicked through from disk. See `deploy/frontend/README.md`.
+
+## Public in ten minutes: a Cloudflare tunnel from the Mac you already have
+
+Before renting anything, the running server can be public over https with no
+router changes. `cloudflared` is installed at `~/bin/cloudflared` (downloaded
+from Cloudflare's GitHub releases; no Homebrew on this machine).
+
+```bash
+~/bin/cloudflared tunnel --url http://127.0.0.1:8000 --no-autoupdate   # random *.trycloudflare.com address, no account
+```
+
+For your own domain, sign in once and bind a named tunnel (the browser opens
+for the login):
+
+```bash
+~/bin/cloudflared tunnel login
+~/bin/cloudflared tunnel create firsthand
+~/bin/cloudflared tunnel route dns firsthand app.<your-domain>
+HUMANIZER_PUBLIC_URL=https://app.<your-domain> humanizer serve --port 8000 &
+~/bin/cloudflared tunnel run --url http://127.0.0.1:8000 firsthand
+```
+
+The session cookie turns Secure behind the tunnel because Cloudflare sends
+`X-Forwarded-Proto: https`. Verified 2026-09-13 through a quick tunnel: landing,
+sign-up, app, engine health and legal pages all answered, and the cookie was
+set with HttpOnly, SameSite=Lax and Secure. Limits: the Mac must stay awake and
+connected, and there is no queue in front of the single GPU. Note this Mac's
+own resolver sometimes returns NXDOMAIN for fresh tunnel hostnames while the
+rest of the internet resolves them; test from a phone or with
+`curl --resolve <host>:443:104.16.230.132`.
 
 ## Hosting the page on Vercel
 

@@ -1,16 +1,13 @@
-# Terms of Service (draft)
+# Terms of Service
 
-_Draft for review. Replace the bracketed items and have a lawyer read it
-before publishing._
-
-**Service.** ReadsHuman ([company/operator name]) measures a text you supply
+**Service.** Firsthand, operated by Aniket Bhattacharjee (the "operator"), measures a text you supply
 against published statistics of human writing and offers rewrites of it. You
 keep all rights to your text and to the rewrites.
 
 **Accounts and credits.** You sign in with an email address. Credits are
 consumed per request as shown before you run it and are refunded when a
 request is refused by the service. Credits are not refundable for cash except
-where the law requires it, and expire [never / after N months].
+where the law requires it, and do not expire.
 
 **No guarantee of any detector's verdict.** The service reports the verdict
 of the detectors it runs, including a local estimate of GPTZero and, if you
@@ -34,4 +31,4 @@ reported, not hidden.
 **Changes.** We may change these terms with notice on the site. Continued use
 after the change is acceptance.
 
-**Contact.** [email]
+**Contact.** aniket_b@berkeley.edu

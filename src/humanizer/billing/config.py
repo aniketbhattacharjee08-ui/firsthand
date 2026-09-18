@@ -108,9 +108,9 @@ def load_blocklist(path: str) -> FrozenSet[str]:
 @dataclass(frozen=True)
 class BillingConfig:
     enabled: bool = False
-    #: Shown in emails and by the frontend. The page calls itself ReadsHuman;
+    #: Shown in emails and by the frontend. The page calls itself Firsthand;
     #: the environment-variable prefix stays LONGHAND_ for stability.
-    product_name: str = "ReadsHuman"
+    product_name: str = "Firsthand"
     secret: str = ""
     db_path: Path = _DEFAULT_DB
     public_url: str = "http://127.0.0.1:8000"
@@ -146,7 +146,7 @@ class BillingConfig:
     trust_proxy: bool = False
     dev_links: bool = False
     smtp_url: str = ""
-    mail_from: str = "ReadsHuman <no-reply@localhost>"
+    mail_from: str = "Firsthand <no-reply@localhost>"
     admin_token: str = ""
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -208,7 +208,7 @@ class BillingConfig:
         db_raw = get("LONGHAND_DB")
         return cls(
             enabled=enabled,
-            product_name=get("LONGHAND_PRODUCT_NAME", "ReadsHuman"),
+            product_name=get("LONGHAND_PRODUCT_NAME", "Firsthand"),
             secret=secret,
             db_path=Path(db_raw).expanduser() if db_raw else _DEFAULT_DB,
             public_url=public_url,
@@ -231,7 +231,7 @@ class BillingConfig:
             trust_proxy=get_bool("LONGHAND_TRUST_PROXY", False),
             dev_links=get_bool("LONGHAND_DEV_LINKS", False),
             smtp_url=get("LONGHAND_SMTP_URL"),
-            mail_from=get("LONGHAND_MAIL_FROM", "ReadsHuman <no-reply@localhost>"),
+            mail_from=get("LONGHAND_MAIL_FROM", "Firsthand <no-reply@localhost>"),
             admin_token=get("LONGHAND_ADMIN_TOKEN"),
             stripe_secret_key=get("STRIPE_SECRET_KEY"),
             stripe_webhook_secret=get("STRIPE_WEBHOOK_SECRET"),

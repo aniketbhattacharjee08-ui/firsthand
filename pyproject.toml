@@ -25,7 +25,9 @@ detectors = ["torch>=2.0", "transformers>=4.40"]
 # Grammar/mechanics gating.
 quality = ["language-tool-python>=2.7"]
 # HTTP API and static frontend host. httpx is needed by fastapi's TestClient.
-api = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
+api = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27", "python-multipart>=0.0.9"]
+# Sign in with Apple needs an ES256-signed client secret; Google does not.
+oauth = ["cryptography>=42"]
 dev = ["pytest>=7.4"]
 
 [project.scripts]

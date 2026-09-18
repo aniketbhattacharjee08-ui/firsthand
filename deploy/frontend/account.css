@@ -1,4 +1,4 @@
-/* ReadsHuman account module: the pill, the sheet, the toast.
+/* Firsthand account module: the pill, the sheet, the toast.
 
    Scoped under .rha-. Uses the page's variables from styles.css, each with
    a fallback so the module also renders on its own. Controls reuse the

@@ -1,4 +1,4 @@
-# Account module for the ReadsHuman page
+# Account module for the Firsthand page
 
 Sign-in by email link, the credit balance, buying packs, the account panel
 (history, API keys, sign out, delete). One script, one stylesheet, no build

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ReadsHuman account module: demo</title>
+<title>Firsthand account module: demo</title>
 <meta name="color-scheme" content="dark">
 <link rel="stylesheet" href="../../web/styles.css">
 <link rel="stylesheet" href="account.css">
@@ -21,7 +21,7 @@
 <body>
 <div class="shell">
   <header class="top" role="banner">
-    <p class="wordmark">ReadsHuman</p>
+    <p class="wordmark">Firsthand</p>
     <p class="lede">Account module demo. Every request below goes to an in-memory fake API; nothing leaves this page.</p>
     <div class="top-tools">
       <p id="health" class="pill" data-kind="ok" role="status">Fake service</p>
@@ -116,7 +116,7 @@
     db.ledger.unshift({ id: db.ledger.length + 1, delta: delta, balance_after: db.credits, kind: kind, ref: ref, created: now() });
   }
   function health() {
-    return { product: 'ReadsHuman', paywall: true, free_credits: 3, words_per_credit: 150, refund_unchanged: true, max_inflight: 1, stripe: db.stripe, packs: PACKS, mail: 'dev-links' };
+    return { product: 'Firsthand', paywall: true, free_credits: 3, words_per_credit: 150, refund_unchanged: true, max_inflight: 1, stripe: db.stripe, packs: PACKS, mail: 'dev-links' };
   }
 
   function route(method, path, u, body) {
