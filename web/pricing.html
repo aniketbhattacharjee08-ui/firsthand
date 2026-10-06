@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pricing | Vervly</title>
+<meta name="description" content="What Vervly costs: 1,000 words free when you create an account, then a monthly, yearly or lifetime plan, with one-time top-ups.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0e1013">
+<link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&family=Source+Sans+3:wght@400;500;600&family=Fira+Mono:wght@400;500&display=swap">
+<noscript><link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&family=Source+Sans+3:wght@400;500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
+
+<link rel="stylesheet" href="/styles.css?v=202610052230">
+<link rel="stylesheet" href="/brand/footer.css?v=202609101554">
+<link rel="stylesheet" href="/home.css?v=202610052230">
+<link rel="stylesheet" href="/pricing.css?v=202610052230">
+</head>
+<body class="home pricing-page">
+
+<a class="skip-link" href="#main">Skip to the content</a>
+
+<div class="shell">
+
+  <header class="home-top" role="banner">
+    <a class="wordmark" href="/" aria-label="Vervly, front page"><span class="wordmark-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#a8e6b0"/></svg></span>Vervly</a>
+    <nav class="home-nav" aria-label="Account">
+      <a class="btn btn-quiet home-nav-link" href="/pricing" aria-current="page">Pricing</a>
+      <span class="home-balance" id="nav-balance" hidden></span>
+      <span class="home-who" id="nav-who" hidden></span>
+      <a class="btn btn-quiet" href="/signin?next=/pricing" data-when="out">Sign in</a>
+      <a class="btn" href="/signup?next=/pricing" data-when="out">Create account</a>
+      <a class="btn" href="/app" data-when="in" hidden>Open the humanizer</a>
+    </nav>
+  </header>
+
+  <main class="home-main pricing-main" id="main">
+
+    <!-- the plans. The copy here is the static fallback; pricing.js replaces
+         the prices and word counts with what GET /api/billing/plans answers,
+         so the page never drifts from what Stripe charges. Every numeral in .num. -->
+    <section class="plans" aria-labelledby="plans-h">
+      <h1 class="plans-h" id="plans-h">What it costs</h1>
+      <p class="plans-lede">Every plan gives you a number of words a month to run through the humanizer; the free allowance comes first and nothing is charged until it is used.</p>
+      <p class="plans-free" id="free-line"><span class="num">1,000</span> words free when you create an account.</p>
+
+      <div class="price-grid" id="price-grid">
+        <article class="price-card" data-plan="monthly" data-interval="month">
+          <h2 class="price-card-h">Monthly</h2>
+          <p class="price-card-amount"><span class="num">$9.99</span> a month</p>
+          <p class="price-card-words"><span class="num">30,000</span> words a month</p>
+          <p class="price-card-p">Renews every month until you cancel.</p>
+          <div class="price-card-act">
+            <button class="btn btn-primary" type="button" data-choose disabled>Choose Monthly</button>
+          </div>
+        </article>
+        <article class="price-card" data-plan="yearly" data-interval="year">
+          <h2 class="price-card-h">Yearly</h2>
+          <p class="price-card-amount"><span class="num">$79.99</span> a year</p>
+          <p class="price-card-words"><span class="num">30,000</span> words a month</p>
+          <p class="price-card-p">Renews every year until you cancel.</p>
+          <div class="price-card-act">
+            <button class="btn btn-primary" type="button" data-choose disabled>Choose Yearly</button>
+          </div>
+        </article>
+        <article class="price-card" data-plan="lifetime" data-interval="lifetime">
+          <h2 class="price-card-h">Lifetime</h2>
+          <p class="price-card-amount"><span class="num">$299</span> once</p>
+          <p class="price-card-words"><span class="num">20,000</span> words a month</p>
+          <p class="price-card-p">One payment. It never renews.</p>
+          <div class="price-card-act">
+            <button class="btn btn-primary" type="button" data-choose disabled>Choose Lifetime</button>
+          </div>
+        </article>
+      </div>
+
+      <div class="plans-foot">
+        <button class="btn btn-quiet" id="manage-btn" type="button" hidden>Manage subscription</button>
+        <p class="plans-status" id="plans-status" role="status" aria-live="polite" data-state="idle"></p>
+      </div>
+    </section>
+
+    <!-- one-time top-ups: a row per pack from the API; this one is the fallback -->
+    <section class="topups" aria-labelledby="topups-h">
+      <h2 class="section-h" id="topups-h">One-time top-up</h2>
+      <div class="topup-rows" id="topup-rows">
+        <div class="topup-row" data-pack="topup">
+          <div class="topup-main">
+            <p class="topup-h"><span class="num">10,000</span> words</p>
+            <p class="topup-meta">Paid once, added to whatever you have. No renewal.</p>
+          </div>
+          <p class="topup-price"><span class="num">$4.99</span></p>
+          <button class="btn" type="button" data-choose disabled>Top up</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="how" aria-labelledby="how-h">
+      <h2 class="section-h" id="how-h">How it works</h2>
+      <ul class="how-list">
+        <li>Words are counted on what you submit, before the rewrite runs.</li>
+        <li>A rewrite that comes back unchanged is refunded.</li>
+        <li>Unused words carry over, but only up to one month's amount.</li>
+        <li>Cancel any time from the Manage subscription button.</li>
+        <li>Payments are handled by Stripe. Vervly never sees card numbers.</li>
+      </ul>
+      <p class="how-legal">The <a href="/legal/terms.html">terms of service</a> and the <a href="/legal/privacy.html">privacy policy</a> say the rest.</p>
+    </section>
+
+  </main>
+
+  <footer class="site-foot" role="contentinfo">
+    <div class="site-foot-row">
+      <a class="site-foot-lockup" href="/" aria-label="Vervly">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#a8e6b0"/></svg>
+        <span class="site-foot-name">Vervly</span>
+      </a>
+      <nav class="site-foot-links" aria-label="Contact">
+        <a href="/pricing">Pricing</a>
+        <a href="mailto:aniket_b@berkeley.edu">aniket_b@berkeley.edu</a>
+        <a href="https://github.com/aniketbhattacharjee08-ui" rel="noopener">GitHub</a>
+        <a href="/legal/terms.html">Terms</a>
+        <a href="/legal/privacy.html">Privacy</a>
+        <span class="site-foot-fine">2026</span>
+      </nav>
+    </div>
+  </footer>
+
+</div>
+
+<script src="/pricing.js?v=202610052230" defer></script>
+</body>
+</html>

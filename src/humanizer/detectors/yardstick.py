@@ -43,8 +43,9 @@ CONFIGURATION
 
     HUMANIZER_YARDSTICK   auto (default) | gptzero | modern | fakespot |
                           academic | fast | radar
-    HUMANIZER_PROXY       modern (default) | fakespot | academic | fast | radar
-    GPTZERO_API_KEY       enables `gptzero`; `auto` picks gptzero when set
+    HUMANIZER_PROXY       gptzero | surrogate | modern | fakespot | academic | fast | radar
+    GPTZERO_API_KEY       enables `gptzero`; the default judge *and* candidate
+                          scorer are GPTZero whenever it is set (since 2026-09-22)
 
 `auto` means: GPTZero if a key is present, otherwise the proxy. `gptzero`
 without a key resolves to an *unavailable* yardstick rather than silently
@@ -78,9 +79,16 @@ __all__ = [
 
 YARDSTICK_ENV = "HUMANIZER_YARDSTICK"
 PROXY_ENV = "HUMANIZER_PROXY"
-DEFAULT_PROXY = "modern"
+#: The free GPTZero stand-in trained on GPTZero's own labels (local.py
+#: "surrogate"). It is the judge and candidate scorer only when no
+#: GPTZERO_API_KEY is present: on 2026-09-22 the owner switched the product
+#: back to GPTZero-ranked candidates (8 x 2) after the surrogate-ranked 4 x 1
+#: build shipped AI-rated rewrites. The surrogate agrees with GPTZero on only
+#: about 75% of live candidates (research/24 §6.12), and every other local
+#: checkpoint was measured disagreeing with GPTZero on rewritten text.
+DEFAULT_PROXY = "surrogate"
 #: The names `HUMANIZER_YARDSTICK` accepts besides `auto` and `gptzero`.
-LOCAL_NAMES = ("modern", "fakespot", "academic", "fast", "radar")
+LOCAL_NAMES = ("surrogate", "modern", "fakespot", "academic", "fast", "radar")
 
 
 @dataclass
@@ -242,12 +250,28 @@ def configured_name() -> str:
     """The `HUMANIZER_YARDSTICK` value after `auto` is resolved."""
     raw = (os.environ.get(YARDSTICK_ENV) or "auto").strip().lower()
     if raw == "auto":
-        return "gptzero" if os.environ.get("GPTZERO_API_KEY") else _proxy_name()
+        # The judge follows the candidate scorer: GPTZero when a key is
+        # present (the chosen candidate's score is already cached from
+        # ranking, so the "after" reading costs nothing extra), the free
+        # surrogate otherwise. HUMANIZER_YARDSTICK=surrogate keeps scans free.
+        return _proxy_name()
     return raw
 
 
 def _proxy_name() -> str:
-    raw = (os.environ.get(PROXY_ENV) or DEFAULT_PROXY).strip().lower()
+    raw = (os.environ.get(PROXY_ENV) or "").strip().lower()
+    if not raw:
+        # Owner's decision of 2026-09-22: with a key, GPTZero ranks every
+        # candidate. Paid, about $0.00046 a word, so eight 150-word
+        # candidates over two rounds cost about a dollar a paragraph.
+        # HUMANIZER_PROXY=surrogate restores the free ranker.
+        raw = "gptzero" if os.environ.get("GPTZERO_API_KEY") else DEFAULT_PROXY
+    if raw == "gptzero" and os.environ.get("GPTZERO_API_KEY"):
+        # GPTZero as the *candidate scorer*. Paid, about $0.00046 a word, so
+        # eight 150-word candidates cost roughly half a dollar per paragraph.
+        # It is the right scorer for the base-model path: research/24 §6.2
+        # measured the local proxy anti-correlated with GPTZero on base text.
+        return "gptzero"
     return raw if raw in LOCAL_NAMES else DEFAULT_PROXY
 
 
@@ -262,7 +286,10 @@ def _local(name: str) -> Yardstick:
 
     spec = PUBLISHED_DETECTORS.get(name) or PUBLISHED_DETECTORS[DEFAULT_PROXY]
     det = ModernDetector(
-        model_name=spec["model"], head=spec.get("head"), score_sentences=False
+        model_name=spec["model"],
+        head=spec.get("head"),
+        score_sentences=False,
+        threshold=spec.get("threshold", 0.5),
     )
     return Yardstick(name=name, kind="local-proxy", model=spec["model"], detector=det)
 
@@ -319,10 +346,13 @@ def proxy() -> Yardstick:
     with _LOCK:
         if _PROXY is None:
             y = _YARDSTICK
-            if y is not None and y.kind == "local-proxy" and y.name == _proxy_name():
+            name = _proxy_name()
+            if y is not None and y.name == name:
                 _PROXY = y
+            elif name == "gptzero":
+                _PROXY = _gptzero()
             else:
-                _PROXY = _local(_proxy_name())
+                _PROXY = _local(name)
         return _PROXY
 
 

@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 from .engine import HumanizeResult, check_invariants, humanize, invariants
+from .kriukow import structure_flags, structure_report
 from .transforms import (
     CONFIGS,
     PASSES,
@@ -28,6 +29,8 @@ from .transforms import (
     break_paragraph_template,
     break_parallelism,
     config_for,
+    hedge_absolutes,
+    relocate_contrastive_openers,
     replace_ai_vocabulary,
     sentence_spans,
     strip_formal_connectives,
@@ -52,4 +55,8 @@ __all__ = [
     "break_paragraph_template",
     "break_parallelism",
     "vary_sentence_length",
+    "hedge_absolutes",
+    "relocate_contrastive_openers",
+    "structure_report",
+    "structure_flags",
 ]

@@ -123,10 +123,10 @@ for the login):
 
 ```bash
 ~/bin/cloudflared tunnel login
-~/bin/cloudflared tunnel create firsthand
-~/bin/cloudflared tunnel route dns firsthand app.<your-domain>
+~/bin/cloudflared tunnel create vervly
+~/bin/cloudflared tunnel route dns vervly app.<your-domain>
 HUMANIZER_PUBLIC_URL=https://app.<your-domain> humanizer serve --port 8000 &
-~/bin/cloudflared tunnel run --url http://127.0.0.1:8000 firsthand
+~/bin/cloudflared tunnel run --url http://127.0.0.1:8000 vervly
 ```
 
 The session cookie turns Secure behind the tunnel because Cloudflare sends
@@ -210,10 +210,10 @@ for the login):
 
 ```bash
 ~/bin/cloudflared tunnel login
-~/bin/cloudflared tunnel create firsthand
-~/bin/cloudflared tunnel route dns firsthand app.<your-domain>
+~/bin/cloudflared tunnel create vervly
+~/bin/cloudflared tunnel route dns vervly app.<your-domain>
 HUMANIZER_PUBLIC_URL=https://app.<your-domain> humanizer serve --port 8000 &
-~/bin/cloudflared tunnel run --url http://127.0.0.1:8000 firsthand
+~/bin/cloudflared tunnel run --url http://127.0.0.1:8000 vervly
 ```
 
 The session cookie turns Secure behind the tunnel because Cloudflare sends

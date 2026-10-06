@@ -10,3 +10,7 @@ data/cache/
 data/reference/*.json
 !data/reference/.gitkeep
 .DS_Store
+
+# accounts database (local sessions and users)
+data/auth.sqlite
+data/auth.sqlite-*

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the Vercel project directory: a static shell that proxies every path
-# to the running Firsthand server (a Cloudflare tunnel or, later, the rented
+# to the running Vervly server (a Cloudflare tunnel or, later, the rented
 # Mac). Vercel gives the stable public address and TLS; the Mac does the work.
 #   deploy/vercel/make-site.sh https://<tunnel-or-api-host>
 set -eu
@@ -24,5 +24,5 @@ cat > "$SITE/vercel.json" <<JSON
 JSON
 # Vercel wants at least one static file in a project; the server answers "/"
 # through the rewrite, so this placeholder is never served.
-printf 'Firsthand\n' > "$SITE/.placeholder"
+printf 'Vervly\n' > "$SITE/.placeholder"
 echo "site ready: $SITE -> $API"

@@ -23,9 +23,22 @@ Endpoints
     POST /api/auth/keys               {label} -> {key} (shown once)
     DELETE /api/auth/keys/{id}
     GET  /api/billing/packs           purchasable packs
-    POST /api/billing/checkout        {pack} -> {url} Stripe Checkout
+    GET  /api/billing/plans           plans, packs, pricing in words
+    POST /api/billing/checkout        {plan} or {pack} -> {url} Stripe Checkout
+    POST /api/billing/portal          {url} Stripe billing portal (subscribers)
     POST /api/billing/webhook         Stripe events (signature verified)
     GET  /api/billing/ledger          the caller's credit history
+
+Plans and the webhook
+---------------------
+A plan checkout carries `metadata.plan`; a pack checkout carries
+`metadata.credits`. The webhook branches on that first, so a plan can never
+fall into the pack path (which answers 500 for Stripe to retry when it
+cannot credit). Monthly and yearly plans are Stripe subscriptions: the
+checkout event grants a provisional 35 days, then `customer.subscription.*`
+and `invoice.paid` events move `plan_until` to the real period end plus a
+grace. Lifetime is a one-off payment with `plan_until` NULL. Every event is
+applied through `Store.apply_once`, so Stripe's retries are no-ops.
 """
 
 from __future__ import annotations
@@ -33,6 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from html import escape as html_escape
 from typing import Any, Dict, Optional
 
@@ -42,7 +56,7 @@ from pydantic import BaseModel, Field
 
 from .config import BillingConfig
 from .gate import SESSION_COOKIE
-from .store import Store
+from .store import GRACE_DAYS, Store
 from . import mail as mail_mod
 from . import stripe_client
 from . import tokens
@@ -66,6 +80,12 @@ class KeyBody(BaseModel):
 
 class CheckoutBody(BaseModel):
     pack: str = Field(default="", max_length=32)
+    plan: str = Field(default="", max_length=32)
+
+
+#: Provisional plan length granted by a subscription checkout before the
+#: first `customer.subscription.*` event reports the real period end.
+PROVISIONAL_DAYS = 35
 
 
 #: Served by GET /api/auth/verify. Self-contained: no app assets, no fonts.
@@ -100,11 +120,20 @@ def _err(status: int, error: str, detail: str, **extra: Any) -> JSONResponse:
     return JSONResponse(status_code=status, content=body)
 
 
-def _user_payload(user: Dict[str, Any]) -> Dict[str, Any]:
+def _user_payload(user: Dict[str, Any], words_per_credit: int = 1) -> Dict[str, Any]:
+    credits = int(user.get("credits") or 0)
+    plan = str(user.get("plan") or "")
     return {
         "id": user["id"],
         "email": user["email"],
-        "credits": int(user.get("credits") or 0),
+        "credits": credits,
+        "words_left": credits * words_per_credit,
+        "words_per_credit": words_per_credit,
+        "plan": plan,
+        "plan_active": Store.plan_active(user) if plan else False,
+        "plan_until": user.get("plan_until"),
+        "plan_allowance": int(user.get("plan_allowance") or 0),
+        "has_billing_portal": bool(user.get("stripe_customer_id")),
         "is_admin": bool(user.get("is_admin")),
         "created": user.get("created"),
         "session_expires": user.get("session_expires"),
@@ -199,7 +228,7 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
             return result
         user, session = result
         user = dict(user, session_expires=session["expires"])
-        response = JSONResponse({"user": _user_payload(user)})
+        response = JSONResponse({"user": _user_payload(user, cfg.words_per_credit)})
         _set_session_cookie(response, cfg, session["id"])
         return response
 
@@ -229,14 +258,18 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
         response.delete_cookie(SESSION_COOKIE, path="/")
         return response
 
+    def _fresh(user: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-read a user after applying any allowance that fell due."""
+        store.topup_if_due(user["id"])
+        fresh = store.user(user["id"]) or user
+        return dict(fresh, session_expires=user.get("session_expires"))
+
     @app.get("/api/me")
     def me(request: Request) -> JSONResponse:
         user = _current_user(request)
         if user is None:
             return JSONResponse({"user": None, "paywall": cfg.enabled})
-        fresh = store.user(user["id"]) or user
-        fresh = dict(fresh, session_expires=user.get("session_expires"))
-        return JSONResponse({"user": _user_payload(fresh), "paywall": cfg.enabled})
+        return JSONResponse({"user": _user_payload(_fresh(user), cfg.words_per_credit), "paywall": cfg.enabled})
 
     @app.delete("/api/me")
     def delete_me(request: Request) -> JSONResponse:
@@ -287,42 +320,229 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
     @app.get("/api/billing/packs")
     def packs() -> JSONResponse:
         return JSONResponse(
+            {"stripe": cfg.stripe_configured, "words_per_credit": cfg.words_per_credit, "packs": cfg.public_packs()}
+        )
+
+    @app.get("/api/billing/plans")
+    def plans() -> JSONResponse:
+        return JSONResponse(
             {
                 "stripe": cfg.stripe_configured,
+                "paywall": cfg.enabled,
                 "words_per_credit": cfg.words_per_credit,
-                "packs": [
-                    {"name": p.name, "credits": p.credits, "label": p.label} for p in cfg.packs
-                ],
+                "free_credits": cfg.free_credits,
+                "free_words": cfg.free_credits * cfg.words_per_credit,
+                "plans": cfg.public_plans(),
+                "packs": cfg.public_packs(),
             }
         )
 
     @app.post("/api/billing/checkout")
     def checkout(request: Request, body: CheckoutBody) -> JSONResponse:
+        """Start a Stripe Checkout for `{plan}` or `{pack}` (plan wins).
+
+        Subscriptions carry the user id and plan name on the Subscription
+        object too (`subscription_data[metadata]`), so every later renewal
+        event can be matched without the checkout session.
+        """
         user = _current_user(request)
         if user is None:
-            return _err(401, "login_required", "Sign in before buying credits.")
+            return _err(401, "login_required", "Sign in before buying credits.", signin_url="/signin")
         if not cfg.stripe_configured:
             return _err(503, "stripe_unconfigured", "Payments are not configured on this server.")
-        pack = cfg.pack(body.pack.strip().lower())
-        if pack is None:
-            return _err(400, "unknown_pack", "Choose one of: %s" % ", ".join(p.name for p in cfg.packs))
+        plan_name = body.plan.strip().lower()
+        pack_name = body.pack.strip().lower()
+        if not plan_name and not pack_name:
+            return _err(400, "nothing_chosen", "Send {plan} or {pack}.")
+        fresh = store.user(user["id"]) or user
+        customer = fresh.get("stripe_customer_id") or None
+        kwargs: Dict[str, Any] = dict(
+            success_url="%s/app?purchase=success" % cfg.public_url,
+            cancel_url="%s/app?purchase=cancelled" % cfg.public_url,
+            customer_email=user["email"],
+            customer=customer,
+        )
+        if plan_name:
+            plan = cfg.plan(plan_name)
+            if plan is None:
+                return _err(400, "unknown_plan", "Choose one of: %s" % ", ".join(p.name for p in cfg.plans))
+            if plan.recurring and Store.plan_active(fresh) and fresh.get("stripe_subscription_id"):
+                return _err(
+                    409,
+                    "already_subscribed",
+                    "You already have an active subscription. Change or cancel it in the billing portal first.",
+                    portal="/api/billing/portal",
+                )
+            meta = {"user_id": user["id"], "plan": plan.name}
+            price_id = plan.price_id
+            kwargs["metadata"] = meta
+            if plan.recurring:
+                kwargs["mode"] = "subscription"
+                kwargs["subscription_metadata"] = meta
+            else:
+                kwargs["mode"] = "payment"
+            label: Dict[str, Any] = {"plan": plan.name, "mode": kwargs["mode"]}
+        else:
+            pack = cfg.pack(pack_name)
+            if pack is None:
+                return _err(400, "unknown_pack", "Choose one of: %s" % ", ".join(p.name for p in cfg.packs))
+            price_id = pack.price_id
+            kwargs["mode"] = "payment"
+            kwargs["metadata"] = {"user_id": user["id"], "credits": str(pack.credits), "pack": pack.name}
+            label = {"pack": pack.name, "mode": "payment"}
         try:
-            session = stripe_client.create_checkout_session(
-                cfg.stripe_secret_key,
-                pack.price_id,
-                1,
-                success_url="%s/?purchase=success" % cfg.public_url,
-                cancel_url="%s/?purchase=cancelled" % cfg.public_url,
-                customer_email=user["email"],
-                metadata={"user_id": user["id"], "credits": str(pack.credits), "pack": pack.name},
-            )
+            session = stripe_client.create_checkout_session(cfg.stripe_secret_key, price_id, 1, **kwargs)
         except stripe_client.StripeError as exc:
             log.error("checkout failed: %s", exc)
             return _err(502, "stripe_error", str(exc))
         except Exception as exc:  # noqa: BLE001
             log.exception("checkout failed")
             return _err(502, "stripe_error", "Could not reach Stripe: %s" % exc)
-        return JSONResponse({"url": session.get("url"), "session_id": session.get("id"), "pack": pack.name})
+        out = {"url": session.get("url"), "session_id": session.get("id")}
+        out.update(label)
+        return JSONResponse(out)
+
+    @app.post("/api/billing/portal")
+    def portal(request: Request) -> JSONResponse:
+        """A Stripe billing portal link for the caller's stored customer."""
+        user = _current_user(request)
+        if user is None:
+            return _err(401, "login_required", "Sign in first.", signin_url="/signin")
+        if not cfg.stripe_secret_key:
+            return _err(503, "stripe_unconfigured", "Payments are not configured on this server.")
+        fresh = store.user(user["id"]) or user
+        customer = fresh.get("stripe_customer_id")
+        if not customer:
+            return _err(404, "no_customer", "No Stripe customer is linked to this account yet. Buy a plan first.")
+        try:
+            session = stripe_client.create_portal_session(cfg.stripe_secret_key, customer, "%s/app" % cfg.public_url)
+        except stripe_client.StripeError as exc:
+            log.error("portal failed: %s", exc)
+            return _err(502, "stripe_error", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("portal failed")
+            return _err(502, "stripe_error", "Could not reach Stripe: %s" % exc)
+        return JSONResponse({"url": session.get("url")})
+
+    # -- webhook ----------------------------------------------------------
+
+    def _find_user(meta: Dict[str, Any], customer: Any, subscription: Any = None) -> Optional[Dict[str, Any]]:
+        """By metadata.user_id, then the stored customer id, then the subscription id."""
+        uid = str(meta.get("user_id") or "")
+        user = store.user(uid) if uid else None
+        if user is None and isinstance(customer, str):
+            user = store.user_by_customer(customer)
+        if user is None and isinstance(subscription, str):
+            user = store.user_by_subscription(subscription)
+        return user
+
+    def _period_end(sub: Dict[str, Any]) -> Optional[float]:
+        """`current_period_end` from the subscription, wherever this API version puts it."""
+        end = sub.get("current_period_end")
+        if end is None:
+            items = ((sub.get("items") or {}).get("data") or [])
+            if items and isinstance(items[0], dict):
+                end = items[0].get("current_period_end")
+        try:
+            return float(end) if end is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _apply_plan_checkout(event_id: str, event_type: str, obj: Dict[str, Any], plan_name: str) -> JSONResponse:
+        plan = cfg.plan(plan_name)
+        meta = obj.get("metadata") or {}
+        customer = obj.get("customer") if isinstance(obj.get("customer"), str) else None
+        subscription = obj.get("subscription") if isinstance(obj.get("subscription"), str) else None
+        user = _find_user(meta, customer)
+        if plan is None or user is None:
+            # Paid but unmatched: 500 so Stripe retries and the dashboard
+            # shows it; the operator can grant with `admin plan` meanwhile.
+            log.error("webhook %s: cannot apply plan (user=%r plan=%r session=%r)", event_id, meta.get("user_id"), plan_name, obj.get("id"))
+            return _err(500, "cannot_apply_plan", "Paid session has no matching user or plan; operator alerted.")
+        now = time.time()
+        until = None if not plan.recurring else now + PROVISIONAL_DAYS * 86400
+
+        def apply() -> Dict[str, Any]:
+            return store.set_plan(user["id"], plan.name, plan.allowance_credits, until, customer_id=customer, subscription_id=subscription, now=now)
+
+        try:
+            row = store.apply_once(event_id, event_type, apply)
+        except Exception as exc:  # noqa: BLE001 - Stripe must retry
+            log.exception("webhook %s: plan failed", event_id)
+            return _err(500, "plan_failed", "Could not apply the plan: %s" % exc)
+        if row is None:
+            return JSONResponse({"received": True, "duplicate": True})
+        log.info("plan %s for %s until %r (balance %d) for %s", plan.name, user["id"], until, row["credits"], event_id)
+        return JSONResponse({"received": True, "plan": plan.name, "plan_until": until, "balance": int(row["credits"])})
+
+    def _apply_subscription(event_id: str, event_type: str, sub: Dict[str, Any]) -> JSONResponse:
+        meta = sub.get("metadata") or {}
+        customer = sub.get("customer") if isinstance(sub.get("customer"), str) else None
+        sub_id = sub.get("id") if isinstance(sub.get("id"), str) else None
+        user = _find_user(meta, customer, sub_id)
+        if user is None:
+            store.record_webhook(event_id, event_type)
+            log.warning("webhook %s: subscription %r for no known user", event_id, sub_id)
+            return JSONResponse({"received": True, "ignored": "unknown_user"})
+        status = str(sub.get("status") or "")
+        live = event_type != "customer.subscription.deleted" and status in ("active", "trialing")
+        now = time.time()
+        end = _period_end(sub)
+        until = (end + GRACE_DAYS * 86400) if (live and end is not None) else now
+        plan = cfg.plan(str(meta.get("plan") or ""))
+
+        def apply() -> Optional[float]:
+            store.set_stripe_ids(user["id"], customer, sub_id)
+            if live and plan is not None and (user.get("plan") != plan.name or not Store.plan_active(user, now)):
+                # The subscription event beat (or replaced) the checkout
+                # event: put the user on the plan from the subscription's
+                # own metadata so the allowance starts regardless of order.
+                store.set_plan(user["id"], plan.name, plan.allowance_credits, until, customer_id=customer, subscription_id=sub_id, now=now)
+            else:
+                store.set_plan_until(user["id"], until)
+            return until
+
+        try:
+            result = store.apply_once(event_id, event_type, apply)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("webhook %s: subscription update failed", event_id)
+            return _err(500, "subscription_failed", "Could not apply the subscription event: %s" % exc)
+        if result is None:
+            return JSONResponse({"received": True, "duplicate": True})
+        return JSONResponse({"received": True, "status": status, "plan_until": result})
+
+    def _apply_invoice(event_id: str, event_type: str, inv: Dict[str, Any]) -> JSONResponse:
+        customer = inv.get("customer") if isinstance(inv.get("customer"), str) else None
+        sub_id = inv.get("subscription") if isinstance(inv.get("subscription"), str) else None
+        if sub_id is None:
+            details = ((inv.get("parent") or {}).get("subscription_details") or {})
+            sub_id = details.get("subscription") if isinstance(details.get("subscription"), str) else None
+        ends = []
+        for line in ((inv.get("lines") or {}).get("data") or []):
+            period = (line.get("period") or {}) if isinstance(line, dict) else {}
+            try:
+                ends.append(float(period.get("end")))
+            except (TypeError, ValueError):
+                pass
+        user = _find_user({}, customer, sub_id)
+        if user is None or not ends or not user.get("plan"):
+            store.record_webhook(event_id, event_type)
+            return JSONResponse({"received": True, "ignored": "no_subscriber"})
+        until = max(ends) + GRACE_DAYS * 86400
+
+        def apply() -> Optional[float]:
+            current = user.get("plan_until")
+            if current is None or float(current) >= until:
+                return None
+            store.set_plan_until(user["id"], until)
+            return until
+
+        try:
+            result = store.apply_once(event_id, event_type, apply)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("webhook %s: invoice failed", event_id)
+            return _err(500, "invoice_failed", "Could not apply the invoice: %s" % exc)
+        return JSONResponse({"received": True, "plan_until": result})
 
     @app.post("/api/billing/webhook")
     async def webhook(request: Request) -> JSONResponse:
@@ -336,15 +556,25 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
         event_type = str(event.get("type") or "")
         if not event_id:
             return _err(400, "bad_event", "Event has no id.")
+        obj = (event.get("data") or {}).get("object") or {}
+        if not isinstance(obj, dict):
+            obj = {}
 
+        if event_type in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
+            return _apply_subscription(event_id, event_type, obj)
+        if event_type == "invoice.paid":
+            return _apply_invoice(event_id, event_type, obj)
         if event_type not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
             store.record_webhook(event_id, event_type)
             return JSONResponse({"received": True, "ignored": event_type})
 
-        obj = (event.get("data") or {}).get("object") or {}
         if obj.get("payment_status") not in (None, "paid"):
             return JSONResponse({"received": True, "ignored": "unpaid"})
         meta = obj.get("metadata") or {}
+        plan_name = str(meta.get("plan") or "").strip().lower()
+        if plan_name:
+            return _apply_plan_checkout(event_id, event_type, obj, plan_name)
+
         user_id = str(meta.get("user_id") or obj.get("client_reference_id") or "")
         try:
             credits = int(meta.get("credits") or 0)
@@ -363,6 +593,9 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
             return _err(500, "credit_failed", "Could not apply the credit: %s" % exc)
         if balance is None:
             return JSONResponse({"received": True, "duplicate": True})
+        customer = obj.get("customer")
+        if isinstance(customer, str) and customer:
+            store.set_stripe_ids(user_id, customer_id=customer)
         log.info("credited %d to %s (balance %d) for %s", credits, user_id, balance, event_id)
         return JSONResponse({"received": True, "credited": credits, "balance": balance})
 
@@ -370,8 +603,17 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
     def ledger(request: Request) -> JSONResponse:
         user = _current_user(request)
         if user is None:
-            return _err(401, "login_required", "Sign in first.")
-        return JSONResponse({"balance": store.balance(user["id"]), "entries": store.ledger(user["id"])})
+            return _err(401, "login_required", "Sign in first.", signin_url="/signin")
+        fresh = _fresh(user)
+        return JSONResponse(
+            {
+                "balance": int(fresh.get("credits") or 0),
+                "words_left": int(fresh.get("credits") or 0) * cfg.words_per_credit,
+                "plan": fresh.get("plan") or "",
+                "plan_until": fresh.get("plan_until"),
+                "entries": store.ledger(user["id"]),
+            }
+        )
 
     # Same fix `server._register_llm_routes` applies: the static Mount at "/"
     # matches everything, so it must come after every route just added.

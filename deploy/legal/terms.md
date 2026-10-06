@@ -1,6 +1,6 @@
 # Terms of Service
 
-**Service.** Firsthand, operated by Aniket Bhattacharjee (the "operator"), measures a text you supply
+**Service.** Vervly, operated by Aniket Bhattacharjee (the "operator"), measures a text you supply
 against published statistics of human writing and offers rewrites of it. You
 keep all rights to your text and to the rewrites.
 

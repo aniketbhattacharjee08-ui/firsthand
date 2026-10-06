@@ -37,6 +37,18 @@ Core dependencies are numpy, scipy and requests. Heavier pieces are optional
 extras: `syntax` (spaCy, for clause-level parsing), `detectors` (torch and
 transformers, for local model detectors) and `quality` (LanguageTool).
 
+### Memory
+
+The API server keeps model weights resident between requests and bounds each
+cache with an environment variable, evicting least-recently-used entries and
+returning the memory to the OS: `HUMANIZER_MAX_RESIDENT_MODELS` caps detector
+checkpoints (default 3, each 0.5-1.7GB), `HUMANIZER_MAX_RESIDENT_PRETRAINED`
+caps paraphraser checkpoints (default 1, each 6-12GB) and
+`HUMANIZER_MAX_RESIDENT_LLM` caps MLX language models (default 2, each
+1.7-2.2GB). Zero or a negative value means unlimited. `GET /api/models` lists
+what is resident with the process RSS, and `POST /api/models/release` unloads
+everything without a restart.
+
 ## Use
 
 ```bash
@@ -56,6 +68,111 @@ humanizer plan --mu 0.6 --target 0.99
 # Map local scores onto GPTZero verdicts
 humanizer calibrate --scores results.json --target 0.95
 ```
+
+### Accounts and the sign-in gate
+
+`humanizer serve` puts the humanizer behind a sign-in. The site is three pages:
+`/` is the landing page (`web/home.html`), `/signin` and `/signup` are one
+account page (`web/auth.html`), and `/app` is the humanizer itself
+(`web/index.html`), which redirects to `/signin?next=/app` until the visitor
+has an account and is signed in. `/index.html` follows the same rule, so the
+app cannot be reached by file name. Every product route (`/api/humanize*`,
+`/api/analyze`, `/api/detect`, `/api/plan`, `/api/features`, `/api/models*`)
+answers `401 {"error": "sign_in_required"}` without a session; `/api/health`,
+`/api/references` and `/api/auth/*` stay public.
+
+```bash
+humanizer serve                      # accounts on (the default)
+humanizer serve --no-auth            # no sign-in; / serves the humanizer directly
+HUMANIZER_AUTH=0 humanizer serve     # same as --no-auth
+HUMANIZER_AUTH_DB=/srv/auth.sqlite humanizer serve   # move the account database
+```
+
+The JSON API, all same-origin with the `rh_session` cookie (HttpOnly,
+SameSite=Lax, Secure over https, 30 days):
+
+    POST /api/auth/signup   {email, password, name?}  -> 201 {ok, user: {email, name}}
+                            409 email_exists, 422 invalid_email / invalid_password (< 8 chars)
+    POST /api/auth/signin   {email, password}         -> 200 {ok, user}; 401 invalid_credentials
+    POST /api/auth/signout                            -> 204, clears the cookie
+    GET  /api/auth/me                                 -> {signed_in: true, user} or {signed_in: false}
+
+Accounts live in `data/auth.sqlite` (tables `users` and `sessions`). Passwords
+are stored as salted `hashlib.scrypt` hashes (PBKDF2-HMAC-SHA256 on a Python
+whose OpenSSL lacks scrypt); the cookie value is a random token that exists
+only in the `sessions` table, so signing out or deleting the row revokes it.
+There are no new dependencies. The implementation is `humanizer.api.auth`;
+the paid tier in `humanizer.billing` keeps its own magic-link login and
+builds the server with `auth=False`.
+
+### Passing GPTZero
+
+The rewriting engine that moves GPTZero's verdict is the base-checkpoint path
+(`style=freeform`, the default): a 4-bit Qwen2.5-7B base model continues a
+few-shot pattern of (draft, author's notes, rewrite), and GPTZero itself picks
+among the candidates. Everything else measured here (instruct rewrites, the
+register LoRA, deterministic edits) leaves GPTZero at 1.000 however natural it
+reads; see research/24 §6. Three settings matter:
+
+```bash
+export GPTZERO_API_KEY=...        # the only judge: verdicts, candidate ranking, the page's number
+export HUMANIZER_BASE_MODEL=mlx-community/Qwen2.5-3B-4bit   # the default; 7B measured worse on the bench
+export HUMANIZER_BASE_ADAPTER_RETRY=/path/to/hip-adapter   # optional LoRA used from round 3 for stubborn paragraphs
+```
+
+With `GPTZERO_API_KEY` set, GPTZero is the judge and the candidate scorer
+(since 2026-09-22): eight candidates a paragraph, two rounds, each candidate
+scored by GPTZero, about $1 of the key owner's credits per paragraph. Every
+paragraph ships a rewrite; when no candidate passes every gate the least-bad
+one is taken and the reason is reported, and a draft the scanner already calls
+human is rewritten all the same. `HUMANIZER_PROXY=surrogate` restores the
+free mode: a RoBERTa classifier fine-tuned in this project on GPTZero's own
+verdicts (`.surrogate/train.py`, weights in
+`data/cache/models/gptzero-surrogate`), which agrees with GPTZero on 82% of
+held-out texts (AUROC 0.91) but only about 75% of live candidates, and which
+ranked the 4 x 1 build that shipped AI-rated rewrites. Without a key the
+surrogate is the default. End users can also paste their own key under
+Options in the web app: then GPTZero ranks their request on their credits.
+Benches:
+
+```bash
+python scripts/gptzero_bench.py paragraphs.json --facts facts.json   # GPTZero judges and ranks when the key is set
+.venv/bin/python .hip7b/bench.py --mode ownkey --adapter data/adapters/hip7b-r4-it200
+```
+
+Every GPTZero response is cached under `data/cache/gptzero`, and each bench
+enlarges the labelled set the surrogate is trained on; retrain with
+`python .surrogate/train.py 4 both`. The older local checkpoints (desklib,
+fakespot, academic, RADAR) remain reachable by name through `/api/detect` for
+research; they were measured rating GPTZero-human rewrites as AI and are not
+shown to a writer.
+
+Give the rewrite the author's facts (the `facts` field of `/api/humanize/llm`,
+the "Facts you can vouch for" box in the web UI). A rewrite may add a number,
+date, quotation or citation only if it appears there; anything else new is
+refused and named in `summary.unverified_specifics`. Bench the whole loop with:
+
+```bash
+python scripts/gptzero_bench.py paragraphs.json --facts facts.json
+```
+
+Measured 2026-09-07 on the nine-paragraph bench: 7 of 9 AI paragraphs read as
+human on GPTZero after rewriting, 0 of 5 human paragraphs harmed.
+
+When a paragraph still fails after the rounds, the pipeline does not just
+return it: a `repair` stage (`humanize/repair.py`) reads why its candidates
+were rejected (invented figures, content drift, length, or passers that all
+read as AI), says so in a sentence, picks one corrective action from a
+ladder (restrict the particulars, raise fidelity, match length, change the
+sampling distribution, rewrite the worst sentences, split the paragraph, or
+write a faithful bridge draft first) and retries, up to `repair_attempts`
+times (default 3, `HUMANIZER_REPAIR_ATTEMPTS`; 0 disables it) inside its own
+time budget. Each attempt is logged on the paragraph as `repairs` and shown
+in the web app under Details as "What it tried"; a repair is accepted only if
+it passes every gate and beats the current best on the judge. Measured
+2026-09-10 in free mode: 7 of 9 AI paragraphs human on
+GPTZero, 5 of 5 human controls unharmed, and 2 of the 7 were paragraphs the
+repair stage rescued after three rounds had failed them. See research/24 §6.16.
 
 Fetch pre-LLM human corpora (no credentials needed):
 

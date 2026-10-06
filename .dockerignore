@@ -1,0 +1,12 @@
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!NOTICE
+!src/
+!web/
+!deploy/cloud/entrypoint.sh
+!data/reference/
+data/reference/*.txt
+**/__pycache__/
+**/.DS_Store

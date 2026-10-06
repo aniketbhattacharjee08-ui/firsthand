@@ -63,9 +63,11 @@ def word_count(text: str) -> int:
 def effort_multiplier(n_candidates: Any, rounds: Any, repair_attempts: Any = 0) -> int:
     """How many times the default amount of GPU work a request asks for.
 
-    Six candidates and one round is the baseline (1x). Sixteen candidates is
-    3x, three rounds is 3x, and every three repair attempts add 1x. Without
-    this, one credit could buy ten minutes of exclusive GPU.
+    The product default, eight candidates over two rounds (what the site
+    sends by sending nothing), is the baseline (1x), so a plan's words are
+    priced as words. An API caller asking for sixteen candidates pays 2x,
+    four rounds 2x, and every three repair attempts add 1x. Without this,
+    one credit could buy ten minutes of exclusive GPU.
     """
 
     def as_int(v: Any, default: int) -> int:
@@ -74,7 +76,7 @@ def effort_multiplier(n_candidates: Any, rounds: Any, repair_attempts: Any = 0) 
         except (TypeError, ValueError):
             return default
 
-    cands = max(1, as_int(n_candidates, 6))
-    rnds = max(1, as_int(rounds, 1))
+    cands = max(1, as_int(n_candidates, 8))
+    rnds = max(1, as_int(rounds, 2))
     repairs = max(0, as_int(repair_attempts, 0))
-    return int(math.ceil(cands / 6.0)) * rnds * (1 + repairs // 3)
+    return int(math.ceil(cands / 8.0)) * int(math.ceil(rnds / 2.0)) * (1 + repairs // 3)

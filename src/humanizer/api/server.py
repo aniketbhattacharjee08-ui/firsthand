@@ -10,7 +10,21 @@ Endpoints
     POST /api/detect              run the local detectors over one document
     POST /api/plan                best-of-N table under candidate correlation
     POST /api/humanize            rewrite a document and report every edit
-    GET  /                        the static frontend in web/, when present
+    GET  /api/models              resident model checkpoints and process RSS
+    POST /api/models/release      unload every cached model
+    POST /api/auth/signup         create an account and sign in (sets cookie)
+    POST /api/auth/signin         sign in; 401 invalid_credentials
+    POST /api/auth/signout        204, clears the cookie
+    GET  /api/auth/me             {signed_in, user?}
+    GET  /                        web/home.html, the landing page
+    GET  /signin, /signup         web/auth.html
+    GET  /app                     web/index.html, signed-in users only
+
+Accounts are on by default (HUMANIZER_AUTH=1; `humanizer serve --no-auth` or
+`create_app(auth=False)` turns them off). With auth on, every product route
+(/api/humanize*, /api/analyze, /api/detect, /api/plan, /api/features,
+/api/models*) answers 401 `sign_in_required` without a session cookie. See
+`humanizer.api.auth`.
 
 Design notes
 ------------
@@ -28,6 +42,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -38,6 +53,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..detectors import (
+    PUBLISHED_DETECTORS,
     SHIPPED_DETECTORS,
     AiStyleSignals,
     ClassifierDetector,
@@ -301,7 +317,11 @@ def _ok(payload: Any) -> JSONResponse:
 # arithmetic and detection is now exclusively published models; the style
 # signals it was built on survive as explanation on /api/analyze.
 DETECTOR_FACTORIES: Dict[str, Any] = {
-    name: (lambda m=model: ModernDetector(model_name=m))
+    name: (
+        lambda m=model, thr=PUBLISHED_DETECTORS.get(name, {}).get("threshold", 0.5): ModernDetector(
+            model_name=m, threshold=thr
+        )
+    )
     for name, model in SHIPPED_DETECTORS.items()
 }
 DETECTOR_FACTORIES.update(
@@ -314,18 +334,29 @@ DETECTOR_FACTORIES.update(
         # own corpus. Kept because that measurement is the evidence.
         "classifier": lambda: ClassifierDetector(),
         "ensemble": lambda: EnsembleDetector(),
+        # The product's judge. Paid, cached on disk, unavailable without
+        # GPTZERO_API_KEY; `run_detector` reports that as a normal state.
+        "gptzero": lambda: _gptzero_detector(),
     }
 )
 
+
+def _gptzero_detector() -> Any:
+    from ..detectors.gptzero import GPTZeroClient
+
+    return GPTZeroClient()
+
+
 #: Used when the request leaves `detectors` null.
 #:
-#: One engine, deliberately. The old default ran three and let the page show
-#: three disagreeing percentages, two of which came from methods this repo has
-#: measured as no better than chance on academic prose. Showing a caller a
-#: number that is wrong, next to a number that is right, is worse than showing
-#: one number: it invites them to average. Every other engine is one explicit
-#: request away.
-DEFAULT_DETECTORS = ("modern",)
+#: One engine, deliberately: the free surrogate trained on GPTZero's own
+#: verdicts (detectors.local "surrogate", research/24 §6.10). GPTZero itself
+#: is reachable as "gptzero" for benches but is never the default, because
+#: every call costs the product owner money and the end user will re-scan
+#: with their own GPTZero credits anyway. The older local checkpoints stay
+#: reachable by name for research; they were measured rating GPTZero-human
+#: rewrites 0.65-1.00 and are not shown to a writer.
+DEFAULT_DETECTORS = ("surrogate",)
 
 
 class DetectRequest(BaseModel):
@@ -348,6 +379,22 @@ def _detector_instance(app: FastAPI, name: str) -> Any:
     if name not in cache:
         cache[name] = DETECTOR_FACTORIES[name]()
     return cache[name]
+
+
+def _configured_yardstick() -> str:
+    from ..detectors import yardstick
+
+    return yardstick.configured_name()
+
+
+def _detector_model_name(row: Dict[str, Any]) -> Optional[str]:
+    """A display name for the checkpoint or service behind a detector row."""
+    if row["name"] == "gptzero":
+        version = row["raw"].get("version")
+        return "GPTZero" + (f" ({version})" if version else "")
+    if row["name"] == "surrogate":
+        return "GPTZero estimate (local surrogate, free)"
+    return row["raw"].get("model")
 
 
 def run_detector(app: FastAPI, name: str, text: str) -> Dict[str, Any]:
@@ -482,6 +529,8 @@ def create_app(
                 "version": __version__,
                 "syntax_backend": syntax_backend_available(),
                 "references": store.names(),
+                # The judge, by configured name: "gptzero" when a key is set.
+                "yardstick": _configured_yardstick(),
             }
         )
 
@@ -520,20 +569,25 @@ def create_app(
         # has no fallback scorer of its own any more, and a hand-written
         # number in the same field as a model's would be indistinguishable
         # from it on the wire.
-        row = run_detector(app, DEFAULT_DETECTORS[0], text)
         document_risk: Optional[float] = None
         sentence_risks: Optional[List[Optional[float]]] = None
-        if row["available"]:
-            document_risk = row["ai_probability"]
-            sentence_risks = list(row["sentence_scores"]) or None
-            payload["detectors"][row["name"]] = {
-                "ai_probability": row["ai_probability"],
-                "label": row["label"],
-                "confidence": row["confidence"],
-                "model": row["raw"].get("model"),
-                "is_published_detector": True,
-            }
-        payload["detector_error"] = row["error"]
+        payload["detector"] = DEFAULT_DETECTORS[0]
+        payload["detector_ran"] = bool(body.detect)
+        if body.detect:
+            row = run_detector(app, DEFAULT_DETECTORS[0], text)
+            if row["available"]:
+                document_risk = row["ai_probability"]
+                sentence_risks = list(row["sentence_scores"]) or None
+                payload["detectors"][row["name"]] = {
+                    "ai_probability": row["ai_probability"],
+                    "label": row["label"],
+                    "confidence": row["confidence"],
+                    "model": _detector_model_name(row),
+                    "is_published_detector": True,
+                }
+            payload["detector_error"] = row["error"]
+        else:
+            payload["detector_error"] = None
 
         payload["sentences"] = sentence_rows(text, document_risk, sentence_risks)
         payload["sentence_risk_is_advisory"] = True
@@ -646,8 +700,8 @@ def create_app(
                 # is what each row's own `available`/`error` reports.
                 "backend_available": backend_available(),
                 "known_detectors": sorted(DETECTOR_FACTORIES),
-                "is_gptzero": False,
-                "disclaimer": (
+                "is_gptzero": all(r["name"] == "gptzero" for r in results) and bool(results),
+                "disclaimer": "GPTZero's own verdict, from its paid API; cached on disk per text." if results and all(r["name"] == "gptzero" for r in results) else (
                     "Not GPTZero. Every engine here runs a published, "
                     "pretrained checkpoint downloaded from Hugging Face; this "
                     "project wrote none of the detection arithmetic. The "
@@ -756,6 +810,18 @@ def create_app(
     if web_root is not None and web_root.is_dir():
         app.mount("/", StaticFiles(directory=str(web_root), html=True), name="web")
         app.state.web_dir = str(web_root)
+
+        # The front end is three files served from disk and edited often. A
+        # browser that keeps an old app.js against a new API calls routes the
+        # new page no longer uses and shows nothing (2026-09-08). So every
+        # page asset revalidates on each load; the API responses are unaffected.
+        @app.middleware("http")
+        async def _no_stale_assets(request, call_next):  # type: ignore[no-untyped-def]
+            response = await call_next(request)
+            path = request.url.path
+            if path == "/" or path.endswith((".html", ".js", ".css")):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return response
     else:
         app.state.web_dir = None
 
@@ -777,12 +843,21 @@ def run(
     reference: Optional[str] = None,
     reference_dir: Optional[Path] = None,
     web_dir: Optional[Path] = None,
+    auth: Optional[bool] = None,
 ) -> None:
-    """Start the development server. Used by `humanizer serve`."""
+    """Start the development server. Used by `humanizer serve`.
+
+    `auth=None` reads HUMANIZER_AUTH (default on); `humanizer serve --no-auth`
+    passes False. `create_app` is looked up at call time, so this gets the
+    fully wrapped factory defined at the bottom of the module.
+    """
     import uvicorn
 
     app = create_app(
-        reference_dir=reference_dir, web_dir=web_dir, default_reference=reference
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=reference,
+        auth=auth,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -837,8 +912,32 @@ class LlmHumanizeRequest(BaseModel):
     """Body for POST /api/humanize/llm, /api/humanize/stream and /jobs."""
 
     text: str = Field(default="", description="Raw document text.")
+    gptzero_api_key: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Optional. The caller's own GPTZero API key. When present, GPTZero "
+            "itself judges the document and ranks every candidate for this "
+            "request, at the caller's expense (about $1 per paragraph at eight "
+            "candidates). Without it the free local estimate does both. The "
+            "key is used for the request and never stored or logged."
+        ),
+    )
+    facts: str = Field(
+        default="",
+        max_length=6000,
+        description=(
+            "Optional. Names, dates, figures and sources the author vouches "
+            "for, as free text. A rewrite may add a number, date, quotation "
+            "or citation only if it appears here; anything else new is "
+            "rejected and listed in `summary.unverified_specifics`. The "
+            "register style anchors sentences in specifics and invents them "
+            "without this, so without facts it usually returns the draft "
+            "unchanged."
+        ),
+    )
     n_candidates: int = Field(
-        default=6,
+        default=8,
         ge=1,
         le=16,
         description=(
@@ -848,23 +947,34 @@ class LlmHumanizeRequest(BaseModel):
         ),
     )
     style: str = Field(
-        default="faithful",
+        default="freeform",
         description=(
-            "'faithful' uses the instruction-tuned checkpoint and preserves "
-            "meaning. 'freeform' uses the base checkpoint, which scores lower "
-            "under the detector but was measured drifting off-topic badly "
-            "enough that the gates reject nearly every candidate."
+            "'freeform' (default) uses the base checkpoint, few-shot, with "
+            "`facts` as the author's notes: the only style whose output "
+            "GPTZero has read as human (6 of 9 bench paragraphs at best-of-6 "
+            "with GPTZero scoring candidates; set HUMANIZER_PROXY=gptzero). "
+            "'register' uses Qwen3-4B-Instruct with the trained LoRA: flips "
+            "the four local detectors, none of GPTZero's verdicts. 'faithful' "
+            "uses the plain instruction-tuned checkpoint and moves neither."
         ),
     )
     aggressiveness: str = Field(
         default="strong",
         description="Aggressiveness of the deterministic scrub that runs after the model.",
     )
-    time_budget_s: float = Field(
-        default=30.0, gt=0.0, le=600.0, description="Soft wall-clock budget."
+    time_budget_s: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        le=3600.0,
+        description=(
+            "Soft wall-clock budget for the main rounds, checked only before "
+            "round 2. Null scales with the document: 240 s per paragraph, at "
+            "least 300 s, at most 2400 s, enough for round 1 at eight candidates "
+            "so that round 2 actually runs."
+        ),
     )
     rounds: int = Field(
-        default=1,
+        default=2,
         ge=1,
         le=3,
         description=(
@@ -875,18 +985,105 @@ class LlmHumanizeRequest(BaseModel):
     model: Optional[str] = Field(
         default=None, description="Override the MLX model id."
     )
+    repair_attempts: int = Field(
+        default=0,
+        ge=0,
+        le=6,
+        description=(
+            "Diagnose-and-retry attempts for every paragraph still failing "
+            "after the rounds. Each attempt reads the gate rejections and "
+            "judge scores, names the cause, picks one action from a ladder "
+            "and retries; the log is `paragraphs[i].repairs` and "
+            "`summary.repair_log`. 0 disables the stage."
+        ),
+    )
+
+
+def _request_judge(body: Any) -> Any:
+    """A GPTZero yardstick built from the caller's own key, or None.
+
+    Passed to the pipeline as `detector`, which makes it both the document
+    yardstick and the candidate scorer for that one request. The owner's key
+    (GPTZERO_API_KEY) is never consulted here: the product's own judge is the
+    free surrogate, and paid judging happens only on the caller's credits.
+    """
+    key = (getattr(body, "gptzero_api_key", None) or "").strip()
+    if not key:
+        return None
+    from ..detectors import yardstick as yardstick_mod
+    from ..detectors.gptzero import GPTZeroClient
+
+    return yardstick_mod.Yardstick(
+        name="gptzero",
+        kind="gptzero",
+        model="GPTZero API (api.gptzero.me/v2/predict/text), caller's key",
+        detector=GPTZeroClient(api_key=key),
+        remote=True,
+    )
+
+
+#: Seconds of main-round budget per paragraph when the request leaves
+#: `time_budget_s` null. Eight 7B candidates plus GPTZero scoring took about
+#: 100 s a paragraph per round on the 2026-09-11 bench, and the budget is
+#: only checked before round 2, so it must cover round 1 in full or the
+#: second round never runs.
+LLM_BUDGET_PER_PARAGRAPH_S = 240.0
+LLM_BUDGET_MIN_S = 300.0
+LLM_BUDGET_MAX_S = 2400.0
+#: Soft budget for the repair stage, checked between attempts. Each attempt
+#: regenerates one paragraph (about 46 s), so this allows two to three.
+LLM_REPAIR_BUDGET_S = 120.0
+
+#: One rewrite at a time, process-wide. Two MLX decodes on the same GPU at
+#: once took the server down on 2026-09-20 (Metal: "Completed handler
+#: provided after commit call"), and launchd's restart killed the rewrite the
+#: browser was waiting on. A second request now waits here, in a visible
+#: `queue` stage, until the first releases the model.
+_RUN_LOCK = threading.Lock()
+#: How often a waiting stream tells the client it is still waiting.
+LLM_QUEUE_POLL_S = 2.0
+
+
+def _queue_frame(status: str, waited: float) -> Dict[str, Any]:
+    """A `progress` payload for the `queue` stage, same shape as the pipeline's."""
+    if status == "done":
+        detail = "the model is free; starting your rewrite after %.0fs in the queue" % waited
+    else:
+        detail = (
+            "another rewrite is using the model; yours starts when it finishes "
+            "(waiting %.0fs)" % waited
+        )
+    return {
+        "stage": "queue",
+        "status": status,
+        "progress": 1.0 if status == "done" else 0.0,
+        "detail": detail,
+        "elapsed": round(waited, 3),
+        "round": 1,
+    }
+
+
+def _scaled_budget(text: str) -> float:
+    from ..text import split_paragraphs
+
+    n = max(1, len(split_paragraphs(text or "")))
+    return max(LLM_BUDGET_MIN_S, min(LLM_BUDGET_MAX_S, LLM_BUDGET_PER_PARAGRAPH_S * n))
 
 
 def _llm_config(body: LlmHumanizeRequest) -> Any:
     from ..humanize.pipeline import PipelineConfig
 
+    budget = body.time_budget_s if body.time_budget_s is not None else _scaled_budget(body.text)
     return PipelineConfig(
         n_candidates=body.n_candidates,
         style=body.style,
         aggressiveness=body.aggressiveness,
-        time_budget_s=body.time_budget_s,
+        time_budget_s=budget,
         rounds=body.rounds,
         model=body.model,
+        facts=body.facts,
+        repair_attempts=body.repair_attempts,
+        repair_time_budget_s=LLM_REPAIR_BUDGET_S,
     )
 
 
@@ -935,12 +1132,12 @@ def llm_precheck(body: LlmHumanizeRequest) -> Optional[JSONResponse]:
                 "fallback_endpoint": "/api/humanize",
             },
         )
-    if body.style not in ("faithful", "freeform"):
+    if body.style not in ("register", "faithful", "freeform"):
         return JSONResponse(
             status_code=400,
             content={
                 "error": "unknown_style",
-                "detail": "'style' must be 'faithful' or 'freeform'.",
+                "detail": "'style' must be 'register', 'faithful' or 'freeform'.",
             },
         )
     reason = pipeline_mod.pipeline_unavailable_reason()
@@ -1014,26 +1211,39 @@ def llm_event_stream(body: LlmHumanizeRequest) -> _Iterator[str]:
     """
     from ..humanize import pipeline as pipeline_mod
 
+    # Wait for the model. Each poll that fails sends a frame so the client
+    # can show the wait and the connection stays alive; a client that gives
+    # up closes this generator at the `yield`, before the lock is held.
+    waited = 0.0
+    while not _RUN_LOCK.acquire(timeout=LLM_QUEUE_POLL_S):
+        first = waited == 0.0
+        waited += LLM_QUEUE_POLL_S
+        yield sse_frame("progress", _queue_frame("start" if first else "progress", waited))
     try:
-        for event in pipeline_mod.stream(body.text, config=_llm_config(body)):
-            payload = event.as_dict()
-            result = payload.pop("result", None)
-            yield sse_frame("progress", payload)
-            if result is not None:
-                yield sse_frame("result", result)
-        yield sse_frame("done", {"ok": True})
-    except (RuntimeError, ValueError) as exc:
-        yield sse_frame("error", _llm_unavailable_payload(str(exc)))
-    except Exception as exc:  # noqa: BLE001 - the stream must not just stop
-        yield sse_frame(
-            "error",
-            {
-                "error": "pipeline_failed",
-                "detail": "%s: %s" % (type(exc).__name__, exc),
-                "fallback": LLM_FALLBACK_NOTE,
-                "fallback_endpoint": "/api/humanize",
-            },
-        )
+        if waited:
+            yield sse_frame("progress", _queue_frame("done", waited))
+        try:
+            for event in pipeline_mod.stream(body.text, config=_llm_config(body), detector=_request_judge(body)):
+                payload = event.as_dict()
+                result = payload.pop("result", None)
+                yield sse_frame("progress", payload)
+                if result is not None:
+                    yield sse_frame("result", result)
+            yield sse_frame("done", {"ok": True})
+        except (RuntimeError, ValueError) as exc:
+            yield sse_frame("error", _llm_unavailable_payload(str(exc)))
+        except Exception as exc:  # noqa: BLE001 - the stream must not just stop
+            yield sse_frame(
+                "error",
+                {
+                    "error": "pipeline_failed",
+                    "detail": "%s: %s" % (type(exc).__name__, exc),
+                    "fallback": LLM_FALLBACK_NOTE,
+                    "fallback_endpoint": "/api/humanize",
+                },
+            )
+    finally:
+        _RUN_LOCK.release()
 
 
 def _reap_jobs(jobs: Dict[str, Dict[str, Any]]) -> None:
@@ -1058,6 +1268,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         weights are touched. The frontend uses this to decide whether to offer
         the LLM engine or fall straight through to the rule-based one.
         """
+        from ..detectors import yardstick as yardstick_mod
         from ..humanize import llm as llm_mod
         from ..humanize import pipeline as pipeline_mod
 
@@ -1066,8 +1277,19 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
             {
                 "available": reason is None,
                 "reason": reason,
-                "model": llm_mod.DEFAULT_MODEL,
+                # `model` is the default style's checkpoint: the base model
+                # since research/24 §6 (the instruct one is `instruct_model`).
+                "default_style": pipeline_mod.PipelineConfig().style,
+                "model": llm_mod.FREEFORM_MODEL,
+                "instruct_model": llm_mod.DEFAULT_MODEL,
                 "freeform_model": llm_mod.FREEFORM_MODEL,
+                # Where generation runs: a remote OpenAI-compatible server
+                # (HUMANIZER_LLM_URL, so this host needs no GPU) or local MLX.
+                "generation": "remote" if llm_mod.remote_llm_url() else "mlx",
+                "generation_url": llm_mod.remote_llm_url(),
+                # Which detector judges the document, by configured name only:
+                # resolving it here would load weights inside a health call.
+                "yardstick": yardstick_mod.configured_name(),
                 "stages": list(pipeline_mod.STAGES),
                 "max_words": LLM_MAX_WORDS,
                 "fallback_endpoint": "/api/humanize",
@@ -1111,7 +1333,8 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         from ..humanize import pipeline as pipeline_mod
 
         try:
-            result = pipeline_mod.humanize_llm(body.text, config=_llm_config(body))
+            with _RUN_LOCK:
+                result = pipeline_mod.humanize_llm(body.text, config=_llm_config(body), detector=_request_judge(body))
         except RuntimeError as exc:
             # Raised by the backend when the weights will not load.
             return JSONResponse(
@@ -1277,6 +1500,15 @@ class GuidedHumanizeRequest(BaseModel):
     """Body for POST /api/humanize/guided and its streaming variants."""
 
     text: str = Field(default="", description="Raw document text.")
+    facts: str = Field(
+        default="",
+        max_length=6000,
+        description=(
+            "Optional. Same meaning as on /api/humanize/llm: names, dates and "
+            "figures the author vouches for, which the paragraph gate then "
+            "allows a candidate to contain."
+        ),
+    )
     beam_width: int = Field(
         default=3,
         ge=1,
@@ -1363,6 +1595,7 @@ def _guided_config(body: GuidedHumanizeRequest) -> Any:
         time_budget_s=body.time_budget_s,
         model=body.model,
         guide_model=body.guide_model or GUIDE_MODEL,
+        facts=body.facts,
     )
 
 
@@ -1701,3 +1934,166 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
         default_reference=default_reference,
     )
     return _register_guided_routes(app)
+
+
+# ===========================================================================
+# Resident-model inventory: GET  /api/models
+#                           POST /api/models/release
+#
+# Appended below the guided block for the reasons that block gives. Every
+# model cache in the package (`detectors.local`, `humanize.pretrained`,
+# `humanize.llm`, `humanize.guided`) is bounded on its own; these two routes
+# let an operator see what is resident and give it all back without
+# restarting the process. The modules are imported inside the handlers so the
+# app still builds on a machine with neither torch nor MLX.
+# ===========================================================================
+
+
+def _models_payload() -> Dict[str, Any]:
+    from .. import memory as memory_mod
+    from ..detectors import local as local_mod
+    from ..humanize import llm as llm_mod
+    from ..humanize import pretrained as pretrained_mod
+
+    return {
+        "detectors": local_mod.loaded_models(),
+        "pretrained": pretrained_mod.loaded_models(),
+        "llm": llm_mod.loaded_backends(),
+        "rss_mb": memory_mod.rss_mb(),
+    }
+
+
+def _release_all_models() -> None:
+    from ..detectors import local as local_mod
+    from ..humanize import guided as guided_mod
+    from ..humanize import llm as llm_mod
+    from ..humanize import pretrained as pretrained_mod
+
+    # Wrappers first, weights second: the guide cache holds the last references
+    # to detector weights, so clearing it before the detector cache is what lets
+    # the memory actually go.
+    guided_mod.clear_guide_cache()
+    llm_mod.release_backends()
+    pretrained_mod.clear_model_cache()
+    local_mod.clear_model_cache()
+
+
+def _register_models_routes(app: FastAPI) -> FastAPI:
+    """Add the resident-model routes to an app built by `create_app`."""
+
+    @app.get("/api/models")
+    def models_endpoint() -> JSONResponse:
+        """What is resident right now, and how big the process has grown."""
+        return _ok(_models_payload())
+
+    @app.post("/api/models/release")
+    def models_release_endpoint() -> JSONResponse:
+        """Unload every cached model and report what is left (nothing)."""
+        _release_all_models()
+        payload = _models_payload()
+        payload["released"] = True
+        return _ok(payload)
+
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_models = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+) -> FastAPI:
+    """Build the ASGI application, including the resident-model routes.
+
+    Identical to the definition above plus `_register_models_routes`, kept as
+    a wrapper so this block is append-only like the two before it.
+    """
+    app = _create_app_without_models(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+    )
+    return _register_models_routes(app)
+
+
+# ===========================================================================
+# Accounts and sign-in gating: GET  /  /signin  /signup  /app  /index.html
+#                              POST /api/auth/signup  /signin  /signout
+#                              GET  /api/auth/me
+#
+# Appended below the models block for the reasons that block gives. The
+# implementation lives in `humanizer.api.auth`; this block only decides
+# whether it is on, builds the store, registers it, and moves the static
+# mount back to the end of the router. `create_app` gains one parameter:
+#
+#     auth: bool | None   None reads HUMANIZER_AUTH (default "1", on).
+#
+# With auth on, the page routes here shadow the StaticFiles `html=True`
+# behaviour for "/" and "/index.html", so the humanizer cannot be reached
+# without a session. With auth off nothing is registered and the app serves
+# exactly as before.
+# ===========================================================================
+
+from . import auth as _auth_mod  # noqa: E402
+
+AUTH_ENV = "HUMANIZER_AUTH"
+
+
+def auth_enabled_from_env() -> bool:
+    """`HUMANIZER_AUTH` as a bool; unset or anything but 0/false/no/off is on."""
+    return os.environ.get(AUTH_ENV, "1").strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _register_auth(app: FastAPI, auth_db: Optional[Path]) -> FastAPI:
+    """Install accounts on an app built by `create_app`, then re-order mounts."""
+    store = _auth_mod.AuthStore(auth_db or _auth_mod.default_auth_db_path())
+    _auth_mod.register_auth(app, store, getattr(app.state, "web_dir", None))
+    # Google and Apple sign-in, configured by environment; unconfigured
+    # providers report false at /api/auth/providers and redirect with an error.
+    from . import oauth as _oauth_mod
+
+    _oauth_mod.register_oauth(app, store)
+
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_auth = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+    auth: Optional[bool] = None,
+    auth_db: Optional[Path] = None,
+) -> FastAPI:
+    """Build the ASGI application, with accounts and sign-in gating.
+
+    `auth=None` reads `HUMANIZER_AUTH` (default on). `auth_db` overrides the
+    SQLite path (`HUMANIZER_AUTH_DB`, else `data/auth.sqlite`). Everything
+    else is identical to the definition above.
+    """
+    app = _create_app_without_auth(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+    )
+    enabled = auth_enabled_from_env() if auth is None else bool(auth)
+    app.state.auth_enabled = enabled
+    if enabled:
+        _register_auth(app, auth_db)
+    return app

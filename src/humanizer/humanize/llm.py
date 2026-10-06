@@ -1151,16 +1151,403 @@ class EchoBackend(Backend):
         )
 
 
+#: Exposed for `pipeline.py`, which needs the stop list when cleaning a
+#: freeform completion and should not have to know the header format.
+STOPS_FOR_STYLE: Dict[str, Tuple[str, ...]] = {
+    "faithful": (),
+    "freeform": FREEFORM_STOPS,
+    "register": (),
+}
+
+# ------------------------------------------------------ remote (HTTP) backend
+
+#: Base URL of an OpenAI-compatible server (vLLM, llama.cpp, TGI, a hosted
+#: provider), e.g. `https://example.modal.run/v1`. When set, every style is
+#: generated over HTTP and this process needs neither MLX nor a GPU, so the
+#: API can run in a CPU container anywhere. Unset means local MLX.
+REMOTE_URL_ENV = "HUMANIZER_LLM_URL"
+#: Bearer token for that server, if it wants one.
+REMOTE_KEY_ENV = "HUMANIZER_LLM_API_KEY"
+#: Completions sent at once per `generate()` call. vLLM batches them on the
+#: GPU, so this is the effective batch size and doubles as `max_batch`.
+REMOTE_CONCURRENCY_ENV = "HUMANIZER_LLM_CONCURRENCY"
+#: Seconds to wait for one completion. A cold vLLM replica on a scale-to-zero
+#: host can take a few minutes to load the weights before the first token.
+REMOTE_TIMEOUT_ENV = "HUMANIZER_LLM_TIMEOUT_S"
+
+
+def remote_llm_url() -> Optional[str]:
+    """The configured remote generation server, or None for local MLX."""
+    url = (__import__("os").environ.get(REMOTE_URL_ENV) or "").strip()
+    return url.rstrip("/") or None
+
+
+def generation_available() -> bool:
+    """Whether some generation backend can be built: remote or MLX."""
+    return remote_llm_url() is not None or mlx_available()
+
+
+def generation_unavailable_reason() -> Optional[str]:
+    """A user-facing sentence, or None when a backend can be built.
+
+    A remote server counts as available here; whether it answers is checked
+    by `OpenAICompatBackend.load()`, which turns a dead server into a 503
+    with the server's address in the message rather than failing a health
+    probe that should stay cheap.
+    """
+    if remote_llm_url() is not None:
+        return None
+    return mlx_unavailable_reason()
+
+
+class OpenAICompatBackend(Backend):
+    """Text generation over an OpenAI-compatible HTTP API.
+
+    `kind="text"` prompts go to `/completions` (a raw prefix for the base
+    model: the production `freeform` style) and `kind="chat"` prompts to
+    `/chat/completions`. Each request keeps its own temperature, since the
+    server batches across sampling settings and nothing is gained by cohorts.
+    Stops are sent when the style has them, so the server stops decoding at
+    the next few-shot header instead of running to `max_tokens`.
+
+    `adapter_path` is a LoRA *name* as served (vLLM: `--lora-modules
+    name=/path`), sent as the request's `model`; vLLM applies the adapter to
+    its base. None sends the base model's name.
+    """
+
+    name = "openai"
+
+    def __init__(
+        self,
+        model_name: str,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        adapter_path: Optional[str] = None,
+        top_p: float = 0.95,
+        max_batch: Optional[int] = None,
+        timeout_s: Optional[float] = None,
+        stops: Sequence[str] = (),
+    ):
+        env = __import__("os").environ
+        self.model_name = model_name
+        self.base_url = (base_url or remote_llm_url() or "").rstrip("/")
+        self.api_key = api_key if api_key is not None else env.get(REMOTE_KEY_ENV)
+        self.adapter_path = adapter_path or None
+        self.top_p = top_p
+        self.max_batch = int(max_batch or env.get(REMOTE_CONCURRENCY_ENV) or 8)
+        self.timeout_s = float(timeout_s or env.get(REMOTE_TIMEOUT_ENV) or 600)
+        self.stops = tuple(stops)
+        #: Back-off between connection retries, in seconds; empty disables
+        #: retrying (tests). About a minute in total by default, enough for a
+        #: scale-to-zero host to answer or a DNS outage to pass.
+        self.retry_delays: Tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+        self._served: Optional[List[str]] = None
+        self._load_error: Optional[str] = None
+        #: Set when the adapter is not served and the base is used instead.
+        self.warning: Optional[str] = None
+        self._session: Any = None
+
+    # -- availability ------------------------------------------------------
+
+    def available(self) -> bool:
+        return bool(self.base_url) and self._load_error is None
+
+    def unavailable_reason(self) -> Optional[str]:
+        if not self.base_url:
+            return f"{REMOTE_URL_ENV} is not set, so there is no generation server."
+        return self._load_error
+
+    def _headers(self) -> Dict[str, str]:
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
+
+    def _http(self):
+        if self._session is None:
+            import requests as _requests
+
+            s = _requests.Session()
+            try:
+                adapter = _requests.adapters.HTTPAdapter(
+                    pool_connections=self.max_batch, pool_maxsize=self.max_batch
+                )
+                s.mount("http://", adapter)
+                s.mount("https://", adapter)
+            except Exception:  # noqa: BLE001 - pooling is an optimisation only
+                pass
+            self._session = s
+        return self._session
+
+
+    def _send(self, method: str, path: str, **kw: Any):
+        """One HTTP exchange that understands scale-to-zero hosts.
+
+        Modal (and similar hosts) answer a request that outlives their
+        proxy window with `303 See Other` to a polling URL: GET that URL
+        until it returns the real response. `requests` would turn the
+        POST into a GET of the *original* URL, so redirects are handled
+        here instead, within `timeout_s` overall.
+        """
+        import requests as _requests
+
+        deadline = time.monotonic() + self.timeout_s
+        resp = self._http().request(
+            method, path, headers=self._headers(), allow_redirects=False,
+            timeout=min(self.timeout_s, 600), **kw
+        )
+        hops = 0
+        while resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("Location"):
+            hops += 1
+            if hops > 40 or time.monotonic() > deadline:
+                raise _requests.Timeout(f"gave up after {hops} redirects at {self.base_url}")
+            from urllib.parse import urljoin
+
+            target = urljoin(resp.url or path, resp.headers["Location"])
+            method = method if resp.status_code in (307, 308) else "GET"
+            if method == "GET":
+                kw.pop("json", None)
+            resp = self._http().request(
+                method, target, headers=self._headers(), allow_redirects=False,
+                timeout=min(max(deadline - time.monotonic(), 1), 600), **kw
+            )
+        return resp
+
+    @property
+    def request_model(self) -> str:
+        """The `model` field: the LoRA name when served, else the base."""
+        if self.adapter_path and (self._served is None or self.adapter_path in self._served):
+            return self.adapter_path
+        return self.model_name
+
+    def load(self) -> None:
+        """Check the server answers and serves the model; raise a user-facing error.
+
+        One `GET /models` per process per backend. A server that lists models
+        but not the adapter degrades to the base model with `warning` set;
+        a server that does not list the base model, or does not answer, is a
+        load error that the HTTP layer turns into a 503.
+        """
+        if self._served is not None:
+            return
+        if self._load_error is not None:
+            raise RuntimeError(self._load_error)
+        if not self.base_url:
+            self._load_error = self.unavailable_reason()
+            raise RuntimeError(self._load_error)
+        try:
+            resp = None
+            for delay in tuple(self.retry_delays[:5]) + (None,):
+                try:
+                    resp = self._send("GET", f"{self.base_url}/models")
+                    break
+                except Exception:  # noqa: BLE001 - retried below, re-raised at the end
+                    if delay is None:
+                        raise
+                    time.sleep(delay)
+            assert resp is not None
+            resp.raise_for_status()
+            data = resp.json()
+            served = [str(m.get("id", "")) for m in data.get("data", [])] if isinstance(data, dict) else []
+        except Exception as exc:  # noqa: BLE001
+            self._load_error = (
+                f"The generation server at {self.base_url} did not answer: {exc}. "
+                "The rule-based engine at POST /api/humanize works without it."
+            )
+            raise RuntimeError(self._load_error)
+        if served and self.model_name not in served:
+            self._load_error = (
+                f"The generation server at {self.base_url} does not serve "
+                f"{self.model_name!r} (it serves {', '.join(served[:6]) or 'nothing'}). "
+                "The rule-based engine at POST /api/humanize works without it."
+            )
+            raise RuntimeError(self._load_error)
+        if self.adapter_path and served and self.adapter_path not in served:
+            self.warning = (
+                f"adapter {self.adapter_path!r} is not served at {self.base_url}; "
+                f"using the plain {self.model_name!r}"
+            )
+        self._served = served
+
+    def unload(self) -> None:
+        """Forget the server check; nothing is resident in this process."""
+        self._served = None
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._session = None
+
+    @property
+    def loaded(self) -> bool:
+        return self._served is not None
+
+    @property
+    def batched(self) -> bool:
+        return True
+
+    # -- generation --------------------------------------------------------
+
+    def _one(self, req: GenerationRequest) -> Tuple[str, int]:
+        """One completion; returns (text, completion tokens). Retries once."""
+        import requests as _requests
+
+        body: Dict[str, Any] = {
+            "model": self.request_model,
+            "temperature": float(req.temperature),
+            "top_p": self.top_p,
+            "max_tokens": int(req.max_tokens),
+        }
+        if self.stops:
+            body["stop"] = list(self.stops)
+        if req.prompt.kind == "chat":
+            path = "/chat/completions"
+            body["messages"] = req.prompt.message_dicts
+        else:
+            path = "/completions"
+            body["prompt"] = req.prompt.text
+        last: Optional[Exception] = None
+        # Connection failures get a patient, bounded retry: a scale-to-zero
+        # host answers nothing while it boots, and this dev machine's DNS
+        # drops for a minute at a time. Total wait is about 60 s.
+        delays = self.retry_delays
+        for attempt in range(len(delays) + 1):
+            try:
+                resp = self._send("POST", self.base_url + path, json=body)
+                if resp.status_code >= 500 and attempt < len(delays):
+                    time.sleep(delays[attempt])
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                choice = (data.get("choices") or [{}])[0]
+                if req.prompt.kind == "chat":
+                    text = (choice.get("message") or {}).get("content") or ""
+                else:
+                    text = choice.get("text") or ""
+                tokens = int((data.get("usage") or {}).get("completion_tokens") or 0)
+                return str(text), tokens
+            except (_requests.ConnectionError, _requests.Timeout) as exc:
+                last = exc
+                if attempt < len(delays):
+                    time.sleep(delays[attempt])
+                    continue
+                raise RuntimeError(
+                    f"The generation server at {self.base_url} failed: {exc}"
+                ) from exc
+            except _requests.HTTPError as exc:
+                raise RuntimeError(
+                    f"The generation server at {self.base_url} refused the request: {exc}"
+                ) from exc
+        raise RuntimeError(f"The generation server at {self.base_url} failed: {last}")
+
+    def generate(self, requests: Sequence[GenerationRequest]) -> GenerationBatch:
+        requests = list(requests)
+        if not requests:
+            return GenerationBatch(texts=[], backend=self.name, model=self.model_name, batched=True)
+        self.load()
+        from concurrent.futures import ThreadPoolExecutor
+
+        started = time.perf_counter()
+        workers = max(1, min(self.max_batch, len(requests)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(self._one, requests))
+        seconds = time.perf_counter() - started
+        total_tokens = sum(t for _, t in results)
+        return GenerationBatch(
+            texts=[t for t, _ in results],
+            seconds=seconds,
+            generation_tokens=total_tokens,
+            tokens_per_second=(total_tokens / seconds) if seconds > 0 else 0.0,
+            batched=len(requests) > 1,
+            backend=self.name,
+            model=self.request_model,
+        )
+
+
+#: MLX checkpoint names the local defaults use, and the Hugging Face names
+#: a vLLM server serves the same weights under. `served_model_name` maps the
+#: former to the latter so `PipelineConfig.model_for` (which hands the MLX
+#: default to the factory) still reaches the right served model.
+_SERVED_FOR_MLX = {
+    "mlx-community/Qwen2.5-7B-4bit": "Qwen/Qwen2.5-7B",
+    "mlx-community/Qwen2.5-7B-Instruct-4bit": "Qwen/Qwen2.5-7B-Instruct",
+    "mlx-community/Qwen2.5-3B-4bit": "Qwen/Qwen2.5-3B",
+    "mlx-community/Qwen2.5-3B-Instruct-4bit": "Qwen/Qwen2.5-3B-Instruct",
+}
+
+
+def served_model_name(name: Optional[str]) -> Optional[str]:
+    """The name a remote server knows a model by.
+
+    Explicit map first; otherwise an `mlx-community/X-4bit` style name is
+    read as `Qwen/X` for Qwen checkpoints and left alone for anything else.
+    A name that is not an MLX one (the normal case once HUMANIZER_BASE_MODEL
+    names the served model) is returned unchanged.
+    """
+    if not name:
+        return None
+    if name in _SERVED_FOR_MLX:
+        return _SERVED_FOR_MLX[name]
+    if name.startswith("mlx-community/"):
+        bare = name[len("mlx-community/"):]
+        for suffix in ("-4bit", "-8bit", "-bf16", "-fp16"):
+            if bare.endswith(suffix):
+                bare = bare[: -len(suffix)]
+        if bare.lower().startswith("qwen"):
+            return "Qwen/" + bare
+        return bare
+    return name
+
+
+def _remote_backend(style: str, model: Optional[str], adapter: Optional[str]) -> OpenAICompatBackend:
+    """The remote backend for a style. Model and adapter are *served names*.
+
+    The MLX defaults name 4-bit MLX checkpoints the remote server will not
+    know, so in remote mode the env vars carry the served names:
+    HUMANIZER_BASE_MODEL (default `Qwen/Qwen2.5-7B`), HUMANIZER_INSTRUCT_MODEL
+    (default `Qwen/Qwen2.5-7B-Instruct`), HUMANIZER_BASE_ADAPTER (default the
+    shipped adapter's directory name, `hip7b-r4-it200`; empty for the plain
+    base) and HUMANIZER_REGISTER_ADAPTER likewise.
+    """
+    os_mod = __import__("os")
+    env = os_mod.environ
+    served_name = lambda p: os_mod.path.basename(str(p).rstrip("/")) if p else None  # noqa: E731
+    model = served_model_name(model)
+    if style == "register":
+        model = model or REGISTER_MODEL
+        adapter = served_name(env.get("HUMANIZER_REGISTER_ADAPTER") or REGISTER_ADAPTER)
+        return OpenAICompatBackend(model_name=model, adapter_path=adapter)
+    if style == "freeform":
+        if model is None:
+            model = env.get("HUMANIZER_BASE_MODEL") or "Qwen/Qwen2.5-7B"
+        if adapter is None:
+            raw = env.get("HUMANIZER_BASE_ADAPTER")
+            adapter = served_name(DEFAULT_BASE_ADAPTER) if raw is None else (served_name(raw) or None)
+        else:
+            adapter = served_name(adapter)
+        return OpenAICompatBackend(
+            model_name=model, adapter_path=adapter, stops=STOPS_FOR_STYLE.get("freeform", ())
+        )
+    if model is None:
+        model = env.get("HUMANIZER_INSTRUCT_MODEL") or "Qwen/Qwen2.5-7B-Instruct"
+    return OpenAICompatBackend(model_name=model)
+
+
 def default_backend(
     style: str = "faithful", model: Optional[str] = None, adapter: Optional[str] = None
-) -> MlxBackend:
-    """A fresh MLX backend for a style, without loading anything yet.
+) -> Backend:
+    """A fresh backend for a style, without loading anything yet.
+
+    Remote when HUMANIZER_LLM_URL is set (`OpenAICompatBackend`), else MLX.
 
     Not memoised: two calls give two backends and, once loaded, two copies of
     the weights. Long-lived callers want `backend_for`. `adapter` is a LoRA
     directory for the `freeform` base checkpoint; None reads
     HUMANIZER_BASE_ADAPTER, and an empty string means the plain base.
     """
+    if remote_llm_url() is not None:
+        return _remote_backend(style, model, adapter)
     if style == "register":
         path = register_model_path() if model in (None, REGISTER_MODEL) else model
         return MlxBackend(model_name=path, adapter_path=REGISTER_ADAPTER)
@@ -1184,7 +1571,7 @@ def default_backend(
 #: Environment variable naming the cap on resident MLX backends.
 MAX_RESIDENT_ENV = "HUMANIZER_MAX_RESIDENT_LLM"
 #: (style, resolved model path, adapter path or None) -> backend, LRU first.
-_BACKENDS: "OrderedDict[Tuple[str, str, Optional[str]], MlxBackend]" = OrderedDict()
+_BACKENDS: "OrderedDict[Tuple[str, str, Optional[str]], Backend]" = OrderedDict()
 _BACKENDS_LOCK = threading.Lock()
 
 
@@ -1195,7 +1582,7 @@ def _max_resident_backends() -> int:
 
 def backend_for(
     style: str = "faithful", model: Optional[str] = None, adapter: Optional[str] = None
-) -> MlxBackend:
+) -> Backend:
     """The process-wide backend for `(style, model)`, built on first use.
 
     The same arguments return the same object, so the weights are read once
@@ -1209,7 +1596,7 @@ def backend_for(
     """
     fresh = default_backend(style, model, adapter)
     key = (style, fresh.model_name, fresh.adapter_path)
-    evicted: List[MlxBackend] = []
+    evicted: List[Backend] = []
     with _BACKENDS_LOCK:
         backend = _BACKENDS.get(key)
         if backend is None:
@@ -1245,10 +1632,3 @@ def release_backends() -> None:
         backend.unload()
 
 
-#: Exposed for `pipeline.py`, which needs the stop list when cleaning a
-#: freeform completion and should not have to know the header format.
-STOPS_FOR_STYLE: Dict[str, Tuple[str, ...]] = {
-    "faithful": (),
-    "freeform": FREEFORM_STOPS,
-    "register": (),
-}

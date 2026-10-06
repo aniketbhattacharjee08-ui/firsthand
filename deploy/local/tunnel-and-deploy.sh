@@ -5,7 +5,7 @@
 set -u
 REPO=/Users/aniket.bhattacharjee/humanizer
 export PATH="$HOME/.local/node/bin:$HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-LOG=$HOME/Library/Logs/firsthand/tunnel.log
+LOG=$HOME/Library/Logs/vervly/tunnel.log
 URLFILE=$REPO/deploy/local/tunnel.url
 while true; do
   : > "$LOG.current"

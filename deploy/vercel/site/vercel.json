@@ -1,7 +1,7 @@
 {
   "cleanUrls": false,
   "rewrites": [
-    { "source": "/(.*)", "destination": "https://equivalent-let-engineering-del.trycloudflare.com/$1" }
+    { "source": "/(.*)", "destination": "https://vervly-api.fly.dev/$1" }
   ],
   "headers": [
     { "source": "/(.*)", "headers": [

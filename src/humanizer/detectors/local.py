@@ -184,8 +184,10 @@ from __future__ import annotations
 import importlib.util
 import math
 import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..memory import max_resident, release_memory
 from ..text import Document
 from .base import Detector, DetectorResult
 
@@ -235,6 +237,9 @@ DEFAULT_MODERN_MODEL = "desklib/ai-text-detector-v1.01"
 #: pairwise = P(a random AI paragraph outscores a random human paragraph),
 #: 0.5 is chance. FPR = human PMC paragraphs scored >= 0.5, out of 14.
 #: TPR = AI paragraphs scored >= 0.5, out of 14.
+#: Where this project keeps checkpoints it made itself (the surrogate).
+_LOCAL_MODELS_DIR = __import__("pathlib").Path(__file__).resolve().parents[3] / "data" / "cache" / "models"
+
 PUBLISHED_DETECTORS: Dict[str, Dict[str, Any]] = {
     "modern": {
         "model": "desklib/ai-text-detector-v1.01",
@@ -248,6 +253,38 @@ PUBLISHED_DETECTORS: Dict[str, Dict[str, Any]] = {
             "DeBERTa-v3-large fine-tuned on RAID; led the RAID detection "
             "leaderboard. Best measured here on both separation and false "
             "positives, so it is the default."
+        ),
+    },
+    "surrogate": {
+        # A RoBERTa-base classifier fine-tuned in this project on GPTZero's own
+        # verdicts for about a thousand texts it scored (research/24 §6.10;
+        # `.surrogate/train.py`). It is the free stand-in for GPTZero: the
+        # in-app number and the pipeline's candidate scorer, so the product
+        # never spends the owner's GPTZero credits. Label index 1 is "human"
+        # and the config's id2label says so. Retrain as the labelled cache
+        # grows (`data/cache/gptzero`).
+        "model": str(_LOCAL_MODELS_DIR / "gptzero-surrogate"),
+        "head": "softmax",
+        "params": 125_000_000,
+        "ship": True,
+        # Measured against GPTZero's verdicts on 203 held-out texts, not on
+        # the repo's 28-paragraph set the other rows use: AUROC 0.912; of 112
+        # GPTZero-human texts 20 were called AI; of 92 not-human texts 79 were.
+        "measured_on": "gptzero-heldout-203",
+        # Call "human" only under this probability: at 0.5 the surrogate's
+        # human calls were 92% right on held-out rewrites, at 0.15 about 96%.
+        # The pipeline's pass threshold (PipelineConfig.pass_threshold) is the
+        # same number so the label and the selection rule cannot disagree.
+        "threshold": 0.15,
+        "pairwise": 0.912,
+        "fpr": 20,
+        "tpr": 79,
+        "n_human": 112,
+        "n_ai": 92,
+        "note": (
+            "Trained on GPTZero labels, not on RAID. Its number is an estimate "
+            "of what GPTZero would say, and is the only local score the "
+            "product shows; see the surrogate card for held-out agreement."
         ),
     },
     "fakespot": {
@@ -445,8 +482,14 @@ _SENTENCE_BATCH = 16
 # ------------------------------------------------------------- model registry
 
 # (kind, model_name) -> (tokenizer, model). Module-level so a long-lived
-# process loads gpt2 once, not once per request.
-_MODEL_CACHE: Dict[Tuple[str, str], Any] = {}
+# process loads gpt2 once, not once per request. Least-recently-used order:
+# a hit moves the key to the end and `_remember` evicts from the front once
+# the cache holds more than `_max_resident()` entries, because each checkpoint
+# is 0.5-1.7GB and a server that touches every published detector would
+# otherwise grow without bound.
+_MODEL_CACHE: "OrderedDict[Tuple[str, str], Any]" = OrderedDict()
+#: Environment variable naming the cap on resident detector checkpoints.
+MAX_RESIDENT_ENV = "HUMANIZER_MAX_RESIDENT_MODELS"
 # (kind, model_name) -> exception message, for loads that already failed. A
 # missing download must not be retried on every request; the second call should
 # be as fast and as quiet as `available()` implies.
@@ -483,10 +526,52 @@ def loaded_models() -> List[str]:
 
 
 def clear_model_cache() -> None:
-    """Drop cached models and remembered load failures."""
+    """Drop cached models and remembered load failures, and free their memory."""
     with _CACHE_LOCK:
+        dropped = list(_MODEL_CACHE.values())
         _MODEL_CACHE.clear()
         _LOAD_FAILURES.clear()
+    _release(*dropped)
+
+
+def _max_resident() -> int:
+    """The LRU cap, read from `MAX_RESIDENT_ENV` on every call; 0 = unlimited."""
+    return max_resident(MAX_RESIDENT_ENV, 3)
+
+
+def _remember(key: Tuple[str, str], value: Any) -> Any:
+    """Insert `value` under `key`, evicting least-recently-used entries past the cap.
+
+    Both loaders go through here so the two cache kinds share one budget. The
+    eviction happens under `_CACHE_LOCK` but the release does not: freeing a
+    checkpoint runs a garbage-collection pass and should not hold up readers.
+    Returns `value` for the caller's convenience.
+    """
+    evicted: List[Any] = []
+    with _CACHE_LOCK:
+        _MODEL_CACHE[key] = value
+        _MODEL_CACHE.move_to_end(key)
+        cap = _max_resident()
+        while cap and len(_MODEL_CACHE) > cap:
+            _, old = _MODEL_CACHE.popitem(last=False)
+            evicted.append(old)
+    if evicted:
+        _release(*evicted)
+    return value
+
+
+def _recall(key: Tuple[str, str]) -> Optional[Any]:
+    """The cached value for `key`, marking it most recently used; else None."""
+    with _CACHE_LOCK:
+        value = _MODEL_CACHE.get(key)
+        if value is not None:
+            _MODEL_CACHE.move_to_end(key)
+        return value
+
+
+def _release(*objects: Any) -> None:
+    """Drop the references and return allocator caches; see `humanizer.memory`."""
+    release_memory(*objects)
 
 
 def _load(kind: str, model_name: str) -> Tuple[Any, Any]:
@@ -503,9 +588,10 @@ def _load_unlocked(kind: str, model_name: str) -> Tuple[Any, Any]:
     calls fail immediately rather than re-attempting a download each time.
     """
     key = (kind, model_name)
+    cached = _recall(key)
+    if cached is not None:
+        return cached
     with _CACHE_LOCK:
-        if key in _MODEL_CACHE:
-            return _MODEL_CACHE[key]
         failure = _LOAD_FAILURES.get(key)
     if failure is not None:
         raise RuntimeError(failure)
@@ -544,9 +630,7 @@ def _load_unlocked(kind: str, model_name: str) -> Tuple[Any, Any]:
             _LOAD_FAILURES[key] = message
         raise RuntimeError(message) from exc
 
-    with _CACHE_LOCK:
-        _MODEL_CACHE[key] = (tokenizer, model)
-    return tokenizer, model
+    return _remember(key, (tokenizer, model))
 
 
 def _known_failure(kind: str, model_name: str) -> Optional[str]:
@@ -729,9 +813,10 @@ def _load_modern_unlocked(
     same checkpoint cannot alias.
     """
     key = ("modern", _modern_cache_name(model_name, head_override))
+    cached = _recall(key)
+    if cached is not None:
+        return cached
     with _CACHE_LOCK:
-        if key in _MODEL_CACHE:
-            return _MODEL_CACHE[key]
         failure = _LOAD_FAILURES.get(key)
     if failure is not None:
         raise RuntimeError(failure)
@@ -787,9 +872,7 @@ def _load_modern_unlocked(
         raise RuntimeError(message) from exc
 
     loaded = (tokenizer, model, head, head_source, load_check)
-    with _CACHE_LOCK:
-        _MODEL_CACHE[key] = loaded
-    return loaded
+    return _remember(key, loaded)
 
 
 # ------------------------------------------------------------------- numerics

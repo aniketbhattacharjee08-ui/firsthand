@@ -6,7 +6,7 @@
     humanizer calibrate --scores FILE
     humanizer humanize FILE [--aggressiveness balanced] [--text|--json]
     humanizer plan --mu 0.6 --target 0.99 --rho 0.2
-    humanizer serve --port 8000 --reference data/reference/academic.json
+    humanizer serve --port 8000 --reference data/reference/academic.json [--no-auth]
 """
 
 from __future__ import annotations
@@ -243,7 +243,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"humanizer API on http://{args.host}:{args.port}")
     if args.reference:
         print(f"default reference: {args.reference}")
-    run_server(host=args.host, port=args.port, reference=args.reference)
+    # None defers to HUMANIZER_AUTH (default on); the flag forces it off.
+    auth: Optional[bool] = False if args.no_auth else None
+    if auth is False:
+        print("accounts: off (--no-auth); / serves the humanizer directly")
+    run_server(host=args.host, port=args.port, reference=args.reference, auth=auth)
     return 0
 
 
@@ -313,9 +317,56 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference",
         help="default reference distribution (name or path) for /api/analyze",
     )
+    p.add_argument(
+        "--no-auth",
+        action="store_true",
+        help=(
+            "serve without accounts: no sign-in page, no session cookie, every "
+            "API route public. Default is on (HUMANIZER_AUTH=1); the account "
+            "database is data/auth.sqlite or HUMANIZER_AUTH_DB."
+        ),
+    )
     p.set_defaults(func=cmd_serve)
 
+    p = sub.add_parser("account", help="manage accounts in the auth database")
+    acc = p.add_subparsers(dest="account_command", required=True)
+    m = acc.add_parser("master", help="create or reset the owner's master account")
+    m.add_argument("--email", required=True)
+    m.add_argument("--name", default=None)
+    m.add_argument(
+        "--password",
+        default=None,
+        help="omit to generate a strong random password, printed once",
+    )
+    m.add_argument("--db", default=None, help="auth database path (default data/auth.sqlite or HUMANIZER_AUTH_DB)")
+    m.set_defaults(func=cmd_account_master)
+
     return parser
+
+
+def cmd_account_master(args: argparse.Namespace) -> int:
+    """Create or reset the owner's master account (role `master`)."""
+    import secrets
+    from pathlib import Path
+
+    from .api.auth import AuthStore, default_auth_db_path, valid_email
+
+    if not valid_email(args.email):
+        print(f"not a valid email: {args.email!r}")
+        return 2
+    password = args.password or secrets.token_urlsafe(18)
+    if len(password) < 8:
+        print("password must be at least 8 characters")
+        return 2
+    store = AuthStore(Path(args.db) if args.db else default_auth_db_path())
+    try:
+        user = store.set_master(args.email, password, args.name)
+    finally:
+        store.close()
+    print(f"master account ready: {user['email']} (role {user['role']})")
+    if not args.password:
+        print(f"password (shown once, store it now): {password}")
+    return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

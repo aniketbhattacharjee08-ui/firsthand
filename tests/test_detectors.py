@@ -218,10 +218,12 @@ class TestBestOfN:
 
 
 class TestGPTZeroClient:
-    def test_unavailable_without_key(self):
+    def test_unavailable_without_key(self, monkeypatch):
+        monkeypatch.delenv("GPTZERO_API_KEY", raising=False)
         assert not GPTZeroClient(api_key=None, cache_dir=None).available()
 
-    def test_score_without_key_raises(self):
+    def test_score_without_key_raises(self, monkeypatch):
+        monkeypatch.delenv("GPTZERO_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
             GPTZeroClient(api_key=None, cache_dir=None).score("x" * 300)
 
@@ -252,7 +254,8 @@ class TestGPTZeroClient:
             ],
         }
         result = GPTZeroClient.parse(payload)
-        assert result.ai_probability == pytest.approx(0.08)
+        # 1 - P(human): the mixed / paraphrased class counts against a pass.
+        assert result.ai_probability == pytest.approx(0.10)
         assert result.says_human
         assert len(result.sentence_scores) == 2
 

@@ -81,6 +81,7 @@ def client():
     app = create_app(
         reference_dir=REFERENCE_DIR,
         web_dir=REPO_ROOT / "does-not-exist-web",
+        auth=False,
     )
     with TestClient(app) as c:
         yield c
@@ -93,7 +94,7 @@ class TestHealth:
         body = r.json()
         assert body["status"] == "ok"
         assert isinstance(body["version"], str) and body["version"]
-        assert set(body) == {"status", "version", "syntax_backend", "references"}
+        assert set(body) == {"status", "version", "syntax_backend", "references", "yardstick"}
 
     def test_syntax_backend_is_a_bool_even_when_absent(self, client):
         # humanizer.features.syntax is the research/10 gap and may not exist.
@@ -282,7 +283,7 @@ class TestReferences:
         assert client.get("/api/reference/not-a-genre").status_code == 404
 
     def test_empty_reference_dir_is_not_an_error(self, tmp_path):
-        app = create_app(reference_dir=tmp_path, web_dir=tmp_path / "no-web")
+        app = create_app(reference_dir=tmp_path, web_dir=tmp_path / "no-web", auth=False)
         with TestClient(app) as c:
             assert c.get("/api/references").json() == []
             assert c.get("/api/health").json()["references"] == []
@@ -386,7 +387,7 @@ class TestStaticAndCors:
         web.mkdir()
         (web / "index.html").write_text("<h1>humanizer</h1>")
         (web / "app.js").write_text("console.log(1)")
-        app = create_app(reference_dir=REFERENCE_DIR, web_dir=web)
+        app = create_app(reference_dir=REFERENCE_DIR, web_dir=web, auth=False)
         with TestClient(app) as c:
             assert "<h1>humanizer</h1>" in c.get("/").text
             assert "console.log(1)" in c.get("/app.js").text
@@ -416,3 +417,157 @@ class TestCli:
         args = build_parser().parse_args(["serve"])
         assert args.port == 8000
         assert args.reference is None
+
+
+def test_llm_request_carries_author_facts_into_the_pipeline_config():
+    from humanizer.api.server import LlmHumanizeRequest, _llm_config
+
+    body = LlmHumanizeRequest(text="A draft.", facts="Smith (2021): 40 sites")
+    assert _llm_config(body).facts == "Smith (2021): 40 sites"
+    assert _llm_config(LlmHumanizeRequest(text="A draft.")).facts == ""
+    schema = LlmHumanizeRequest.model_json_schema()["properties"]["facts"]
+    assert schema["maxLength"] == 6000
+    assert "unverified_specifics" in schema["description"]
+
+
+
+class TestGptzeroIsTheOnlyJudge:
+    """Since 2026-09-08 the product judges with GPTZero and nothing else."""
+
+    def test_default_detector_is_the_free_surrogate_and_gptzero_is_reachable(self):
+        from humanizer.api.server import DEFAULT_DETECTORS, DETECTOR_FACTORIES
+
+        assert DEFAULT_DETECTORS == ("surrogate",)
+        assert "gptzero" in DETECTOR_FACTORIES
+        assert "surrogate" in DETECTOR_FACTORIES
+
+    def test_analyze_without_detect_makes_no_detector_call(self, monkeypatch):
+        monkeypatch.delenv("GPTZERO_API_KEY", raising=False)
+        with TestClient(create_app(auth=False)) as c:
+            body = c.post("/api/analyze", json={"text": SAMPLE, "detect": False}).json()
+        assert body["detector_ran"] is False
+        assert body["detectors"] == {}
+        assert body["detector_error"] is None
+        assert body["detector"] == "surrogate"
+
+    def test_analyze_names_the_surrogate_as_the_detector(self, monkeypatch):
+        monkeypatch.delenv("GPTZERO_API_KEY", raising=False)
+        with TestClient(create_app(auth=False)) as c:
+            body = c.post("/api/analyze", json={"text": SAMPLE, "detect": False}).json()
+            health = c.get("/api/health").json()
+        assert body["detector"] == "surrogate"
+        assert health["yardstick"] == "surrogate"
+
+    def test_a_key_makes_gptzero_the_judge_and_the_candidate_scorer(self, monkeypatch):
+        """Owner's decision (2026-09-22): with a key, GPTZero ranks candidates
+        and judges the document; HUMANIZER_PROXY=surrogate restores free mode."""
+        monkeypatch.setenv("GPTZERO_API_KEY", "test-key")
+        monkeypatch.delenv("HUMANIZER_YARDSTICK", raising=False)
+        monkeypatch.delenv("HUMANIZER_PROXY", raising=False)
+        from humanizer.detectors import yardstick
+        yardstick.reset()
+        try:
+            assert yardstick.configured_name() == "gptzero"
+            assert yardstick._proxy_name() == "gptzero"
+            monkeypatch.setenv("HUMANIZER_PROXY", "surrogate")
+            assert yardstick.configured_name() == "surrogate"
+            assert yardstick._proxy_name() == "surrogate"
+            monkeypatch.delenv("GPTZERO_API_KEY")
+            monkeypatch.delenv("HUMANIZER_PROXY")
+            assert yardstick.configured_name() == "surrogate"
+        finally:
+            yardstick.reset()
+
+    def test_pass_threshold_follows_the_scorer(self, monkeypatch):
+        from humanizer.detectors import yardstick
+        from humanizer.humanize.pipeline import PipelineConfig
+
+        monkeypatch.delenv("HUMANIZER_PASS_THRESHOLD", raising=False)
+        monkeypatch.delenv("HUMANIZER_PROXY", raising=False)
+        monkeypatch.setenv("GPTZERO_API_KEY", "test-key")
+        yardstick.reset()
+        try:
+            assert PipelineConfig().pass_threshold == 0.5
+            assert PipelineConfig().n_candidates == 8
+            assert PipelineConfig().rounds == 2
+            monkeypatch.delenv("GPTZERO_API_KEY")
+            assert PipelineConfig().pass_threshold == 0.15
+        finally:
+            yardstick.reset()
+
+
+def test_a_callers_gptzero_key_makes_gptzero_the_judge_for_that_request(monkeypatch):
+    from humanizer.api import server as srv
+
+    body = srv.LlmHumanizeRequest(text="A draft.", gptzero_api_key="caller-key")
+    judge = srv._request_judge(body)
+    assert judge is not None and judge.kind == "gptzero" and judge.detector.api_key == "caller-key"
+    assert srv._request_judge(srv.LlmHumanizeRequest(text="A draft.")) is None
+    assert srv._request_judge(srv.LlmHumanizeRequest(text="A draft.", gptzero_api_key="   ")) is None
+    # The owner's key is not what gets used: only the caller's.
+    monkeypatch.setenv("GPTZERO_API_KEY", "owner-key")
+    assert srv._request_judge(srv.LlmHumanizeRequest(text="x")) is None
+
+
+# ------------------------------------------------------------ one at a time
+
+
+def test_a_second_rewrite_waits_in_a_visible_queue_stage(monkeypatch):
+    """Two rewrites never run the model at once.
+
+    Two concurrent MLX decodes crashed the process (Metal assertion,
+    2026-09-20). The second stream now emits `queue` frames until the first
+    releases the lock, then runs normally.
+    """
+    import json
+
+    from humanizer.api import server as server_mod
+    from humanizer.humanize import pipeline as pipeline_mod
+
+    class Ev:
+        def __init__(self, stage, status, result=None):
+            self.stage, self.status, self.result = stage, status, result
+
+        def as_dict(self):
+            d = {"stage": self.stage, "status": self.status, "progress": 1.0,
+                 "detail": "", "elapsed": 0.0, "round": 1}
+            if self.result is not None:
+                d["result"] = self.result
+            return d
+
+    def fake_stream(text, config=None, detector=None):
+        yield Ev("analyze", "done")
+        yield Ev("finalize", "done", result={"humanized": text})
+
+    monkeypatch.setattr(pipeline_mod, "stream", fake_stream)
+    monkeypatch.setattr(server_mod, "LLM_QUEUE_POLL_S", 0.05)
+
+    def frames(gen):
+        out = []
+        for frame in gen:
+            name = [l for l in frame.split("\n") if l.startswith("event:")][0].split(":", 1)[1].strip()
+            data = [l for l in frame.split("\n") if l.startswith("data:")][0].split(":", 1)[1].strip()
+            out.append((name, json.loads(data)))
+        return out
+
+    body = server_mod.LlmHumanizeRequest(text="A short draft to rewrite.")
+
+    # Nobody holds the model: no queue frames at all.
+    plain = frames(server_mod.llm_event_stream(body))
+    assert [d.get("stage") for n, d in plain if n == "progress"] == ["analyze", "finalize"]
+    assert not server_mod._RUN_LOCK.locked()
+
+    # Somebody does: the stream reports the wait, then runs once it is free.
+    assert server_mod._RUN_LOCK.acquire(timeout=1)
+    gen = server_mod.llm_event_stream(body)
+    (name, first), = frames([next(gen)])
+    assert name == "progress" and (first["stage"], first["status"]) == ("queue", "start")
+    (name, second), = frames([next(gen)])
+    assert name == "progress" and (second["stage"], second["status"]) == ("queue", "progress")
+    server_mod._RUN_LOCK.release()
+    rest = frames(gen)
+    stages = [(d.get("stage"), d.get("status")) for n, d in rest if n == "progress"]
+    assert stages[0] == ("queue", "done")
+    assert stages[-1] == ("finalize", "done")
+    assert [n for n, d in rest][-2:] == ["result", "done"]
+    assert not server_mod._RUN_LOCK.locked()

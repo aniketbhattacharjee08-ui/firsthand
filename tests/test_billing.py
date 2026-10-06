@@ -158,11 +158,20 @@ def test_store_nonce_single_use_and_api_keys(tmp_path):
 # -------------------------------------------------------------- real app
 
 
+def _real_app(tmp_path, cfg, web_dir=None):
+    return create_app(
+        reference_dir=REPO_ROOT / "data" / "reference",
+        web_dir=web_dir,
+        config=cfg,
+        store=Store(cfg.db_path),
+        auth_db=tmp_path / "auth.sqlite",
+    )
+
+
 @pytest.fixture()
 def real_client(tmp_path):
     cfg = _env(tmp_path)
-    app = create_app(reference_dir=REPO_ROOT / "data" / "reference", web_dir=None, config=cfg, store=Store(cfg.db_path))
-    with TestClient(app) as c:
+    with TestClient(_real_app(tmp_path, cfg)) as c:
         yield c
 
 
@@ -177,9 +186,11 @@ def test_free_routes_stay_free(real_client):
 
 
 def test_llm_route_requires_login(real_client):
+    """The real app carries the site's accounts, so the 401 is the code the
+    site's app.js redirects on; a bare paywall (stub) keeps the magic-link code."""
     r = real_client.post("/api/humanize/llm", json={"text": TEXT_300})
     assert r.status_code == 401
-    assert r.json()["error"] == "login_required"
+    assert r.json()["error"] == "sign_in_required" and r.json()["signin_url"] == "/signin"
 
 
 def test_refused_request_is_refunded(real_client):
@@ -596,11 +607,16 @@ def test_real_app_with_static_mount_keeps_routes_reachable(tmp_path):
     """Production mounts web/ at "/"; billing routes must still win the match."""
     web = tmp_path / "web"
     web.mkdir()
-    (web / "index.html").write_text("<!doctype html><title>t</title>ok")
+    (web / "index.html").write_text("<!doctype html><title>t</title>app")
+    (web / "home.html").write_text("<!doctype html><title>t</title>ok")
     cfg = _env(tmp_path)
-    app = create_app(reference_dir=REPO_ROOT / "data" / "reference", web_dir=web, config=cfg, store=Store(cfg.db_path))
+    app = _real_app(tmp_path, cfg, web_dir=web)
     with TestClient(app) as c:
         assert c.get("/").status_code == 200 and "ok" in c.get("/").text
+        # The site's gate on the app page is intact; the paywall replaces
+        # only its API-level 401 middleware.
+        r = c.get("/app", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"].startswith("/signin")
         assert c.get("/api/billing/health").json()["paywall"] is True
         assert c.get("/api/me").json()["user"] is None
         assert c.post("/api/auth/request-link", json={"email": "s@example.com"}).status_code == 200
@@ -709,17 +725,21 @@ def test_pricing_matches_server_word_count_and_rejects_bad_json(tmp_path):
 def test_effort_multiplier_prices_candidates_and_rounds(tmp_path):
     from humanizer.billing.quota import effort_multiplier
 
+    # The product default (8 candidates, 2 rounds) is 1x, so a plan's words
+    # are priced as words; only callers asking for more pay more.
+    assert effort_multiplier(8, 2) == 1
     assert effort_multiplier(6, 1) == 1
-    assert effort_multiplier(16, 1) == 3
-    assert effort_multiplier(6, 3) == 3
-    assert effort_multiplier(6, 1, 6) == 3
+    assert effort_multiplier(16, 2) == 2
+    assert effort_multiplier(8, 4) == 2
+    assert effort_multiplier(16, 4) == 4
+    assert effort_multiplier(8, 2, 6) == 3
     assert effort_multiplier("junk", None) == 1
     cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="10")
     with TestClient(_phase2_app(cfg)) as c:
         _login(c)
         r = c.post("/api/humanize/llm", json={"text": TEXT_300, "n_candidates": 16, "rounds": 2})
-        assert r.headers["x-longhand-credits-charged"] == "6"
-        r = c.post("/api/humanize/llm", json={"text": TEXT_300, "n_candidates": 16, "rounds": 3})
+        assert r.headers["x-longhand-credits-charged"] == "2"
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300, "n_candidates": 24, "rounds": 6})
         assert r.status_code == 402 and r.json()["needed"] == 9 and r.json()["effort"] == 9
 
 
@@ -791,3 +811,364 @@ def test_dev_links_refused_on_https_with_paywall(tmp_path):
 def test_admin_token_still_works_with_compare_digest(real_client):
     assert real_client.get("/api/models", headers={"X-Admin-Token": "adm"}).status_code == 200
     assert real_client.get("/api/models", headers={"X-Admin-Token": "adn"}).status_code == 403
+
+
+# ------------------------------------------------------------ plans
+
+
+import calendar  # noqa: E402
+
+from humanizer.api import auth as auth_mod  # noqa: E402
+from humanizer.billing.config import parse_plans  # noqa: E402
+
+PLANS = "monthly:price_m:300:month:$9.99 a month;yearly:price_y:300:year:$79.99 a year;lifetime:price_l:200:lifetime:$299 once"
+
+
+def _ts(year, month, day=1):
+    return float(calendar.timegm((year, month, day, 12, 0, 0)))
+
+
+def _post_event(client, event):
+    raw = json.dumps(event).encode()
+    sig = stripe_client.sign_webhook(WHSEC, raw)
+    return client.post("/api/billing/webhook", content=raw, headers={"Stripe-Signature": sig, "Content-Type": "application/json"})
+
+
+def test_parse_plans():
+    plans = parse_plans(PLANS)
+    assert [p.name for p in plans] == ["monthly", "yearly", "lifetime"]
+    assert plans[0].recurring and plans[1].recurring and not plans[2].recurring
+    assert plans[2].allowance_credits == 200 and plans[1].label == "$79.99 a year"
+    assert parse_plans("") == []
+    for bad in ("x:price:300:weekly", "x:price:0:month", "x:price:300", "a:p:1:month;a:p:1:month"):
+        with pytest.raises(ValueError):
+            parse_plans(bad)
+    cfg = _env(pathlib_tmp(), STRIPE_PLANS=PLANS, STRIPE_PRICES="")
+    assert cfg.stripe_configured and cfg.plan("yearly").interval == "year" and cfg.plan("nope") is None
+    pub = cfg.public()["plans"]
+    assert pub[0] == {"name": "monthly", "label": "$9.99 a month", "interval": "month", "allowance_credits": 300, "words_per_month": 90000}
+
+
+def pathlib_tmp():
+    import tempfile
+
+    return Path(tempfile.mkdtemp())
+
+
+def test_topup_once_per_month_up_to_allowance(tmp_path):
+    s = Store(tmp_path / "s.db")
+    u = s.get_or_create_user("p@example.com", 3)
+    jan, feb = _ts(2030, 1, 15), _ts(2030, 2, 2)
+    assert s.topup_if_due(u["id"], jan) is None  # no plan
+    row = s.set_plan(u["id"], "monthly", 300, jan + 75 * 86400, customer_id="cus_1", subscription_id="sub_1", now=jan)
+    assert row["credits"] == 300 and row["plan_period"] == "2030-01"
+    # Same month again: nothing, and no second ledger row.
+    assert s.topup_if_due(u["id"], jan + 86400) is None
+    assert [e["kind"] for e in s.ledger(u["id"])] == ["allowance", "signup"]
+    assert s.ledger(u["id"])[0]["ref"] == "plan:monthly 2030-01" and s.ledger(u["id"])[0]["delta"] == 297
+    # Spend some, next month tops back up to 300 exactly.
+    s.charge(u["id"], 120, "charge")
+    assert s.topup_if_due(u["id"], feb) == 120
+    assert s.balance(u["id"]) == 300
+    # Purchased credits above the allowance are kept; the month still records as renewed.
+    s.credit(u["id"], 500, "purchase")
+    mar = _ts(2030, 3, 1)
+    assert s.topup_if_due(u["id"], mar) == 0
+    assert s.balance(u["id"]) == 800
+    assert s.ledger(u["id"])[0]["kind"] == "allowance" and s.ledger(u["id"])[0]["delta"] == 0
+    # Expired plan (ended late March): no top-up in June.
+    s.charge(u["id"], 800, "charge")
+    assert s.topup_if_due(u["id"], _ts(2030, 6, 1)) is None
+    assert s.balance(u["id"]) == 0
+    assert not Store.plan_active(s.user(u["id"]), _ts(2030, 6, 1))
+    # Lifetime keeps renewing across months and years.
+    s.set_plan(u["id"], "lifetime", 200, None, now=_ts(2030, 4, 1))
+    assert s.balance(u["id"]) == 200
+    s.charge(u["id"], 200, "charge")
+    assert s.topup_if_due(u["id"], _ts(2031, 7, 1)) == 200
+    assert s.topup_if_due(u["id"], _ts(2031, 7, 30)) is None
+    # Expire keeps the name for display; clear removes it.
+    s.expire_plan(u["id"], _ts(2031, 8, 1))
+    assert s.user(u["id"])["plan"] == "lifetime" and s.topup_if_due(u["id"], _ts(2031, 9, 1)) is None
+    s.clear_plan(u["id"])
+    assert s.user(u["id"])["plan"] == "" and s.user(u["id"])["stripe_customer_id"] == "cus_1"
+    assert s.user_by_customer("cus_1")["id"] == u["id"] and s.user_by_subscription("sub_1") is None
+    assert s.stats()["credits_allowance"] > 0
+
+
+def test_apply_once_is_atomic(tmp_path):
+    s = Store(tmp_path / "s.db")
+    u = s.get_or_create_user("o@example.com", 0)
+
+    def boom():
+        s.credit(u["id"], 5, "purchase")
+        raise RuntimeError("after the credit")
+
+    with pytest.raises(RuntimeError):
+        s.apply_once("evt_x", "t", boom)
+    # Neither the credit nor the event survived, so Stripe's retry can apply it.
+    assert s.balance(u["id"]) == 0
+    assert s.apply_once("evt_x", "t", lambda: s.credit(u["id"], 5, "purchase")) == 5
+    assert s.apply_once("evt_x", "t", lambda: s.credit(u["id"], 5, "purchase")) is None
+    assert s.balance(u["id"]) == 5
+
+
+@pytest.fixture()
+def plan_client(tmp_path):
+    cfg = _env(tmp_path, STRIPE_PLANS=PLANS)
+    with TestClient(_stub_app(cfg)) as c:
+        yield c
+
+
+def test_plans_endpoint_and_checkout_modes(plan_client, monkeypatch):
+    r = plan_client.get("/api/billing/plans").json()
+    assert r["stripe"] is True and r["words_per_credit"] == 300 and r["free_words"] == 900
+    assert [p["name"] for p in r["plans"]] == ["monthly", "yearly", "lifetime"]
+    assert [p["name"] for p in r["packs"]] == ["starter", "pro"]
+    assert plan_client.post("/api/billing/checkout", json={"plan": "monthly"}).status_code == 401
+    user = _login(plan_client)
+    calls = []
+
+    def fake(secret, price_id, qty, **kw):
+        calls.append((price_id, kw))
+        return {"url": "https://checkout.stripe.com/x", "id": "cs_%d" % len(calls)}
+
+    monkeypatch.setattr(stripe_client, "create_checkout_session", fake)
+    assert plan_client.post("/api/billing/checkout", json={}).status_code == 400
+    assert plan_client.post("/api/billing/checkout", json={"plan": "nope"}).status_code == 400
+    r = plan_client.post("/api/billing/checkout", json={"plan": "monthly"})
+    assert r.status_code == 200 and r.json()["plan"] == "monthly" and r.json()["mode"] == "subscription"
+    price, kw = calls[-1]
+    assert price == "price_m" and kw["mode"] == "subscription"
+    assert kw["metadata"] == {"user_id": user["id"], "plan": "monthly"}
+    assert kw["subscription_metadata"] == {"user_id": user["id"], "plan": "monthly"}
+    assert kw["customer"] is None and kw["customer_email"] == "a@example.com"
+    assert kw["success_url"].endswith("/app?purchase=success") and kw["cancel_url"].endswith("/app?purchase=cancelled")
+    r = plan_client.post("/api/billing/checkout", json={"plan": "lifetime"})
+    assert r.json()["mode"] == "payment" and calls[-1][1]["metadata"] == {"user_id": user["id"], "plan": "lifetime"}
+    assert "subscription_metadata" not in calls[-1][1]
+    r = plan_client.post("/api/billing/checkout", json={"pack": "starter"})
+    assert r.json()["pack"] == "starter" and calls[-1][1]["metadata"]["credits"] == "50"
+    assert calls[-1][1]["success_url"].endswith("/app?purchase=success")
+    # Portal needs a stored customer.
+    assert plan_client.post("/api/billing/portal").status_code == 404
+
+
+def test_plan_checkout_webhook_never_takes_pack_path(plan_client):
+    user = _login(plan_client)
+    # No `credits` in metadata: the pack path would 500. The plan path applies it.
+    event = {
+        "id": "evt_p1",
+        "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_p1", "payment_status": "paid", "customer": "cus_9", "subscription": "sub_9",
+                            "metadata": {"user_id": user["id"], "plan": "monthly"}}},
+    }
+    r = _post_event(plan_client, event)
+    assert r.status_code == 200 and r.json()["plan"] == "monthly" and r.json()["balance"] == 300
+    me = plan_client.get("/api/me").json()["user"]
+    assert me["plan"] == "monthly" and me["plan_allowance"] == 300 and me["credits"] == 300
+    assert me["words_left"] == 90000 and me["words_per_credit"] == 300 and me["plan_active"] is True
+    assert me["has_billing_portal"] is True and me["is_admin"] is False
+    assert 30 * 86400 < me["plan_until"] - time.time() < 36 * 86400
+    assert _post_event(plan_client, event).json()["duplicate"] is True
+    assert plan_client.get("/api/me").json()["user"]["credits"] == 300
+    kinds = [e["kind"] for e in plan_client.get("/api/billing/ledger").json()["entries"]]
+    assert kinds.count("allowance") == 1 and "purchase" not in kinds
+    # Lifetime: plan_until is None and the allowance is the lifetime one.
+    event = {"id": "evt_p2", "type": "checkout.session.completed",
+             "data": {"object": {"id": "cs_p2", "payment_status": "paid", "metadata": {"user_id": user["id"], "plan": "lifetime"}}}}
+    assert _post_event(plan_client, event).json()["plan_until"] is None
+    me = plan_client.get("/api/me").json()["user"]
+    assert me["plan"] == "lifetime" and me["plan_until"] is None and me["credits"] == 300  # 300 already above 200
+    # A paid plan for an unknown user still 500s so Stripe retries; unknown plan names too.
+    event = {"id": "evt_p3", "type": "checkout.session.completed",
+             "data": {"object": {"id": "cs_p3", "payment_status": "paid", "metadata": {"user_id": "ghost", "plan": "monthly"}}}}
+    assert _post_event(plan_client, event).status_code == 500
+    # Ledger shows the plan and the portal works once a customer is stored.
+    assert plan_client.get("/api/billing/ledger").json()["plan"] == "lifetime"
+
+
+def test_subscription_lifecycle_events(plan_client, monkeypatch):
+    user = _login(plan_client)
+    now = time.time()
+    end = now + 30 * 86400
+    # The subscription event can arrive before the checkout event: the plan
+    # starts from the subscription's own metadata.
+    sub = {"id": "sub_1", "customer": "cus_1", "status": "active", "current_period_end": end,
+           "metadata": {"user_id": user["id"], "plan": "yearly"}}
+    r = _post_event(plan_client, {"id": "evt_s1", "type": "customer.subscription.created", "data": {"object": sub}})
+    assert r.status_code == 200 and abs(r.json()["plan_until"] - (end + 3 * 86400)) < 1
+    me = plan_client.get("/api/me").json()["user"]
+    assert me["plan"] == "yearly" and me["credits"] == 300 and abs(me["plan_until"] - (end + 3 * 86400)) < 1
+    # The checkout event then lands: provisional 35 days must not shorten the real period end.
+    # (It resets the period so the first month lands at once; balance is already 300.)
+    event = {"id": "evt_c1", "type": "checkout.session.completed",
+             "data": {"object": {"id": "cs_1", "payment_status": "paid", "customer": "cus_1", "subscription": "sub_1",
+                                 "metadata": {"user_id": user["id"], "plan": "yearly"}}}}
+    assert _post_event(plan_client, event).status_code == 200
+    # Renewal: period end moves out, found by customer id only (no metadata).
+    end2 = now + 60 * 86400
+    sub2 = {"id": "sub_1", "customer": "cus_1", "status": "active", "items": {"data": [{"current_period_end": end2}]}}
+    r = _post_event(plan_client, {"id": "evt_s2", "type": "customer.subscription.updated", "data": {"object": sub2}})
+    assert abs(r.json()["plan_until"] - (end2 + 3 * 86400)) < 1
+    # invoice.paid extends from the line period when later, never shortens.
+    inv = {"id": "in_1", "customer": "cus_1", "subscription": "sub_1", "lines": {"data": [{"period": {"end": now + 90 * 86400}}]}}
+    r = _post_event(plan_client, {"id": "evt_i1", "type": "invoice.paid", "data": {"object": inv}})
+    assert abs(r.json()["plan_until"] - (now + 93 * 86400)) < 1
+    inv_old = {"id": "in_0", "customer": "cus_1", "lines": {"data": [{"period": {"end": now + 10 * 86400}}]}}
+    r = _post_event(plan_client, {"id": "evt_i0", "type": "invoice.paid", "data": {"object": inv_old}})
+    assert r.json()["plan_until"] is None
+    assert abs(plan_client.get("/api/me").json()["user"]["plan_until"] - (now + 93 * 86400)) < 1
+    # Duplicate delivery is a no-op.
+    assert _post_event(plan_client, {"id": "evt_s2", "type": "customer.subscription.updated", "data": {"object": sub2}}).json()["duplicate"] is True
+    # Past due: allowance stops now, the name stays for display.
+    sub3 = dict(sub2, status="past_due")
+    _post_event(plan_client, {"id": "evt_s3", "type": "customer.subscription.updated", "data": {"object": sub3}})
+    me = plan_client.get("/api/me").json()["user"]
+    assert me["plan"] == "yearly" and me["plan_active"] is False and me["plan_until"] <= time.time()
+    # Reactivated, then deleted.
+    _post_event(plan_client, {"id": "evt_s4", "type": "customer.subscription.updated", "data": {"object": sub2}})
+    assert plan_client.get("/api/me").json()["user"]["plan_active"] is True
+    _post_event(plan_client, {"id": "evt_s5", "type": "customer.subscription.deleted", "data": {"object": dict(sub2, status="canceled")}})
+    me = plan_client.get("/api/me").json()["user"]
+    assert me["plan_active"] is False and me["plan"] == "yearly"
+    # An event for nobody we know is recorded and ignored, not 500.
+    r = _post_event(plan_client, {"id": "evt_s6", "type": "customer.subscription.updated", "data": {"object": {"id": "sub_x", "customer": "cus_x", "status": "active"}}})
+    assert r.status_code == 200 and r.json()["ignored"] == "unknown_user"
+    # The portal opens for the stored customer.
+    monkeypatch.setattr(stripe_client, "create_portal_session", lambda key, cust, ret: {"url": "https://billing.stripe.com/p/" + cust})
+    assert plan_client.post("/api/billing/portal").json()["url"].endswith("cus_1")
+
+
+def test_402_body_names_plans_and_words(plan_client):
+    _login(plan_client)
+    r = plan_client.post("/api/humanize/llm", json={"text": " ".join(["w"] * 3000)})
+    assert r.status_code == 402
+    b = r.json()
+    assert b["needed"] == 10 and b["balance"] == 3 and b["words"] == 3000
+    assert b["words_needed"] == 3000 and b["words_left"] == 900 and b["words_per_credit"] == 300
+    assert b["plans"] == "/api/billing/plans" and b["packs"] == "/api/billing/packs"
+
+
+def test_admin_plan_cli(tmp_path, monkeypatch, capsys):
+    from humanizer.billing.__main__ import main
+
+    for k, v in {
+        "LONGHAND_PAYWALL": "1", "LONGHAND_SECRET": SECRET, "LONGHAND_DB": str(tmp_path / "b.db"),
+        "STRIPE_PRICES": "", "STRIPE_PLANS": PLANS, "LONGHAND_EMAIL_BLOCKLIST": "",
+    }.items():
+        monkeypatch.setenv(k, v)
+    assert main(["admin", "plan", "sub@example.com", "monthly", "--until", "2031-01-31"]) == 0
+    out = capsys.readouterr().out
+    assert "plan=monthly allowance=300" in out and "2031-01-31" in out and "balance=300" in out
+    assert main(["admin", "plan", "sub@example.com", "lifetime", "--lifetime"]) == 0
+    assert "until=lifetime" in capsys.readouterr().out
+    assert main(["admin", "plan", "sub@example.com", "custom"]) == 2
+    assert main(["admin", "plan", "sub@example.com", "custom", "--allowance", "50", "--lifetime"]) == 0
+    assert main(["admin", "stats"]) == 0
+    out = capsys.readouterr().out
+    assert "credits_allowance" in out and "allowance" in out and "subscribers" in out
+    assert main(["admin", "plan", "sub@example.com", "--off"]) == 0
+    assert "plan=off" in capsys.readouterr().out
+    store = Store(tmp_path / "b.db")
+    assert store.user_by_email("sub@example.com")["plan"] == ""
+
+
+# ------------------------------------------------ the rh_session bridge
+
+
+def _site_app(cfg, tmp_path):
+    """Stub engine routes plus the site's password accounts, under the paywall."""
+    app = FastAPI()
+
+    @app.post("/api/humanize/llm")
+    def llm(body: dict):
+        return {"original": body.get("text", ""), "humanized": body.get("text", "") + " rewritten"}
+
+    @app.post("/api/humanize")
+    def rule(body: dict):
+        return {"ok": True}
+
+    auth_mod.register_auth(app, auth_mod.AuthStore(tmp_path / "auth.sqlite"), None)
+    return install(app, config=cfg, store=Store(cfg.db_path))
+
+
+def test_site_signup_is_bridged_and_charged(tmp_path):
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="2")
+    app = _site_app(cfg, tmp_path)
+    with TestClient(app) as c:
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 401
+        assert r.json()["error"] == "sign_in_required" and r.json()["signin_url"] == "/signin"
+        # Free routes stay free for anonymous callers; the site's blanket gate is gone.
+        assert c.post("/api/humanize", json={"text": "x"}).status_code == 200
+        r = c.post("/api/auth/signup", json={"email": "Site@Example.com", "password": "longenough"})
+        assert r.status_code == 201 and "rh_session" in c.cookies
+        me = c.get("/api/me").json()["user"]
+        assert me["email"] == "site@example.com" and me["credits"] == 2 and me["plan"] == ""
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 200 and r.headers["x-longhand-credits-charged"] == "1"
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}).status_code == 200
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 402
+        b = r.json()
+        assert b["error"] == "insufficient_credits" and b["words_left"] == 0 and b["words_needed"] == 300 and b["plans"] == "/api/billing/plans"
+        # Signing out drops the bridge; signing back in finds the same billing row.
+        c.post("/api/auth/signout")
+        assert c.get("/api/me").json()["user"] is None
+        c.post("/api/auth/signin", json={"email": "site@example.com", "password": "longenough"})
+        assert c.get("/api/me").json()["user"]["credits"] == 0
+    store = Store(cfg.db_path)
+    u = store.user_by_email("site@example.com")
+    assert u["auth_user_id"] and store.user_by_auth_id(u["auth_user_id"])["id"] == u["id"]
+    assert [e["kind"] for e in store.ledger(u["id"])] == ["charge", "charge", "signup"]
+
+
+def test_site_bridge_mirrors_master_and_keeps_magic_link_credits(tmp_path):
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="3")
+    app = _site_app(cfg, tmp_path)
+    auth_store = app.state.auth_store
+    auth_store.set_master("boss@example.com", "bosspassword")
+    with TestClient(app) as c:
+        # A magic-link account that later signs in by password keeps its credits (one row by email).
+        _login(c)  # a@example.com, 3 credits via longhand_session
+        c.post("/api/humanize/llm", json={"text": TEXT_300})
+        c.post("/api/auth/logout")
+        c.post("/api/auth/signup", json={"email": "a@example.com", "password": "longenough"})
+        assert c.get("/api/me").json()["user"]["credits"] == 2
+        c.post("/api/auth/signout")
+        c.post("/api/auth/signin", json={"email": "boss@example.com", "password": "bosspassword"})
+        me = c.get("/api/me").json()["user"]
+        assert me["is_admin"] is True and me["credits"] == 3
+
+
+def test_site_bridge_applies_signup_limits(tmp_path):
+    cfg = _env(tmp_path, LONGHAND_SIGNUPS_PER_IP_PER_DAY="1", LONGHAND_FREE_CREDITS="3")
+    app = _site_app(cfg, tmp_path)
+    with TestClient(app) as c:
+        c.post("/api/auth/signup", json={"email": "one@example.com", "password": "longenough"})
+        assert c.get("/api/me").json()["user"]["credits"] == 3
+        c.post("/api/auth/signout")
+        # Second account from the same address: created, usable, but no free credits.
+        c.post("/api/auth/signup", json={"email": "two@example.com", "password": "longenough"})
+        assert c.get("/api/me").json()["user"]["credits"] == 0
+        assert c.post("/api/humanize/llm", json={"text": "hi"}).status_code == 402
+        c.post("/api/auth/signout")
+        c.post("/api/auth/signup", json={"email": "x@mailinator.com", "password": "longenough"})
+        assert c.get("/api/me").json()["user"]["credits"] == 0
+
+
+def test_real_app_site_signup_bridges(tmp_path):
+    """End to end on the production app: password sign-up, then the paywall
+    sees the account, charges it and refunds a refused request."""
+    cfg = _env(tmp_path)
+    with TestClient(_real_app(tmp_path, cfg)) as c:
+        r = c.post("/api/auth/signup", json={"email": "real@example.com", "password": "longenough"})
+        assert r.status_code == 201
+        assert c.get("/api/auth/me").json()["signed_in"] is True
+        me = c.get("/api/me").json()["user"]
+        assert me["credits"] == 3 and me["words_left"] == 900
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300, "style": "bogus"})
+        assert r.status_code == 400 and r.headers["x-longhand-credits-charged"] == "0"
+        assert c.get("/api/me").json()["user"]["credits"] == 3
+        assert c.get("/api/billing/plans").status_code == 200

@@ -1,7 +1,7 @@
 # Vercel in front, the Mac behind
 
 Live since 2026-09-13 at https://firsthand-navy.vercel.app (project
-`firsthand`, team `asha22`, deployed with the Vercel CLI from
+`vervly`, team `asha22`, deployed with the Vercel CLI from
 `deploy/vercel/site`). Vercel holds the public address and TLS and proxies
 every path to the server; the server runs on the Mac, reached through a
 Cloudflare tunnel, because the rewriter needs Apple Silicon and resident
@@ -19,7 +19,7 @@ crash: `com.firsthand.server` (the API on 127.0.0.1:8000 with
 `deploy/local/tunnel-and-deploy.sh`: it starts the quick tunnel, and whenever
 the address differs from `deploy/local/tunnel.url` it rewrites `vercel.json`
 and redeploys, so a reboot heals itself in about a minute. Logs are in
-`~/Library/Logs/firsthand/`. Control:
+`~/Library/Logs/vervly/`. Control:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.firsthand.server    # restart the API (after a code change)
@@ -58,6 +58,6 @@ Vercel passes Server-Sent Events through without buffering.
 ## Custom domain
 
 Buy in the Vercel dashboard (Domains) or anywhere else, then
-`vercel domains add <domain> firsthand` and follow the DNS instructions it
+`vercel domains add <domain> vervly` and follow the DNS instructions it
 prints. Vercel issues the certificate. Then update `HUMANIZER_PUBLIC_URL` and
 the OAuth redirect URIs to the new host.

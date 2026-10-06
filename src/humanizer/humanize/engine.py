@@ -17,7 +17,7 @@ so only after two filters have run:
    invariants. Any edit that changes one is dropped, then the full result is
    re-checked in case two individually safe edits interact.
 
-Three passes, not one (`transforms.PASSES` documents why each boundary is
+Four passes, not one (`transforms.PASSES` documents why each boundary is
 there). Each pass re-parses the text the previous one produced, so a
 consequence documented in `transforms` holds here too: `Edit.start`/`Edit.end`
 from different passes index different strings.
@@ -68,8 +68,14 @@ __all__ = [
 # ------------------------------------------------------------ meaning gate
 
 
-_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
-_CAP_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'’-]*")
+#: Digits with thousands separators, an optional decimal part and an optional
+#: percent sign. The separator must be followed by more digits, so the comma
+#: in "in 2017, the" is punctuation, not part of the number.
+#: A digit run inside a token ("CO2", "H1N1") is a name, not a number.
+_NUMBER_RE = re.compile(r"(?<![A-Za-z])\d+(?:,\d{3})*(?:\.\d+)?%?")
+#: Digits and ampersands stay inside a token so "V2G", "R&D" and "H1N1" are
+#: one entity each rather than fragments.
+_CAP_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9&'’-]*")
 
 #: Month and weekday names, so that a date is protected even when it carries no
 #: digit ("in early March" vs "in March 2019").
@@ -93,19 +99,27 @@ def _entities(text: str) -> Counter:
     """
     found: Counter = Counter()
     for sent in Document.parse(text).sentences:
-        run: List[str] = []
-        for i, match in enumerate(_CAP_TOKEN_RE.finditer(sent.text)):
-            token = match.group(0)
-            if i == 0:
-                continue
-            if token[0].isupper():
-                run.append(token)
-            elif run:
+        first_seen = False
+        # Punctuation ends a run: "Uber, DoorDash and Upwork" is three names,
+        # not one, and "(UNEP)" is its own token.
+        for segment in _ENTITY_BREAK_RE.split(sent.text):
+            run: List[str] = []
+            for match in _CAP_TOKEN_RE.finditer(segment):
+                token = match.group(0)
+                if not first_seen:
+                    first_seen = True
+                    continue
+                if token[0].isupper():
+                    run.append(token)
+                elif run:
+                    found[" ".join(run)] += 1
+                    run = []
+            if run:
                 found[" ".join(run)] += 1
-                run = []
-        if run:
-            found[" ".join(run)] += 1
     return found
+
+
+_ENTITY_BREAK_RE = re.compile(r"[,;:.!?()\[\]\"“”—–]")
 
 
 def invariants(text: str) -> Dict[str, Any]:
@@ -126,8 +140,12 @@ def invariants(text: str) -> Dict[str, Any]:
             for pattern in (_PAREN_CITATION, _NUMERIC_CITATION)
             for m in pattern.finditer(text)
         ),
+        # Capitalised only: the modal "may" is not the month, and a rewrite
+        # that adds or drops a hedge must not fail the dates invariant.
         "dates": Counter(
-            w.lower() for w in _CAP_TOKEN_RE.findall(text) if w.lower() in _DATE_WORDS
+            w.lower()
+            for w in _CAP_TOKEN_RE.findall(text)
+            if w[0].isupper() and w.lower() in _DATE_WORDS
         ),
         "entities": set(_entities(text)),
     }

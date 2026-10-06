@@ -25,7 +25,7 @@ log = logging.getLogger("humanizer.billing.mail")
 
 
 def send_magic_link(
-    smtp_url: str, mail_from: str, to: str, link: str, minutes: int, product: str = "Firsthand"
+    smtp_url: str, mail_from: str, to: str, link: str, minutes: int, product: str = "Vervly"
 ) -> Optional[str]:
     """Deliver the login link. Returns the transport used, or raises."""
     subject = "Your %s sign-in link" % product

@@ -846,7 +846,7 @@ from humanizer.api import server as server_mod  # noqa: E402
 
 @pytest.fixture
 def client():
-    return TestClient(server_mod.create_app(web_dir=None))
+    return TestClient(server_mod.create_app(web_dir=None, auth=False))
 
 
 def fake_stream(text, config=None, backend=None, detector=None, guide=None):

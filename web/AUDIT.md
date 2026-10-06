@@ -1,4 +1,4 @@
-# Frontend audit — `web/`
+# Frontend audit, `web/`
 
 Audited against the live service (reference corpus `research-article-stem`,
 60 PMC documents). Every claim below was checked by driving a real headless
@@ -21,11 +21,11 @@ and `info`. The service returns findings already ordered high-first, and the
 client actively un-ordered them. Fixed with an explicit `=== undefined` check.
 Now verified: the AI sample renders `high, high, high, medium, medium, medium`.
 
-### 1.2 Both dials could permanently read "—"
+### 1.2 Both dials could permanently read "-"
 `setDial` wrote the number *only* from inside a `requestAnimationFrame`
 callback. `requestAnimationFrame` does not fire in a background tab. Reproduced
 in headless Chrome: the status line read `detection risk 100 of 100 · writing
-quality 70 of 100` while both dials showed `—`. The two-dials rule is
+quality 70 of 100` while both dials showed `-`. The two-dials rule is
 non-negotiable, so a dial that silently shows nothing is a serious defect.
 Fixed: the tween still runs, but a settle timer writes the exact value
 unconditionally shortly after, so the reading is correct whether or not any
@@ -35,7 +35,7 @@ frame is ever produced.
 The caret save/restore did `range.collapse(true)`, so only a collapsed caret
 survived a canvas rebuild. Any *selection* the user had made was silently
 thrown away roughly a second after they stopped typing. Fixed: anchor and focus
-offsets are both captured and restored. Verified — a 17-character selection
+offsets are both captured and restored. Verified, a 17-character selection
 survives a full re-render intact.
 
 ### 1.4 Re-entrancy between `selectionchange` and the canvas rebuild
@@ -53,7 +53,7 @@ repopulated the corpus list. Fixed, and covered by a regression test.
 The service is started with `--reference data/reference/research-article-stem.json`,
 so it applies a default corpus even when the request sends `reference: null`.
 The old UI offered "none (bands only)", sent `null`, received a Mahalanobis
-distance anyway, and captioned it with whatever was in the local dropdown —
+distance anyway, and captioned it with whatever was in the local dropdown -
 `"unnamed"`. The response field that says what was actually used,
 `reference_name`, was dropped entirely by `normalizeAnalysis`. Fixed: the
 option is now "Service default", `reference_name` is read, and the panel
@@ -75,7 +75,7 @@ text.
 ### 1.9 Hidden banners were not actually hidden
 `.banner { display: flex }` outranks the UA stylesheet's
 `[hidden] { display: none }`, so the offline banner and the mock-mode banner
-rendered permanently — the page claimed to be both offline *and* in mock mode
+rendered permanently, the page claimed to be both offline *and* in mock mode
 while the service was plainly connected. Caught by screenshotting the running
 page, not by any DOM assertion: `element.hidden` was `true` the whole time, so
 attribute-level tests passed while the user saw two false alarms. Fixed with a
@@ -84,7 +84,7 @@ global `[hidden] { display: none !important; }` and re-verified visually.
 ### 1.10 Measurement captions repeated themselves
 The caption template prepended `human academic prose runs {band}` to a `source`
 string that already restated the same band, producing "human academic prose
-runs 0.42 to 0.60 — human academic prose 0.42 to 0.60, across five pre-2023
+runs 0.42 to 0.60, human academic prose 0.42 to 0.60, across five pre-2023
 corpora". The `source` fields are now provenance only, and the assembly
 tolerates an empty one without leaving a dangling em dash.
 
@@ -113,7 +113,7 @@ guard rejected it and every edit silently lost its sentence reference. Fixed
 with a lenient coercion used for all values read off an API payload.
 
 ### 1.15 HTTP error bodies were shown as raw JSON
-A 400 surfaced to the user as `HTTP 400 — {"detail":"Field 'text' is required…"}`.
+A 400 surfaced to the user as `HTTP 400, {"detail":"Field 'text' is required…"}`.
 Now the `detail` field is unwrapped.
 
 ### 1.16 The overlay pushed the action bar off the screen, again
@@ -216,7 +216,7 @@ no handling at all:
 
 ## 2. Things that were already fine
 
-Reported honestly — a previous agent got these right and they were left working:
+Reported honestly, a previous agent got these right and they were left working:
 
 - Debounced auto-analyze on typing, with request-token cancellation so a slow
   response cannot overwrite a newer one.
@@ -444,7 +444,7 @@ the two so the distinction stays visible.
 
 ## 3. Redesign
 
-Asha Berkeley was used **only** for its qualities — generous whitespace,
+Asha Berkeley was used **only** for its qualities, generous whitespace,
 unhurried pacing, numbered section rhythm, confident display type against quiet
 UI type, warm tone, calm motion. None of its colours or fonts are present.
 
@@ -457,7 +457,7 @@ UI type, warm tone, calm motion. None of its colours or fonts are present.
 | hairline / border | `#e3e2dd` `#7c8590` | `#242a31` `#666f7a` |
 | accent (teal-green) | `#1f6f5c`, hover `#17594a`, tint `#e6f1ee` | `#3fa48a`, hover `#5cb79f`, tint `#12302a` |
 
-**Risk ramp** — calm teal → caution ochre → alert clay, desaturated on purpose
+**Risk ramp**, calm teal → caution ochre → alert clay, desaturated on purpose
 so it never reads as a traffic light and never collides with the diff colours:
 
 - light backgrounds `#e8eee9 #e0e3d8 #e1d8c0 #dfc6a7 #d3a98e #c48272`
@@ -471,7 +471,7 @@ these per reading, so a calm document is not drawn in the alert hue.
 
 **Diff colours are declared and deliberately unused**: `--diff-ins #2f7d51`,
 `--diff-del #a8442e`. A test asserts that no element in the rendered page
-paints itself in either — green and red stay reserved for the rewrite layer.
+paints itself in either, green and red stay reserved for the rewrite layer.
 Grade-cost chips, which would be the obvious place to reach for green and red,
 are typographic and borrow the accent instead.
 
@@ -492,13 +492,13 @@ through to Iowan Old Style / Charter / system sans and still looks deliberate.
 `anim.js` is a separate ES module that **only enhances already-rendered DOM**.
 `app.js` paints the entire interface by itself; nothing depends on the module.
 
-- **Motion One** (`esm.sh/motion@10`) — panel entrances with `stagger`,
+- **Motion One** (`esm.sh/motion@10`), panel entrances with `stagger`,
   `inView` reveals for the lower rail sections, dial count-ups, arc settle.
-- **AutoAnimate** (`esm.sh/@formkit/auto-animate@0.8`) — attached to the
+- **AutoAnimate** (`esm.sh/@formkit/auto-animate@0.8`), attached to the
   findings, measurements, detector and flagged lists so they reflow smoothly on
   re-analysis.
 - Sentence highlights fade in progressively, budgeted to the first 60 spans.
-- Durations 150–450 ms, `cubic-bezier(0.22, 1, 0.36, 1)`, no bounce or overshoot.
+- Durations 150 to 450 ms, `cubic-bezier(0.22, 1, 0.36, 1)`, no bounce or overshoot.
 
 Three independent safety mechanisms, because an animation library must never be
 able to hide the product:
@@ -589,8 +589,8 @@ from the score.
 ## 5. Accessibility
 
 - **WCAG AA verified live**, not by eye: a sweep over every rendered text node
-  in the running page — with all explainers expanded, a measurement row open
-  and a sentence selected — computes each element's contrast against its true
+  in the running page, with all explainers expanded, a measurement row open
+  and a sentence selected, computes each element's contrast against its true
   painted background and its own size/weight threshold. **0 failures in light,
   0 in dark.**
 - Ink on every one of the six risk-ramp backgrounds stays above 5.7:1.
@@ -706,7 +706,7 @@ from the score.
 - `/api/detect` returns `sentence_scores: []` for every detector, so there is no
   per-detector sentence overlay to draw. Nothing is invented in its place.
 - **Mock mode has no reference corpus**, so it reports no distance rather than a
-  fabricated one — a change from the previous version, which invented one.
+  fabricated one, a change from the previous version, which invented one.
 - The animation layer needs a reachable CDN. Without one the page is simply
   static, which is a supported state, not a failure.
 

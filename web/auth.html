@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in to Vervly</title>
+<meta name="description" content="Sign in to Vervly or create an account.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0e1013">
+<link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Literata for what people read, Source Sans 3 for controls, Fira Mono for numerals and the field.
+     Loaded without blocking; styles.css carries full fallback stacks. -->
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&family=Source+Sans+3:wght@400;500;600&family=Fira+Mono:wght@400;500&display=swap">
+<noscript><link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&family=Source+Sans+3:wght@400;500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
+
+<link rel="stylesheet" href="/styles.css?v=202609101430">
+<link rel="stylesheet" href="/auth.css?v=202609101430">
+</head>
+<body class="auth">
+
+<a class="skip-link" href="#email">Skip to the form</a>
+
+
+<!-- one column, quiet in the field, with the card in it. auth.js picks the mode
+     from the path (/signin or /signup) and switches it without a reload. -->
+<main class="auth-stage" data-field-quiet>
+
+  <a class="wordmark auth-wordmark" href="/" aria-label="Vervly, front page"><span class="wordmark-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#a8e6b0"/></svg></span>Vervly</a>
+
+  <section class="auth-card" data-solid aria-labelledby="auth-h">
+    <nav class="modes" aria-label="Sign in or create an account">
+      <a class="mode" id="mode-signin" href="/signin" data-mode="signin" aria-current="page">Sign in</a>
+      <a class="mode" id="mode-signup" href="/signup" data-mode="signup">Create account</a>
+    </nav>
+
+    <h1 class="auth-h" id="auth-h">Sign in to Vervly</h1>
+
+    <p class="auth-alert" id="auth-alert" role="alert" hidden></p>
+
+    <!-- provider sign-in. The hrefs carry ?next= (auth.js sets it); a provider
+         the server has no keys for redirects back here with ?error= and the
+         alert above explains. -->
+    <div class="auth-oauth" id="auth-oauth">
+      <a class="btn btn-oauth" id="oauth-google" href="/api/auth/oauth/google/start?next=/app" rel="nofollow">
+        <svg class="oauth-mark" viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.7 1.2 9.2 3.6l6.9-6.9C35.9 2.4 30.3 0 24 0 14.6 0 6.5 5.4 2.6 13.2l8 6.2C12.5 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.7 6c4.5-4.2 6.9-10.3 6.9-17.7z"/><path fill="#FBBC05" d="M10.6 28.6A14.6 14.6 0 0 1 9.5 24c0-1.6.3-3.1.8-4.6l-8-6.2A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.8l8-6.2z"/><path fill="#34A853" d="M24 48c6.3 0 11.7-2.1 15.6-5.7l-7.7-6c-2.1 1.4-4.8 2.3-7.9 2.3-6.2 0-11.5-4.1-13.4-9.9l-8 6.2C6.5 42.6 14.6 48 24 48z"/></svg>
+        <span>Continue with Google</span>
+      </a>
+      <a class="btn btn-oauth" id="oauth-apple" href="/api/auth/oauth/apple/start?next=/app" rel="nofollow">
+        <svg class="oauth-mark" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M16.4 12.7c0 3.1 2.7 4.1 2.7 4.1s-2.1 5.9-4.9 5.9c-1.3 0-2.3-.9-3.7-.9s-2.5.9-3.7.9C4 22.7 1.5 16.9 1.5 13c0-3.9 2.5-6 4.8-6 1.5 0 2.7 1 3.6 1s2.4-1.2 4.1-1.2c.7 0 3.1.3 4.6 2.4-.1.1-2.2 1.2-2.2 3.5zM12.9 5.5c.8-1 1.4-2.3 1.2-3.7-1.2.1-2.6.8-3.4 1.8-.8.9-1.4 2.2-1.2 3.6 1.3.1 2.6-.7 3.4-1.7z"/></svg>
+        <span>Continue with Apple</span>
+      </a>
+    </div>
+    <p class="auth-or" aria-hidden="true"><span>or</span></p>
+
+    <form class="auth-form" id="auth-form" method="post" action="/api/auth/signin" novalidate>
+      <div class="f" id="f-name" hidden>
+        <label class="f-label" for="name">Name <span class="f-opt">(optional)</span></label>
+        <input class="f-input" id="name" name="name" type="text" autocomplete="name" autocapitalize="words" maxlength="80">
+      </div>
+
+      <div class="f" id="f-email">
+        <label class="f-label" for="email">Email</label>
+        <input class="f-input" id="email" name="email" type="email" autocomplete="email" inputmode="email"
+               spellcheck="false" autocapitalize="off" required aria-describedby="email-err">
+        <p class="f-err" id="email-err" hidden></p>
+      </div>
+
+      <div class="f" id="f-password">
+        <label class="f-label" for="password">Password</label>
+        <div class="f-pw">
+          <input class="f-input" id="password" name="password" type="password" autocomplete="current-password"
+                 required minlength="8" aria-describedby="password-hint password-err">
+          <button class="pw-toggle" id="pw-toggle" type="button" aria-pressed="false" aria-controls="password"
+                  aria-label="Show password">Show</button>
+        </div>
+        <p class="f-hint" id="password-hint" hidden>At least 8 characters.</p>
+        <p class="f-err" id="password-err" hidden></p>
+      </div>
+
+      <button class="btn btn-primary auth-submit" id="auth-submit" type="submit">Sign in</button>
+    </form>
+  </section>
+
+  <p class="auth-back"><a href="/">Back to the front page</a></p>
+
+</main>
+
+<script src="/auth.js?v=202609101430" defer></script>
+</body>
+</html>

@@ -78,6 +78,67 @@ def parse_packs(raw: str) -> List[Pack]:
     return packs
 
 
+PLAN_INTERVALS = ("month", "year", "lifetime")
+
+
+@dataclass(frozen=True)
+class Plan:
+    """One subscription or lifetime plan, mapped to a Stripe Price.
+
+    `allowance_credits` is the monthly allowance: the balance is topped up
+    to this number once per UTC calendar month while the plan is active
+    (`Store.topup_if_due`). A yearly plan is still a monthly allowance paid
+    for twelve months at once; lifetime is the same allowance forever.
+    """
+
+    name: str
+    price_id: str
+    allowance_credits: int
+    interval: str
+    label: str
+
+    @property
+    def recurring(self) -> bool:
+        return self.interval in ("month", "year")
+
+
+def parse_plans(raw: str) -> List[Plan]:
+    """Parse `STRIPE_PLANS`.
+
+    Format: plans separated by `;`, fields by `:` in the order
+    ``name:price_id:allowance_credits:interval[:label]`` where interval is
+    `month`, `year` or `lifetime`, e.g.
+    ``monthly:price_1Abc:300:month:$9.99 a month``.
+    """
+    plans: List[Plan] = []
+    for chunk in (raw or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(":", 4)
+        if len(parts) < 4:
+            raise ValueError(
+                "STRIPE_PLANS entry %r must be name:price_id:allowance_credits:interval[:label]" % chunk
+            )
+        name, price_id, credits, interval = (x.strip() for x in parts[:4])
+        label = parts[4].strip() if len(parts) == 5 else ""
+        if not re.fullmatch(r"[a-z0-9_-]{1,32}", name):
+            raise ValueError("plan name %r must be lowercase [a-z0-9_-]" % name)
+        try:
+            n = int(credits)
+        except ValueError:
+            raise ValueError("plan %r: allowance %r is not an integer" % (name, credits))
+        if n <= 0:
+            raise ValueError("plan %r: allowance must be positive" % name)
+        interval = interval.lower()
+        if interval not in PLAN_INTERVALS:
+            raise ValueError("plan %r: interval %r must be one of %s" % (name, interval, ", ".join(PLAN_INTERVALS)))
+        if any(p.name == name for p in plans):
+            raise ValueError("plan %r is listed twice" % name)
+        plans.append(Plan(name=name, price_id=price_id, allowance_credits=n, interval=interval, label=label or name))
+    return plans
+
+
 def parse_rate(raw: str, default: Tuple[int, float]) -> Tuple[int, float]:
     """Parse ``N/second|minute|hour`` into (N, window_seconds)."""
     raw = (raw or "").strip().lower()
@@ -108,9 +169,9 @@ def load_blocklist(path: str) -> FrozenSet[str]:
 @dataclass(frozen=True)
 class BillingConfig:
     enabled: bool = False
-    #: Shown in emails and by the frontend. The page calls itself Firsthand;
+    #: Shown in emails and by the frontend. The page calls itself Vervly;
     #: the environment-variable prefix stays LONGHAND_ for stability.
-    product_name: str = "Firsthand"
+    product_name: str = "Vervly"
     secret: str = ""
     db_path: Path = _DEFAULT_DB
     public_url: str = "http://127.0.0.1:8000"
@@ -146,11 +207,12 @@ class BillingConfig:
     trust_proxy: bool = False
     dev_links: bool = False
     smtp_url: str = ""
-    mail_from: str = "Firsthand <no-reply@localhost>"
+    mail_from: str = "Vervly <no-reply@localhost>"
     admin_token: str = ""
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     packs: Tuple[Pack, ...] = field(default_factory=tuple)
+    plans: Tuple[Plan, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "BillingConfig":
@@ -208,7 +270,7 @@ class BillingConfig:
         db_raw = get("LONGHAND_DB")
         return cls(
             enabled=enabled,
-            product_name=get("LONGHAND_PRODUCT_NAME", "Firsthand"),
+            product_name=get("LONGHAND_PRODUCT_NAME", "Vervly"),
             secret=secret,
             db_path=Path(db_raw).expanduser() if db_raw else _DEFAULT_DB,
             public_url=public_url,
@@ -231,11 +293,12 @@ class BillingConfig:
             trust_proxy=get_bool("LONGHAND_TRUST_PROXY", False),
             dev_links=get_bool("LONGHAND_DEV_LINKS", False),
             smtp_url=get("LONGHAND_SMTP_URL"),
-            mail_from=get("LONGHAND_MAIL_FROM", "Firsthand <no-reply@localhost>"),
+            mail_from=get("LONGHAND_MAIL_FROM", "Vervly <no-reply@localhost>"),
             admin_token=get("LONGHAND_ADMIN_TOKEN"),
             stripe_secret_key=get("STRIPE_SECRET_KEY"),
             stripe_webhook_secret=get("STRIPE_WEBHOOK_SECRET"),
             packs=tuple(parse_packs(get("STRIPE_PRICES"))),
+            plans=tuple(parse_plans(get("STRIPE_PLANS"))),
         )
 
     @property
@@ -244,13 +307,34 @@ class BillingConfig:
 
     @property
     def stripe_configured(self) -> bool:
-        return bool(self.stripe_secret_key and self.stripe_webhook_secret and self.packs)
+        return bool(self.stripe_secret_key and self.stripe_webhook_secret and (self.packs or self.plans))
 
     def pack(self, name: str) -> Optional[Pack]:
         for p in self.packs:
             if p.name == name:
                 return p
         return None
+
+    def plan(self, name: str) -> Optional[Plan]:
+        for p in self.plans:
+            if p.name == name:
+                return p
+        return None
+
+    def public_packs(self) -> List[Dict[str, object]]:
+        return [{"name": p.name, "credits": p.credits, "label": p.label} for p in self.packs]
+
+    def public_plans(self) -> List[Dict[str, object]]:
+        return [
+            {
+                "name": p.name,
+                "label": p.label,
+                "interval": p.interval,
+                "allowance_credits": p.allowance_credits,
+                "words_per_month": p.allowance_credits * self.words_per_credit,
+            }
+            for p in self.plans
+        ]
 
     def public(self) -> Dict[str, object]:
         """The subset safe to show a browser (`GET /api/billing/health`)."""
@@ -262,10 +346,9 @@ class BillingConfig:
             "words_per_credit": self.words_per_credit,
             "refund_unchanged": self.refund_unchanged,
             "max_inflight": self.max_inflight,
+            "free_words": self.free_credits * self.words_per_credit,
             "stripe": self.stripe_configured,
-            "packs": [
-                {"name": p.name, "credits": p.credits, "label": p.label}
-                for p in self.packs
-            ],
+            "packs": self.public_packs(),
+            "plans": self.public_plans(),
             "mail": "smtp" if self.smtp_url else ("dev-links" if self.dev_links else "log"),
         }

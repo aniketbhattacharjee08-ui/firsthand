@@ -123,7 +123,7 @@ def main() -> int:
 
     p = argparse.ArgumentParser()
     p.add_argument("--out", default=str(HERE / "html"))
-    p.add_argument("--product", default="Firsthand")
+    p.add_argument("--product", default="Vervly")
     p.add_argument("--updated", default=dt.date.today().isoformat())
     args = p.parse_args()
     for path in build(Path(args.out), args.product, args.updated):

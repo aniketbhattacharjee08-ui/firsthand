@@ -95,22 +95,40 @@ class GPTZeroClient(Detector):
             time.sleep(self.min_interval - elapsed)
         self._last_call = time.monotonic()
 
+    #: Transient failures (DNS blips, 5xx, timeouts) are retried this many
+    #: times with a short backoff; a bench of a hundred calls should not die
+    #: on one dropped lookup (it did, 2026-09-08). 4xx errors are not retried.
+    max_attempts = 4
+
     def _request(self, text: str) -> Dict[str, Any]:
         import requests  # imported lazily so the package works offline
 
-        self._throttle()
-        response = requests.post(
-            API_URL,
-            headers={
-                "x-api-key": self.api_key,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json={"document": text, "multilingual": self.multilingual},
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return response.json()
+        last: Optional[BaseException] = None
+        for attempt in range(self.max_attempts):
+            self._throttle()
+            try:
+                response = requests.post(
+                    API_URL,
+                    headers={
+                        "x-api-key": self.api_key,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    json={"document": text, "multilingual": self.multilingual},
+                    timeout=self.timeout,
+                )
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                last = exc
+                time.sleep(min(30.0, 2.0 * (2 ** attempt)))
+                continue
+            if 500 <= response.status_code < 600 or response.status_code == 429:
+                last = requests.HTTPError(f"{response.status_code} from GPTZero", response=response)
+                time.sleep(min(30.0, 2.0 * (2 ** attempt)))
+                continue
+            response.raise_for_status()
+            return response.json()
+        assert last is not None
+        raise last
 
     def score(self, text: str, use_cache: bool = True) -> DetectorResult:
         if not self.api_key:
@@ -144,7 +162,16 @@ class GPTZeroClient(Detector):
         doc = docs[0] if docs else {}
 
         probs = doc.get("class_probabilities") or {}
-        ai_prob = probs.get("ai")
+        # The number we rank and threshold on is "not entirely human": AI plus
+        # the mixed / AI-paraphrased class. GPTZero's own verdict is the argmax
+        # of the three, and a document at ai=0.005, mixed=0.60 is *not* a pass
+        # (measured 2026-09-07: explainer-1 through the 7B base model). Ranking
+        # on `ai` alone would pick exactly that candidate as the winner.
+        ai_prob = None
+        if probs.get("human") is not None:
+            ai_prob = 1.0 - float(probs["human"])
+        elif probs.get("ai") is not None:
+            ai_prob = probs.get("ai")
         if ai_prob is None:
             ai_prob = doc.get("completely_generated_prob", float("nan"))
 

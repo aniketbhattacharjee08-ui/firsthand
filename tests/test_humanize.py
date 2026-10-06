@@ -558,7 +558,7 @@ def test_engine_never_injects_surface_errors():
         allowed.update(value.lower().split())
     for value in transforms_mod.PHRASE_REPLACEMENTS.values():
         allowed.update(value.lower().split())
-    allowed.update({"and", "as", "well", "a", "an"})
+    allowed.update(transforms_mod.CLOSED_VOCABULARY)
     new_words = set(Document.parse(result.humanized).lower_words) - source_words
     assert new_words <= allowed, new_words
 
@@ -741,7 +741,7 @@ from humanizer.api.server import create_app  # noqa: E402
 
 @pytest.fixture(scope="module")
 def client():
-    return TestClient(create_app())
+    return TestClient(create_app(auth=False))
 
 
 def test_endpoint_returns_the_documented_body(client):
@@ -797,3 +797,36 @@ def test_endpoint_emits_no_nan_tokens(client):
     assert response.status_code == 200
     assert "NaN" not in response.text
     assert "Infinity" not in response.text
+
+
+def test_invariants_treat_the_modal_may_and_chemical_formulae_as_words():
+    from humanizer.humanize.engine import invariants
+
+    src = "Emissions of CO2 rose in May 2019, and the trend may continue."
+    # "May" the month counts once; the modal does not.
+    assert invariants(src)["dates"] == {"may": 1}
+    # "CO2" is not the number 2; "2019" is a number.
+    assert invariants(src)["numbers"] == {"2019": 1}
+    # A rewrite that drops the hedge, or adds one, keeps the invariants.
+    assert invariants("Emissions of CO2 rose in May 2019, and the trend continues.")["dates"] == {"may": 1}
+    # A trailing comma is punctuation, not part of the number.
+    assert invariants("In 2017, costs fell.")["numbers"] == {"2017": 1}
+
+
+def test_entities_break_on_punctuation():
+    from humanizer.humanize.engine import _entities
+
+    got = set(_entities("Gig platforms such as Uber, DoorDash and Upwork grew; the United Nations Environment Programme (UNEP) noted it."))
+    assert {"Uber", "DoorDash", "Upwork", "United Nations Environment Programme", "UNEP"} <= got
+    assert not any("Uber DoorDash" in e or "Programme UNEP" in e for e in got)
+
+
+def test_entities_keep_digits_and_ampersands_inside_a_token():
+    from humanizer.humanize.engine import _entities, invariants
+
+    text = "Spending on R&D and on V2G charging rose; the H1N1 season was mild."
+    got = set(_entities(text))
+    assert {"R&D", "V2G", "H1N1"} <= got
+    assert not any(e in {"R", "D", "V", "G", "H"} for e in got)
+    # Deterministic across calls.
+    assert invariants(text) == invariants(text)

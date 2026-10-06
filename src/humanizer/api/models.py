@@ -33,6 +33,14 @@ class AnalyzeRequest(BaseModel):
     """Body for POST /api/analyze."""
 
     text: str = Field(default="", description="Raw document text.")
+    detect: bool = Field(
+        default=True,
+        description=(
+            "Run the detector (GPTZero when a key is configured). False returns "
+            "the measurements only, so an editor can re-analyse on every pause "
+            "without a paid call; the app sends True on Humanize and Re-measure."
+        ),
+    )
     reference: Optional[str] = Field(
         default=None,
         description=(

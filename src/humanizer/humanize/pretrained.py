@@ -210,8 +210,11 @@ from __future__ import annotations
 
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+from ..memory import max_resident, release_memory
 
 from .pipeline import (
     AI_THRESHOLD,
@@ -488,7 +491,12 @@ NOTICE = (
 
 # ---------------------------------------------------------- model loading
 
-_MODEL_CACHE: Dict[Tuple[str, str, str], Any] = {}
+#: (model, device, dtype) -> (tokenizer, model), least-recently-used first.
+#: Each entry is 6-12GB resident, so the default budget is a single checkpoint:
+#: loading a different key evicts and frees the one before it.
+_MODEL_CACHE: "OrderedDict[Tuple[str, str, str], Any]" = OrderedDict()
+#: Environment variable naming the cap on resident paraphraser checkpoints.
+MAX_RESIDENT_ENV = "HUMANIZER_MAX_RESIDENT_PRETRAINED"
 
 
 def loaded_models() -> List[str]:
@@ -497,13 +505,34 @@ def loaded_models() -> List[str]:
 
 
 def clear_model_cache() -> None:
-    """Drop every loaded checkpoint and re-arm the reachability check.
+    """Drop every loaded checkpoint, free its memory, re-arm the reachability check.
 
     ~6.2GB back per resident model. Call this after downloading a checkpoint
     so `available()` stops reporting the cached "not available" verdict.
     """
+    dropped = list(_MODEL_CACHE.values())
     _MODEL_CACHE.clear()
     _REACHABLE.clear()
+    release_memory(*dropped)
+
+
+def _max_resident() -> int:
+    """The cap, read from `MAX_RESIDENT_ENV` on every call; 0 = unlimited."""
+    return max_resident(MAX_RESIDENT_ENV, 1)
+
+
+def _remember(key: Tuple[str, str, str], value: Any) -> Any:
+    """Insert `value` under `key`, evicting and freeing the least-recently-used past the cap."""
+    _MODEL_CACHE[key] = value
+    _MODEL_CACHE.move_to_end(key)
+    cap = _max_resident()
+    evicted: List[Any] = []
+    while cap and len(_MODEL_CACHE) > cap:
+        _, old = _MODEL_CACHE.popitem(last=False)
+        evicted.append(old)
+    if evicted:
+        release_memory(*evicted)
+    return value
 
 
 def _torch_unavailable_reason() -> Optional[str]:
@@ -584,6 +613,7 @@ def _load(cfg: PretrainedConfig):
     """The tokenizer and model, built once per (checkpoint, device, dtype)."""
     key = (cfg.model, cfg.resolved_device(), cfg.dtype)
     if key in _MODEL_CACHE:
+        _MODEL_CACHE.move_to_end(key)
         return _MODEL_CACHE[key]
 
     import torch
@@ -593,8 +623,7 @@ def _load(cfg: PretrainedConfig):
     tokenizer = AutoTokenizer.from_pretrained(cfg.model)
     model = AutoModelForCausalLM.from_pretrained(cfg.model, dtype=dtype)
     model = model.to(cfg.resolved_device()).eval()
-    _MODEL_CACHE[key] = (tokenizer, model)
-    return _MODEL_CACHE[key]
+    return _remember(key, (tokenizer, model))
 
 
 # ------------------------------------------------------------- generation

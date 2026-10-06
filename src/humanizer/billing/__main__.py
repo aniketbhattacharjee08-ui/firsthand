@@ -5,6 +5,7 @@
     python -m humanizer.billing admin user <email>
     python -m humanizer.billing admin grant <email> <credits> [--note promo]
     python -m humanizer.billing admin set-admin <email> [--off]
+    python -m humanizer.billing admin plan <email> <name> [--until YYYY-MM-DD | --lifetime | --off]
     python -m humanizer.billing admin delete <email>
     python -m humanizer.billing admin stats [--days 14]
     python -m humanizer.billing admin sweep    (refund nothing; prints parked-job policy)
@@ -17,6 +18,7 @@ short transaction.
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import sys
 import time
@@ -92,6 +94,40 @@ def cmd_admin(args: argparse.Namespace) -> int:
             store.set_admin(u["id"], not args.off)
             print("%s admin=%s" % (u["email"], not args.off))
             return 0
+        if args.action == "plan":
+            u = store.user_by_email(args.email)
+            if u is None:
+                u = store.get_or_create_user(args.email, 0)
+                print("created %s" % u["id"])
+            if args.off:
+                store.clear_plan(u["id"])
+                print("%s plan=off" % u["email"])
+                return 0
+            plan = cfg.plan(args.name)
+            allowance = args.allowance if args.allowance is not None else (plan.allowance_credits if plan else None)
+            if allowance is None:
+                print("plan %r is not in STRIPE_PLANS; pass --allowance N" % args.name, file=sys.stderr)
+                return 2
+            if args.lifetime:
+                until = None
+            elif args.until:
+                try:
+                    # Inclusive: the plan lasts through the last second of that day.
+                    until = float(calendar.timegm(time.strptime(args.until, "%Y-%m-%d"))) + 86400.0 - 1.0
+                except ValueError:
+                    print("--until must be YYYY-MM-DD", file=sys.stderr)
+                    return 2
+            elif plan is not None and plan.interval == "lifetime":
+                until = None
+            else:
+                # No end given: one period of the configured interval, with
+                # the same grace a Stripe renewal gets.
+                days = 366 if plan is not None and plan.interval == "year" else 31
+                until = time.time() + (days + 3) * 86400
+            row = store.set_plan(u["id"], args.name, allowance, until)
+            print("%s plan=%s allowance=%d until=%s balance=%d" % (
+                u["email"], args.name, allowance, "lifetime" if until is None else _fmt_time(until), row["credits"]))
+            return 0
         if args.action == "delete":
             u = store.user_by_email(args.email)
             if u is None:
@@ -106,10 +142,10 @@ def cmd_admin(args: argparse.Namespace) -> int:
             for k, v in st.items():
                 print("%-20s %s" % (k, v))
             if days:
-                print("\n%-12s %8s %10s %8s %9s" % ("day", "signups", "purchased", "spent", "refunded"))
+                print("\n%-12s %8s %10s %10s %8s %9s" % ("day", "signups", "purchased", "allowance", "spent", "refunded"))
                 for day in sorted(days):
                     d = days[day]
-                    print("%-12s %8d %10d %8d %9d" % (day, d["signups"], d["purchased"], d["spent"], d["refunded"]))
+                    print("%-12s %8d %10d %10d %8d %9d" % (day, d["signups"], d["purchased"], d.get("allowance", 0), d["spent"], d["refunded"]))
             return 0
     finally:
         store.close()
@@ -142,6 +178,13 @@ def build_parser() -> argparse.ArgumentParser:
     m = asub.add_parser("set-admin", help="make a user an admin (or --off)")
     m.add_argument("email")
     m.add_argument("--off", action="store_true")
+    pl = asub.add_parser("plan", help="put a user on a plan, or take them off one")
+    pl.add_argument("email")
+    pl.add_argument("name", nargs="?", default="", help="plan name from STRIPE_PLANS (any name with --allowance)")
+    pl.add_argument("--until", default="", help="last day, YYYY-MM-DD (UTC, inclusive)")
+    pl.add_argument("--lifetime", action="store_true", help="no end date")
+    pl.add_argument("--off", action="store_true", help="remove the plan")
+    pl.add_argument("--allowance", type=int, default=None, help="credits per month; defaults to the configured plan's")
     d = asub.add_parser("delete", help="delete (anonymise) a user")
     d.add_argument("email")
     t = asub.add_parser("stats", help="totals and a per-day table")

@@ -1,0 +1,13 @@
+{
+  "tool": "deploy/cloud/convert_adapter_to_peft.py",
+  "source": "/Users/aniket.bhattacharjee/humanizer/data/adapters/register-r4",
+  "mlx_model": "/Users/aniket.bhattacharjee/humanizer/data/cache/models/qwen3-4b-instruct-4bit",
+  "mlx_lora_parameters": {
+    "rank": 8,
+    "dropout": 0.0,
+    "scale": 20.0
+  },
+  "mlx_num_layers": 16,
+  "dtype": "float16",
+  "note": "mlx scale is applied raw (no /r); lora_alpha = scale * r"
+}

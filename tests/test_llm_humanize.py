@@ -544,15 +544,33 @@ def test_selection_takes_the_lowest_scoring_survivor():
         )
 
 
-def test_a_paragraph_whose_candidates_all_fail_keeps_its_original():
-    """Falling back is reported, never silently swallowed."""
+def test_a_paragraph_whose_candidates_are_all_junk_keeps_its_original():
+    """A refusal or fragment is not a rewrite; keeping the original is reported."""
     _events, result = run(backend=fixed_backend(lambda r: "No."), n_candidates=2)
     for outcome in result.paragraphs:
         assert outcome.chosen == outcome.original
         assert outcome.chosen_index is None
-        assert outcome.fallback_reason and "no candidate passed" in outcome.fallback_reason
+        assert outcome.fallback_reason and "junk" in outcome.fallback_reason
     assert result.humanized.strip() == result.original.strip()
     assert result.summary["paragraphs_unchanged"] == len(result.paragraphs)
+
+
+def test_a_paragraph_whose_candidates_all_fail_a_gate_still_ships_a_rewrite():
+    """Owner's rule (2026-09-22): every paragraph is humanized. A full-length
+    candidate that drifts from the source fails `content_overlap`, and used to
+    leave the original in place; now it ships, and the reason says so."""
+    drift = (
+        "Quite unrelated prose about gardening tools follows here at length, "
+        "covering trowels, rakes, hoes, watering cans and the seasonal care of "
+        "each, with a sentence on sharpening blades and another on storing them "
+        "dry through winter so the handles do not swell or split."
+    )
+    _events, result = run(backend=fixed_backend(lambda r: drift), n_candidates=2)
+    for outcome in result.paragraphs:
+        assert outcome.chosen != outcome.original
+        assert outcome.chosen_index is not None
+        assert outcome.fallback_reason and "shipped the closest rewrite" in outcome.fallback_reason
+    assert result.summary["paragraphs_unchanged"] == 0
 
 
 def test_summary_breaks_rejections_down_by_gate():
@@ -1018,14 +1036,17 @@ def _anchoring_backend(request):
     return echo_source(request) + " A 2021 audit of 40 sites found the same."
 
 
-def test_without_facts_an_invented_figure_is_refused_and_named():
+def test_without_facts_an_invented_figure_still_ships_but_is_named():
+    """Since 2026-09-22 every paragraph ships a rewrite, so a candidate whose
+    only fault is an unverified figure is taken as the last resort; the figure
+    is still named so the writer can check or delete it."""
     detector = FakeDetector(lambda t: 0.1 if "2021 audit" in t else 0.9)
     _, result = run(
         FIRST_PARAGRAPH, backend=fixed_backend(_anchoring_backend), detector=detector,
         n_candidates=2, rounds=1, style="faithful",
     )
     para = result.paragraphs[0]
-    assert not para.changed
+    assert para.changed
     assert "invariant:numbers" in para.fallback_reason
     assert para.unverified_specifics == ["2021", "40"]
     assert "2021, 40" in para.fallback_reason
@@ -1120,7 +1141,17 @@ def test_pass_threshold_defaults_to_the_calibrated_value_and_drives_reruns(monke
     monkeypatch.delenv("HUMANIZER_PASS_THRESHOLD", raising=False)
     cfg = pipe.PipelineConfig()
     assert cfg.pass_threshold == 0.15
-    assert cfg.rounds == 3
+    # Eight candidates and two rounds since 2026-09-22 (the 2026-09-20 cut to
+    # 4 x 1 shipped AI-rated rewrites); the threshold decides which
+    # paragraphs round 2 re-runs. Repair stays opt-in.
+    assert cfg.rounds == 2
+    assert cfg.n_candidates == 8
+    assert cfg.repair_attempts == 0
+    # Scoring stays on, but only to rank: nothing gates on it.
+    assert cfg.score_candidates is True
+    monkeypatch.setenv("HUMANIZER_SCORE_CANDIDATES", "0")
+    assert pipe.PipelineConfig().score_candidates is False
+    monkeypatch.delenv("HUMANIZER_SCORE_CANDIDATES", raising=False)
     monkeypatch.setenv("HUMANIZER_PASS_THRESHOLD", "0.5")
     assert pipe.PipelineConfig().pass_threshold == 0.5
     monkeypatch.delenv("HUMANIZER_PASS_THRESHOLD", raising=False)

@@ -2,307 +2,333 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>humanizer: measure your draft, then fix it</title>
-<meta name="description" content="Per-sentence detection risk and writing quality, measured against human academic reference distributions. Measure first, then rewrite.">
-<meta name="color-scheme" content="light dark">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231f6f5c'/><path d='M7 22a9 9 0 0 1 18 0' fill='none' stroke='%23fbfaf7' stroke-width='3' stroke-linecap='round'/><circle cx='16' cy='22' r='2.3' fill='%23fbfaf7'/></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Vervly</title>
+<meta name="description" content="Paste a draft. Vervly rewrites it so it reads as written by a person, keeps your meaning, and shows the estimated GPTZero verdict before and after.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0e1013">
+<link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- Fraunces (display) · Newsreader (canvas) · IBM Plex Sans (chrome) · IBM Plex Mono (numbers).
-     Loaded non-blocking; styles.css carries full fallback stacks so a blocked or
-     unreachable CDN degrades to system faces rather than to a broken page. -->
+<!-- Fira Sans for text, Fira Mono for every numeral and the field. One superfamily.
+     Loaded without blocking; styles.css carries full fallback stacks. -->
 <link rel="stylesheet" media="print" onload="this.media='all'"
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+      href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&family=Source+Sans+3:wght@400;500;600&family=Fira+Mono:wght@400;500&display=swap">
 <noscript><link rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"></noscript>
+      href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&family=Source+Sans+3:wght@400;500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
 
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="/styles.css?v=202610052130">
+<link rel="stylesheet" href="/brand/footer.css?v=202609101554">
 </head>
 <body>
 
-<a class="skip-link" href="#editor">Skip to the writing canvas</a>
+<a class="skip-link" href="#editor">Skip to the draft</a>
 
-<!-- ══════════════ masthead ══════════════ -->
-<header class="masthead" role="banner">
-  <div class="brand">
-    <span class="wordmark">humanizer</span>
-    <span class="brand-rule" aria-hidden="true"></span>
-    <span class="brand-tag">See what reads as machine written, then fix it.</span>
-  </div>
 
-  <div class="masthead-right">
-    <p id="health" class="pill" data-kind="wait" role="status" aria-live="polite">Checking the service...</p>
-    <button id="theme-btn" class="btn btn-quiet" type="button" aria-label="Colour scheme: follow system">
-      <span class="btn-sub">Theme</span><span id="theme-label">Auto</span>
-    </button>
-  </div>
-</header>
+<!-- the field, drawn once: a still ASCII rendering of the orbital system
+     behind the page. field.js draws it and, with data-still, never moves it. -->
+<canvas id="field" class="field" data-still aria-hidden="true"></canvas>
 
-<!-- ══════════════ banners ══════════════ -->
-<p id="offline-banner" class="banner banner-warn" role="status" hidden>
-  <strong>You are offline.</strong>
-  <span>The browser reports no network connection, so the service cannot be reached.
-  You can keep writing, and you can switch to mock mode to see the interface with in browser numbers.</span>
-  <button id="offline-mock" class="linkish" type="button">Switch to mock mode</button>
-</p>
+<div class="shell">
 
-<p id="mock-banner" class="banner banner-mock" role="status" hidden>
-  <strong>Mock mode. These numbers are not from the service.</strong>
-  <span>They come from a reduced in browser reimplementation of the extractor. Feature definitions
-  match, thresholds are abridged, and there is no reference distribution and no trained detector
-  behind them. Do not quote these figures anywhere.</span>
-  <button id="mock-exit" class="linkish" type="button">Try the live service again</button>
-</p>
-
-<main class="layout">
-
-  <!-- ─────────── the document ─────────── -->
-  <section class="canvas-col" aria-labelledby="canvas-h">
-    <div class="canvas-head">
-      <div class="canvas-head-left">
-        <p class="sec-num">01</p>
-        <h1 class="sec-title" id="canvas-h">Your draft</h1>
-        <p class="sec-sub" id="doc-counts">Nothing yet.</p>
-      </div>
-
-      <div class="legend">
-        <span class="legend-label" id="legend-label">Sentence risk</span>
-        <span class="ramp" aria-hidden="true">
-          <i class="risk-0"></i><i class="risk-1"></i><i class="risk-2"></i><i class="risk-3"></i><i class="risk-4"></i><i class="risk-5"></i>
-        </span>
-        <span class="legend-ends"><span>0.00 calm</span><span>1.00 flagged</span></span>
+  <header class="top" role="banner" data-c="top row" data-src="health: GET /api/health; account: GET /api/auth/me; balance: GET /api/me, X-Longhand-Credits-Balance">
+    <a class="wordmark" href="/" aria-label="Vervly, front page"><span class="wordmark-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#a8e6b0"/></svg></span>Vervly</a>
+    <p class="lede">Rewrites a draft until it reads as written by a person, and keeps what you said.</p>
+    <div class="top-tools">
+      <label class="switch-row" for="construction-switch">
+        <button id="construction-switch" class="switch" type="button" role="switch" aria-checked="false"
+                aria-label="Show construction"
+                title="Show how the page is built. Holding the backtick key does the same."></button>
+        <span class="switch-label">Construction</span>
+      </label>
+      <p id="health" class="pill" data-kind="wait" role="status" aria-live="polite">Checking the service</p>
+      <!-- who is signed in, from GET /api/auth/me; hidden until it answers.
+           The balance, the plan and the Plans button come from GET /api/me and
+           stay hidden while the paywall is off. -->
+      <div class="account" id="account" hidden>
+        <span class="who" id="who"></span>
+        <span class="balance" id="balance" hidden></span>
+        <span class="plan-name" id="plan-name" hidden></span>
+        <button id="plans-btn" class="btn btn-quiet" type="button" hidden>Plans</button>
+        <button id="signout-btn" class="btn btn-quiet" type="button">Sign out</button>
       </div>
     </div>
+  </header>
 
-    <div class="canvas-scroll" id="canvas-scroll">
-      <div class="empty-state" id="empty-state">
-        <p class="empty-kicker">Start here</p>
-        <h2 class="empty-title">Paste an essay, see which sentences read as machine written, then rewrite them in one click.</h2>
-        <p class="empty-body">
-          Every sentence is measured against distributions taken from real human academic prose.
-          Nothing is sent anywhere except your own local service.
-        </p>
-        <div class="empty-actions">
-          <button class="btn btn-primary" type="button" data-sample="ai">Try it with an example</button>
-          <button class="btn" type="button" data-sample="human">Try a human written one</button>
-        </div>
-        <p class="empty-hint">or just start typing. Analysis runs on its own about a second after you stop.</p>
-      </div>
+  <p id="offline-banner" class="notice" role="status" hidden>
+    <strong>You are offline.</strong>
+    <span>The service cannot be reached. Keep writing; nothing is lost.</span>
+  </p>
 
-      <div id="editor"
-           class="canvas"
-           contenteditable="true"
-           spellcheck="false"
-           role="textbox"
-           aria-multiline="true"
-           aria-label="Essay text. Move the caret into a sentence to inspect its measurements."></div>
-    </div>
+  <main class="page">
 
-    <!-- ─────────── the stage checklist ───────────
-         Transient. Occupies the same grid cell as the canvas, so while a
-         rewrite runs it IS the middle of the page rather than a corner
-         spinner. Built by app.js from a stable list of backend stage names,
-         removed the moment the run ends. -->
-    <div class="progress-stage" id="progress" hidden>
-      <div class="progress-card">
-        <p class="progress-kicker" id="progress-kicker">Working</p>
-        <h2 class="progress-title" id="progress-title">Rewriting your draft</h2>
+    <section class="error" id="error-box" hidden aria-live="assertive"></section>
 
-        <p class="progress-meta">
-          <span id="progress-engine">Contacting the service</span>
-          <span class="progress-sep" aria-hidden="true"></span>
-          <span class="progress-elapsed num" id="progress-elapsed">0.0s</span>
-        </p>
-
-        <ol class="stages" id="stages"></ol>
-
-        <p class="progress-say sr-only" id="progress-say" role="status" aria-live="polite"></p>
-
-        <div class="progress-foot">
-          <button id="progress-cancel" class="btn" type="button">Stop and keep my draft</button>
-          <p class="progress-note" id="progress-note">Your draft is not touched until this finishes.</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- the action bar: the point of the product, directly under the canvas -->
-    <div class="actionbar">
-      <div class="actionbar-main">
-        <button id="humanize-btn" class="btn btn-hero" type="button">
-          <span id="humanize-label">Humanize this draft</span>
+    <!-- the console: the one primary action, the judge, the status line -->
+    <div class="console" data-c="console" data-flow="out" data-src="POST /api/humanize/stream, then /api/humanize/llm, then /api/humanize">
+      <div class="console-act">
+        <button id="humanize-btn" class="btn btn-primary" type="button">
+          <span id="humanize-label">Humanize</span>
         </button>
-
-        <label class="field">
-          <span class="field-label">How hard</span>
-          <select id="aggressiveness">
+        <label class="field field-inline" title="How far the rewrite goes">
+          <span class="field-label">Strength</span>
+          <select id="aggressiveness" aria-label="Rewrite strength">
             <option value="light">Light</option>
             <option value="balanced" selected>Balanced</option>
             <option value="strong">Strong</option>
           </select>
         </label>
-
-        <button id="undo-btn" class="btn" type="button" hidden>Undo, put my draft back</button>
-
-        <div class="actionbar-spacer"></div>
-
-        <button id="analyze-btn" class="btn btn-quiet" type="button">
-          Re-measure <span class="kbd-set" aria-hidden="true"><kbd class="kbd">Ctrl</kbd><kbd class="kbd">&crarr;</kbd></span>
-        </button>
+        <span class="key" aria-hidden="true">Ctrl or Cmd + Enter</span>
+        <!-- what this draft uses, out of the words left; only with the paywall on -->
+        <span class="cost" id="cost-hint" aria-live="polite" hidden></span>
       </div>
-      <p class="status-line" id="status-line" data-state="idle" role="status" aria-live="polite">Ready when you are.</p>
+      <p class="judge">Judged by <span id="verdict-h">GPTZero estimate</span></p>
+      <p class="status" id="status-line" data-state="idle" role="status" aria-live="polite">Ready.</p>
     </div>
-  </section>
 
-  <!-- ─────────── the rail: three things ─────────── -->
-  <aside class="rail" aria-label="Result">
+    <!-- the instrument: before on the left, after on the right, a divider you can drag between
+         them. data-outcome on the wrapper carries the run verdict (none, flipped, held, mixed).
+         The split is the CSS variable --col-before, set by app.js and kept in localStorage. -->
+    <div class="instrument" id="verdict" data-outcome="none" data-collapsed="">
 
-    <section class="panel panel-error" id="error-box" hidden aria-live="assertive"></section>
+      <section class="pane pane-before" id="pane-before" aria-label="Before: your draft"
+               data-c="Before" data-src="#editor: your text; reading: before.ai_probability, before.label">
+        <header class="pane-head">
+          <h2 class="pane-title">Before</h2>
+          <p class="reading tip" id="v-before" tabindex="0" data-tip="">
+            <span class="reading-p num" id="v-before-p"></span>
+            <span class="reading-word" id="v-before-word" data-label="none">not measured</span>
+          </p>
+        </header>
 
-    <!-- 1 · the percentage -->
-    <section class="panel panel-hero" aria-labelledby="hero-h">
-      <h2 class="panel-h sr-only" id="hero-h">AI likelihood</h2>
+        <div class="pane-body" id="canvas-scroll">
+          <div id="editor"
+               class="canvas"
+               contenteditable="true"
+               spellcheck="false"
+               role="textbox"
+               aria-multiline="true"
+               aria-label="Your draft"
+               data-placeholder="Paste or type your draft here."></div>
 
-      <p class="hero-num num" id="hero-value">n/a</p>
-      <p class="hero-label">likely to read as AI written</p>
-
-      <p class="hero-engine" id="hero-engine">No measurement yet.</p>
-
-      <div class="hero-second">
-        <span class="hero-second-value num" id="quality-value">n/a</span>
-        <span class="hero-second-label">writing quality, a placeholder score
-          <button class="why" type="button" id="quality-why" aria-expanded="false" aria-controls="quality-explain">
-            <span class="sr-only">Explain writing quality</span>?</button>
-        </span>
-      </div>
-
-      <div class="explain" id="quality-explain" hidden>
-        <p><strong>A placeholder formula, not an essay grader.</strong> It is computed in your browser
-        from the features the service returns, purely so risk is never shown on its own. For scale, a
-        fine tuned RoBERTa on PERSUADE 2.0 reaches QWK 0.841 and a frontier model scoring zero shot
-        reaches 0.042 to 0.081. Nothing derived from seven summary statistics belongs in either league.</p>
-        <pre class="explain-pre" id="quality-breakdown"></pre>
-      </div>
-
-      <!-- before / after, only after a humanize run -->
-      <div class="ba" id="ba-block" hidden>
-        <p class="ba-title" id="ba-title">Humanized</p>
-        <div class="ba-row">
-          <span class="ba-cell"><span class="ba-n num" id="ba-before">n/a</span><span class="ba-k">before</span></span>
-          <span class="ba-arrow" aria-hidden="true">&rarr;</span>
-          <span class="ba-cell"><span class="ba-n num" id="ba-after">n/a</span><span class="ba-k">after</span></span>
-          <span class="ba-delta num" id="ba-delta"></span>
+          <div class="empty-state" id="empty-state">
+            <p class="empty-body">Or see a run on one of these.</p>
+            <div class="samples">
+              <button class="chip" type="button" data-sample="ai">Example</button>
+              <button class="chip" type="button" data-sample="letter">Cover letter</button>
+              <button class="chip" type="button" data-sample="report">Lab report</button>
+              <button class="chip" type="button" data-sample="history">History essay</button>
+            </div>
+          </div>
         </div>
 
-        <!-- the honest measure: a smaller probability is not a human verdict -->
-        <p class="ba-verdict" id="ba-verdict" hidden></p>
-        <p class="ba-engine" id="ba-engine" hidden></p>
-        <p class="ba-note" id="ba-note"></p>
-      </div>
-    </section>
+        <footer class="pane-foot" data-c="foot" data-src="#doc-counts: counted here, not sent">
+          <p class="counts num" id="doc-counts" aria-live="polite"></p>
+          <div class="pane-acts">
+            <button id="undo-btn" class="btn" type="button" hidden>Undo</button>
+            <button id="analyze-btn" class="btn" type="button"
+                    title="Score the draft as it stands. This also runs on its own once the draft is long enough.">
+              Measure
+            </button>
+          </div>
+        </footer>
+      </section>
 
-    <!-- 2 · top AI sentences -->
-    <section class="panel" aria-labelledby="top-h">
-      <header class="panel-head">
-        <p class="sec-num">02</p>
-        <h2 class="panel-h" id="top-h">Sentences reading as AI</h2>
-      </header>
-      <div id="flagged" class="flagged">
-        <p class="muted">No analysis yet.</p>
+      <!-- the divider: drag it, or focus it and use the arrow keys. Enter or a double
+           click folds the smaller pane away; the same again brings it back. -->
+      <div class="divider" id="divider" role="separator" tabindex="0"
+           aria-orientation="vertical" aria-label="Resize the panes"
+           aria-controls="pane-before pane-after"
+           aria-valuemin="20" aria-valuemax="80" aria-valuenow="50"
+           title="Drag to resize. Arrow keys move it. Enter folds a pane."
+           data-c="divider" data-flow="out" data-src="--col-before, saved as readshuman.split">
+        <span class="divider-grip" aria-hidden="true"></span>
+        <span class="divider-snaps" aria-hidden="true"><i data-at="30"></i><i data-at="50"></i><i data-at="70"></i></span>
       </div>
-    </section>
 
-    <!-- 3 · everything else, closed by default -->
-    <details class="more" id="more">
-      <summary class="more-summary">
-        <span class="more-title">Show more detail</span>
-        <span class="more-sub">measurements, findings, the engine, and every edit</span>
+      <section class="pane pane-after" id="pane-after" aria-label="After: the rewrite"
+               data-c="After" data-src="#after: humanized; reading: after.ai_probability, after.label">
+        <header class="pane-head">
+          <h2 class="pane-title">After</h2>
+          <p class="reading tip" id="v-after" tabindex="0" data-tip="" hidden>
+            <span class="reading-p num" id="v-after-p"></span>
+            <span class="reading-word" id="v-after-word" data-label="none"></span>
+          </p>
+        </header>
+
+        <div class="pane-body pane-body-after">
+          <!-- one line on the verdict, then anything the gates refused -->
+          <div class="verdict-strip" id="verdict-strip" hidden
+               data-c="verdict" data-src="summary.verdict_flipped, label_before, label_after, unverified_specifics">
+            <p class="verdict-line" id="verdict-line"></p>
+            <p class="verdict-kept" id="verdict-kept" hidden></p>
+            <div class="verdict-refused" id="verdict-refused" hidden></div>
+          </div>
+
+          <div id="after" class="canvas canvas-after" aria-label="The rewrite" tabindex="0"></div>
+
+          <div class="after-empty" id="after-empty">
+            <canvas class="ascii-tile" data-ascii="idle" width="264" height="112" aria-hidden="true"></canvas>
+            <p>The rewrite lands here with its own reading. Twenty to forty seconds.</p>
+            <p class="after-empty-sub">Your draft stays as it is until you choose Use this.</p>
+          </div>
+
+          <!-- the run checklist: the only feedback during a 20 to 40 second run.
+               Rows are built by app.js from the stage names the service reports. -->
+          <div class="progress" id="progress" hidden data-c="progress" data-src="SSE stage events: status, progress, detail">
+            <div class="progress-card">
+              <div class="progress-head">
+                <div>
+                  <h3 class="progress-title" id="progress-title">Rewriting your draft</h3>
+                  <p class="progress-meta">
+                    <span id="progress-engine">Contacting the service</span>
+                    <span class="progress-elapsed num" id="progress-elapsed">0.0s</span>
+                  </p>
+                </div>
+                <canvas class="ascii-tile ascii-tile-run" data-ascii="run" width="120" height="112" aria-hidden="true"></canvas>
+              </div>
+
+              <ol class="stages" id="stages"></ol>
+
+              <p class="progress-say sr-only" id="progress-say" role="status" aria-live="polite"></p>
+
+              <div class="progress-foot">
+                <button id="progress-cancel" class="btn" type="button">Stop and keep my draft</button>
+                <p class="progress-note" id="progress-note">Your draft is not touched until this finishes.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="pane-foot" data-c="foot" data-src="#changed: summary.paragraphs_rewritten, edits, n_candidates_passed">
+          <p class="counts" id="changed" aria-live="polite"></p>
+          <div class="pane-acts">
+            <button id="copy-btn" class="btn" type="button" disabled title="Copy the rewrite">Copy</button>
+            <button id="use-btn" class="btn" type="button" disabled title="Replace your draft with the rewrite">Use this</button>
+          </div>
+        </footer>
+      </section>
+
+    </div>
+
+    <p class="legend" id="legend" hidden>Sentences are shaded by estimated risk, faint to strong.</p>
+
+    <!-- The one place a true name, date or figure can enter the rewrite. -->
+    <details class="fold facts" id="facts-fold" data-c="fold: Facts" data-flow="out" data-src="body.facts">
+      <summary class="fold-summary facts-summary">
+        <span class="fold-title">Facts you can vouch for</span>
+        <span class="fold-hint" id="facts-hint">Optional. The rewrite may use these and nothing else it did not find in your draft.</span>
+      </summary>
+      <div class="fold-body">
+        <textarea id="facts" class="facts-input" rows="3" spellcheck="true"
+                  aria-label="Facts you can vouch for"
+                  placeholder="Smith and Rao (2021) surveyed 40 sites in Kerala. The 2019 audit found a 12 percent shortfall."></textarea>
+      </div>
+    </details>
+
+    <details class="fold more" id="more" data-c="fold: Details" data-src="edits, summary, analysis.features, analysis.findings">
+      <summary class="fold-summary">
+        <span class="fold-title">Details</span>
+        <span class="fold-hint">The run, every edit, flagged sentences, measurements, style signals, findings.</span>
       </summary>
 
-      <div class="more-body">
+      <div class="fold-body more-body">
+
+        <section class="msection" aria-labelledby="run-h" id="run-section" hidden>
+          <h3 class="msection-h" id="run-h">The run</h3>
+          <div id="run-summary" class="rows"></div>
+        </section>
+
+        <section class="msection" aria-labelledby="repairs-h" id="repairs-section" hidden>
+          <h3 class="msection-h" id="repairs-h">What it tried</h3>
+          <p class="msection-lede">For each paragraph that still failed after the rounds: what the evidence said went wrong, the one thing it changed, and what came back.</p>
+          <div id="repairs" class="rows"></div>
+        </section>
 
         <section class="msection" aria-labelledby="edits-h" id="edits-section" hidden>
-          <h3 class="msection-h" id="edits-h">What was changed</h3>
-          <p class="msection-lede">Every edit, and what it costs your grade. Some edits pay twice.</p>
+          <h3 class="msection-h" id="edits-h">What changed</h3>
           <div id="edits" class="edits"></div>
         </section>
 
-        <section class="msection" aria-labelledby="engine-h">
-          <h3 class="msection-h" id="engine-h">The detection engine</h3>
-          <div id="engine-detail" class="engine-detail">
-            <p class="muted">No analysis yet.</p>
-          </div>
-          <div class="overlay-toggle" id="overlay-toggle" hidden>
-            <button id="heat-perplexity" class="btn btn-quiet" type="button" aria-pressed="false">
-              Shade the canvas by GPT-2 perplexity instead
-            </button>
-            <button id="heat-advisory" class="btn btn-quiet" type="button" aria-pressed="true" hidden>
-              Back to advisory risk shading
-            </button>
-            <p class="heat-note" id="heat-note">Advisory per sentence risk from the analyzer.</p>
-          </div>
-        </section>
-
-        <!-- Explanation, not detection. The wire says is_a_detector: false and
-             carries no aggregate, and neither does this panel. -->
-        <section class="msection" aria-labelledby="signals-h">
-          <h3 class="msection-h" id="signals-h">Which AI tells are present</h3>
-          <p class="msection-lede">Measured style signals, each with the research note it comes from.
-          They deliberately do not add up to anything. The percentage above is a detector's verdict;
-          these are patterns in your prose that you can actually go and change.</p>
-          <div id="style-signals" class="signals"><p class="muted">No analysis yet.</p></div>
-        </section>
-
-        <section class="msection" aria-labelledby="find-h">
-          <h3 class="msection-h" id="find-h">What to fix first</h3>
-          <p class="msection-lede">Sorted by severity, each with what fixing it does to your grade.</p>
-          <div id="findings" class="findings"><p class="muted">No analysis yet.</p></div>
+        <section class="msection" aria-labelledby="flag-h">
+          <h3 class="msection-h" id="flag-h">Flagged sentences</h3>
+          <div id="flagged" class="flagged"><p class="muted">No reading yet.</p></div>
         </section>
 
         <section class="msection" aria-labelledby="meas-h">
           <h3 class="msection-h" id="meas-h">Measurements</h3>
-          <p class="msection-lede">Your value, the band human academic prose actually occupies, and
-          whether you are inside it. Click a row for the plain language version.</p>
+          <p class="msection-lede">Your value next to the range human academic prose occupies. Open a row for the plain reading.</p>
           <div id="measurements" class="measure-list"><p class="muted">No analysis yet.</p></div>
-          <p class="reference-line" id="reference-line">
-            No analysis yet.
-            <button class="why" type="button" id="reference-why" aria-expanded="false" aria-controls="reference-explain">
-              <span class="sr-only">Explain the reference distance</span>?</button>
-          </p>
-          <div class="explain" id="reference-explain" hidden>
-            <p><strong>How unusual your draft looks next to real human writing.</strong> The service holds
-            a corpus of human documents in the same genre, measures the same features on each, and
-            reports the Mahalanobis distance from your draft to the middle of that cloud. The percentile
-            answers one question: what share of the human corpus is less unusual than you?</p>
-          </div>
         </section>
 
-        <section class="msection" aria-labelledby="sel-h">
-          <h3 class="msection-h" id="sel-h">The sentence you clicked</h3>
-          <div id="sentence-inspector" class="inspector">
-            <p class="muted">Click any sentence in your draft and the named patterns behind its
-            shading appear here.</p>
-          </div>
+        <section class="msection" aria-labelledby="signals-h">
+          <h3 class="msection-h" id="signals-h">Style signals</h3>
+          <p class="msection-lede">Habits that mark prose as generated. Patterns to edit, not a score.</p>
+          <div id="style-signals" class="signals"><p class="muted">No analysis yet.</p></div>
+        </section>
+
+        <section class="msection" aria-labelledby="find-h">
+          <h3 class="msection-h" id="find-h">Findings</h3>
+          <div id="findings" class="findings"><p class="muted">No analysis yet.</p></div>
         </section>
 
       </div>
     </details>
 
-    <footer class="rail-foot">
-      <p>The detector is a local heuristic baseline, not GPTZero, Turnitin or Pangram, and it is not
-      calibrated against any of them. The quality score is a placeholder formula. Sentence shading is
-      advisory: the document verdict is not a sum of sentence scores. Treat all of it as a rehearsal,
-      not a verdict.</p>
-    </footer>
 
-  </aside>
-</main>
+  </main>
 
-<script src="app.js" defer></script>
-<!-- Progressive enhancement only. app.js renders everything; this module just
-     animates it. If the CDN is unreachable the imports throw, the catch runs,
-     data-anim is cleared and the page is simply static. -->
-<script type="module" src="anim.js"></script>
+  <footer class="site-foot" role="contentinfo">
+    <div class="site-foot-row">
+      <a class="site-foot-lockup" href="/" aria-label="Vervly">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#a8e6b0"/></svg>
+        <span class="site-foot-name">Vervly</span>
+      </a>
+      <nav class="site-foot-links" aria-label="Contact">
+        <a href="/pricing">Pricing</a>
+        <a href="mailto:aniket_b@berkeley.edu">aniket_b@berkeley.edu</a>
+        <a href="https://github.com/aniketbhattacharjee08-ui" rel="noopener">GitHub</a>
+        <a href="/legal/terms.html">Terms</a>
+        <a href="/legal/privacy.html">Privacy</a>
+        <span class="site-foot-fine">2026</span> <span class="site-foot-hint kb-only">Hold the backtick key to see how the page is built.</span>
+      </nav>
+    </div>
+  </footer>
+
+</div>
+
+<!-- the plans sheet: the free allowance, the plans from GET /api/billing/plans,
+     the one-time top-ups, and the way to the subscription page. Opened by a 402,
+     the cost hint and the Plans button; app.js fills the rows. -->
+<div class="sheet-backdrop" id="plans-backdrop" hidden>
+  <div class="sheet" id="plans-sheet" role="dialog" aria-modal="true" aria-labelledby="plans-h" tabindex="-1"
+       data-c="plans" data-src="GET /api/billing/plans; POST /api/billing/checkout, /api/billing/portal">
+    <header class="sheet-head">
+      <h2 class="sheet-title" id="plans-h">Plans</h2>
+      <button class="btn btn-quiet" id="plans-close" type="button">Close</button>
+    </header>
+    <p class="sheet-why" id="plans-why" hidden></p>
+    <p class="sheet-free" id="plans-free"></p>
+    <div class="plan-rows" id="plan-rows"></div>
+    <h3 class="sheet-sub" id="packs-h" hidden>One-time top-ups</h3>
+    <div class="plan-rows" id="pack-rows"></div>
+    <p class="sheet-note" id="plans-note">Monthly and yearly plans renew until you cancel; lifetime is a one-time payment. Unused words carry over, but only up to one month's amount. <a class="sheet-link" href="/pricing">Full details</a></p>
+    <div class="sheet-foot">
+      <button class="btn btn-quiet" id="manage-btn" type="button" hidden>Manage subscription</button>
+      <p class="sheet-status" id="plans-status" role="status" aria-live="polite" data-state="idle"></p>
+    </div>
+  </div>
+</div>
+
+<!-- the construction layer: app.js fills it with an outline and a label for every
+     region marked data-c, plus the spacing grid. Shown by the switch or the backtick key. -->
+<div id="construction" class="construction" aria-hidden="true" hidden></div>
+
+<script src="/app.js?v=202610051200" defer></script>
+<!-- Progressive enhancement only. app.js renders everything; these modules
+     animate it and draw the field behind it. -->
+<script type="module" src="/anim.js?v=202609101554"></script>
+<script type="module" src="/field.js?v=202609101554"></script>
 </body>
 </html>

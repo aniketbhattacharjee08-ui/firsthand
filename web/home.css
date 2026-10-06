@@ -1,0 +1,187 @@
+/* Vervly landing page.
+
+   Loaded after styles.css, which carries the tokens, the shell, the buttons,
+   the wordmark, the pane classes and the facts row. Everything here is what
+   the landing adds: its own top row, the two-column hero, and the specimen. Plain dark ground, no field. Rules: web/DESIGN.md. */
+
+/* the top row: wordmark left, the account links right, the horizon under it */
+.home-top {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-6);
+  padding: calc(var(--s-6) + env(safe-area-inset-top, 0px)) 0 var(--s-4);
+  position: relative;
+}
+.home-top::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: linear-gradient(to right, var(--accent-line), var(--line) 30%, var(--line) 70%, transparent);
+}
+.home-nav { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; justify-content: flex-end; }
+.home-who { font-size: var(--t-1); color: var(--fg-2); margin-right: var(--s-2); max-width: 20ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-nav .btn { text-decoration: none; }
+.home-nav-link { text-decoration: none; }
+
+.home-main { padding-bottom: var(--s-12); }
+
+/* the hero: a wide band, headline on the left, the paragraph and actions on
+   the right, both on the same baseline grid as the specimen below. */
+/* the hero owns the first screen: the specimen starts below the fold and is
+   reached by scrolling, with the cue at the bottom of the hero saying so. */
+.hero {
+  min-height: calc(100svh - 88px - env(safe-area-inset-top, 0px));
+  display: flex; flex-direction: column; justify-content: center;
+  padding: var(--s-10) 0 var(--s-8);
+  position: relative;
+}
+.hero-more {
+  position: absolute; left: 0; bottom: var(--s-5);
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  color: var(--fg-3); font-size: var(--t-1); text-decoration: none;
+}
+.hero-more:hover { color: var(--fg); }
+.hero-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r); }
+.hero-more-chev {
+  width: 8px; height: 8px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+html { scroll-behavior: smooth; }
+
+/* reveal: each marked element rises 12px and fades in as it enters, once,
+   280ms ease-out, the panes 80ms apart. Reduced motion: appear in place. */
+[data-reveal] { opacity: 0; transform: translateY(12px); transition: opacity 280ms var(--ease), transform 280ms var(--ease); }
+[data-reveal].is-in { opacity: 1; transform: none; }
+.specimen-panes .pane:nth-child(2)[data-reveal] { transition-delay: 80ms; }
+.specimen-note[data-reveal] { transition-delay: 120ms; }
+.hero-grid > * { animation: hero-in 280ms var(--ease) both; }
+.hero-side { animation-delay: 60ms; }
+@keyframes hero-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  [data-reveal] { opacity: 1; transform: none; transition: none; }
+  .hero-grid > * { animation: none; }
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: var(--s-8) var(--s-12);
+  align-items: center;
+}
+.hero-h {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(2.125rem, 1.2rem + 2.9vw, 3.75rem);
+  line-height: 1.08;
+  letter-spacing: -0.014em;
+  color: var(--fg);
+  margin: 0;
+  text-wrap: balance;
+}
+.hero-side { max-width: 52ch; }
+.hero-p {
+  margin: 0;
+  font-size: var(--t-4);
+  line-height: 1.6;
+  color: var(--fg-2);
+}
+.hero-acts { margin-top: var(--s-6); display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.hero-acts .btn { min-height: 44px; padding: 0 var(--s-6); font-size: var(--t-3); }
+.hero-fine {
+  margin: var(--s-4) 0 0;
+  font-size: var(--t-1);
+  line-height: 1.5;
+  color: var(--fg-3);
+}
+
+/* section headings, in the serif like the pane titles */
+.section-h {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: var(--t-5);
+  line-height: 1.3;
+  color: var(--fg);
+  margin-bottom: var(--s-5);
+}
+
+/* the specimen: the app's two panes, side by side, with hand-written text */
+.specimen { padding-top: var(--s-12); scroll-margin-top: var(--s-8); }
+.specimen-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: stretch;
+}
+.specimen .pane-head { align-items: center; }
+.specimen .pane-title { font-size: var(--t-3); }
+.specimen .reading { align-items: center; gap: var(--s-3); }
+.specimen .pane-body.specimen-body {
+  min-height: 0;
+  padding: var(--s-6) var(--s-8) var(--s-8);
+}
+.specimen-body p {
+  font-family: var(--serif);
+  font-size: 17.5px;
+  line-height: 1.7;
+  letter-spacing: 0.002em;
+  color: var(--fg);
+  max-width: 66ch;
+}
+/* the tag that says a reading is an example: the construction layer's own
+   mono label, brought onto the page as information */
+.example-tag {
+  display: inline-block;
+  padding: 1px var(--s-2);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--g0);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: var(--t-0);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.specimen-note {
+  margin-top: var(--s-3);
+  font-size: var(--t-1);
+  line-height: 1.5;
+  color: var(--fg-3);
+  max-width: 72ch;
+}
+
+@media (max-width: 960px) {
+  .specimen-panes { grid-template-columns: minmax(0, 1fr); }
+  .hero { padding: var(--s-10) 0 var(--s-12); min-height: calc(100svh - 72px - env(safe-area-inset-top, 0px)); }
+  .hero-grid { grid-template-columns: minmax(0, 1fr); gap: var(--s-6); }
+  .hero-side { max-width: 60ch; }
+}
+@media (max-width: 600px) {
+  .home-top { padding: calc(var(--s-4) + env(safe-area-inset-top, 0px)) 0 var(--s-3); }
+  .home-who { display: none; }
+  .hero { padding: var(--s-12) 0 var(--s-10); }
+  .hero-p { font-size: var(--t-3); }
+  .hero-acts .btn { flex: 1 1 auto; }
+  .specimen .pane-body.specimen-body { padding: var(--s-5) var(--s-4) var(--s-6); }
+  .specimen-body p { font-size: var(--t-3); line-height: 1.65; }
+}
+@media (hover: none) {
+  .btn-quiet:hover { color: var(--fg-2); background: transparent; }
+}
+
+/* pricing: three plans as columns on the facts row's hairlines, the free
+   allowance above them. Static copy; the app's plans sheet says the same. */
+.pricing { padding-top: var(--s-12); scroll-margin-top: var(--s-8); }
+.pricing-free { font-size: var(--t-3); line-height: 1.55; color: var(--fg-2); max-width: 60ch; margin-bottom: var(--s-6); }
+.pricing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: var(--s-8); row-gap: var(--s-5); }
+.price-plan { padding-top: var(--s-4); border-top: 1px solid var(--line); }
+.price-h { font-family: var(--serif); font-weight: 400; font-size: var(--t-5); line-height: 1.2; color: var(--fg); }
+.price-amount { margin-top: var(--s-2); font-size: var(--t-3); color: var(--fg); }
+.price-amount .num { font-size: var(--t-5); }
+.price-words { margin-top: var(--s-3); font-size: var(--t-2); color: var(--fg-2); }
+.price-p { margin-top: var(--s-1); font-size: var(--t-1); line-height: 1.5; color: var(--fg-3); max-width: 36ch; }
+.pricing-note { margin-top: var(--s-6); font-size: var(--t-1); line-height: 1.5; color: var(--fg-3); max-width: 72ch; }
+.pricing-more { margin-top: var(--s-3); font-size: var(--t-1); line-height: 1.5; }
+.pricing-more a { color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; }
+.pricing-more a:hover { color: var(--accent); }
+.pricing-more a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.pricing-grid .price-plan:nth-child(2)[data-reveal] { transition-delay: 80ms; }
+.pricing-grid .price-plan:nth-child(3)[data-reveal] { transition-delay: 160ms; }
+@media (max-width: 960px) {
+  .pricing-grid { grid-template-columns: minmax(0, 1fr); }
+}

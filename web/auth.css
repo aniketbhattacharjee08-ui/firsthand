@@ -1,0 +1,153 @@
+/* Vervly sign-in and create-account page.
+
+   Loaded after styles.css (tokens, buttons, wordmark). One centred column
+   that field.js holds quiet (data-field-quiet), with an opaque card in it.
+   The card is the only surface; the wordmark above it and the link below
+   it sit on the ground. Rules: web/DESIGN.md. */
+
+.auth-stage {
+  position: relative; z-index: 1;
+  width: 100%;
+  max-width: calc(400px + 2 * var(--s-4));   /* the card, plus the padding either side */
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: calc(var(--s-10) + env(safe-area-inset-top, 0px)) var(--s-4) calc(var(--s-10) + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  gap: var(--s-6);
+}
+.auth-wordmark { flex: none; }
+
+.auth-card {
+  width: 100%;
+  padding: var(--s-6) var(--s-8) var(--s-8);
+  background: var(--g2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+/* the two modes, as links to their paths; the current one carries the accent */
+.modes {
+  display: flex; gap: var(--s-6);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--s-6);
+}
+.mode {
+  display: inline-block;
+  padding: var(--s-1) 0 var(--s-3);
+  margin-bottom: -1px;
+  color: var(--fg-2);
+  font-weight: 500;
+  font-size: var(--t-2);
+  line-height: 1.3;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.mode:hover { color: var(--fg); }
+.mode[aria-current="page"] { color: var(--fg); border-bottom-color: var(--accent); }
+.mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+
+.auth-h {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: var(--t-5);
+  line-height: 1.3;
+  color: var(--fg);
+  margin-bottom: var(--s-5);
+}
+
+/* one line above the form when the whole attempt failed */
+.auth-alert {
+  margin-bottom: var(--s-5);
+  padding: var(--s-3) var(--s-4);
+  background: var(--ai-wash);
+  border: 1px solid rgba(240, 132, 102, 0.35);
+  border-radius: var(--r);
+  color: var(--fg);
+  font-size: var(--t-2);
+  line-height: 1.5;
+}
+.auth-alert[data-kind="ok"] { background: var(--accent-wash); border-color: var(--accent-line); }
+
+.f { display: grid; gap: var(--s-2); margin-bottom: var(--s-5); }
+.f-label { font-size: var(--t-2); color: var(--fg-2); line-height: 1.3; }
+.f-opt { color: var(--fg-3); }
+.f-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  font-size: var(--t-3);          /* 16px: no zoom on a phone, easy to read */
+  line-height: 1.4;
+  color: var(--fg);
+  background: var(--g1);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  transition: border-color var(--fast) var(--ease);
+}
+.f-input:hover { border-color: var(--accent-line); }
+.f-input:focus { outline: none; border-color: var(--accent); }
+.f-input[aria-invalid="true"] { border-color: var(--ai); }
+.f-input:-webkit-autofill { -webkit-text-fill-color: var(--fg); box-shadow: 0 0 0 1000px var(--g1) inset; }
+
+.f-pw { position: relative; }
+.f-pw .f-input { padding-right: calc(var(--s-12) + var(--s-6)); }
+.pw-toggle {
+  position: absolute; right: var(--s-1); top: 50%; transform: translateY(-50%);
+  min-height: 36px; padding: 0 var(--s-3);
+  background: transparent;
+  border: 1px solid transparent; border-radius: var(--r);
+  color: var(--fg-2);
+  font-size: var(--t-1); font-weight: 500; line-height: 1;
+  transition: color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.pw-toggle:hover { color: var(--fg); background: var(--g3); }
+.pw-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+.pw-toggle[aria-pressed="true"] { color: var(--fg); }
+
+.f-hint { font-size: var(--t-1); color: var(--fg-3); line-height: 1.4; }
+.f-err { font-size: var(--t-1); color: var(--ai); line-height: 1.4; }
+
+.auth-submit { width: 100%; min-height: 44px; font-size: var(--t-3); margin-top: var(--s-1); }
+.auth-form[aria-busy="true"] .auth-submit { color: var(--on-accent); cursor: progress; }
+
+.auth-back { font-size: var(--t-1); color: var(--fg-3); text-align: center; }
+.auth-back a {
+  color: var(--fg-2); text-decoration: none;
+  border-bottom: 1px solid var(--accent-line); padding-bottom: 2px;
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.auth-back a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.auth-back a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-bottom-color: transparent; }
+
+@media (max-width: 480px) {
+  .auth-stage { padding-top: calc(var(--s-6) + env(safe-area-inset-top, 0px)); justify-content: flex-start; }
+  .auth-card { padding: var(--s-5) var(--s-5) var(--s-6); }
+  .modes { gap: var(--s-5); }
+}
+@media (hover: none) {
+  .f-input:hover { border-color: var(--line-2); }
+  .f-input:focus { border-color: var(--accent); }
+  .pw-toggle:hover { color: var(--fg-2); background: transparent; }
+  .mode:hover { color: var(--fg-2); }
+  .mode[aria-current="page"]:hover { color: var(--fg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode, .f-input, .pw-toggle, .auth-back a { transition: none; }
+}
+
+
+/* provider sign-in: the two buttons every sign-in page has, above the form */
+.auth-oauth { display: grid; gap: var(--s-2); margin-bottom: var(--s-4); }
+.btn-oauth {
+  display: flex; align-items: center; justify-content: center; gap: var(--s-3);
+  width: 100%; min-height: 44px; font-size: var(--t-3);
+  color: var(--fg); text-decoration: none;
+}
+.btn-oauth:hover { text-decoration: none; }
+.oauth-mark { flex: none; }
+.auth-or {
+  display: flex; align-items: center; gap: var(--s-3);
+  margin: 0 0 var(--s-4); color: var(--fg-3); font-size: var(--t-1);
+}
+.auth-or::before, .auth-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }

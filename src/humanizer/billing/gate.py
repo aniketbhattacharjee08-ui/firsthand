@@ -15,8 +15,9 @@ Per request under `/api/`:
    before paying. The LLM and guided engines, and any request that would
    spend the operator's GPTZero key, need a signed-in user and are charged
    in credits by word count.
-3. **Charge** atomically before the work runs. 401 without a session, 402
-   without enough credits, each with a body that names the fix.
+3. **Charge** atomically before the work runs, after applying any plan
+   allowance that fell due this month (`Store.topup_if_due`). 401 without a
+   session, 402 without enough credits, each with a body that names the fix.
 4. **One GPU slot at a time** (`LONGHAND_MAX_INFLIGHT`). A request that
    cannot get a slot within `LONGHAND_QUEUE_WAIT_S` is answered
    `503 busy` with `Retry-After`, and refunded.
@@ -35,6 +36,14 @@ the POST is charged (rule `park`) and recorded, and the GET (rule `resume`)
 is the one that takes the GPU slot. The GET needs no session: the job id is
 random, single-use and was paid for. If the GET never comes, a sweep refunds
 the park charge after the TTL.
+
+Who the caller is comes from one of three places, in this order: a bearer
+`lh_` API key, the paywall's own magic-link cookie (`longhand_session`), or
+the shipped site's password session (`rh_session`, resolved through the
+`humanizer.api.auth` store the server mounted at `app.state.auth_store`).
+The last is bridged to a billing user by email on first sight, with the
+same free-credit grant and the same per-IP and disposable-domain limits the
+magic-link path applies, and the link is cached in `users.auth_user_id`.
 
 With `LONGHAND_PAYWALL` off, only step 1 runs.
 """
@@ -63,6 +72,10 @@ log = logging.getLogger("humanizer.billing.gate")
 request_log = logging.getLogger("humanizer.billing.requests")
 
 SESSION_COOKIE = "longhand_session"
+#: The shipped site's cookie (`humanizer.api.auth.SESSION_COOKIE`). Named
+#: here rather than imported so this module keeps no dependency on the
+#: server package.
+SITE_COOKIE = "rh_session"
 
 #: Largest response body kept for the unchanged check. A result payload with
 #: 16 candidates per paragraph is a few hundred KB; anything past this is
@@ -133,7 +146,11 @@ def _cookies(headers: Dict[str, str]) -> Dict[str, str]:
 
 
 def authenticate(store: Store, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
-    """The user for this request's session cookie or bearer API key."""
+    """The user for this request's bearer API key or magic-link cookie.
+
+    The site cookie is bridged separately (`bridge_site_user`) because it
+    needs the auth store and the config, which this helper never had.
+    """
     auth = headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         raw = auth[7:].strip()
@@ -143,6 +160,52 @@ def authenticate(store: Store, headers: Dict[str, str]) -> Optional[Dict[str, An
     if sid:
         return store.session_user(sid)
     return None
+
+
+def bridge_site_user(
+    store: Store, config: BillingConfig, auth_store: Any, headers: Dict[str, str], ip: str
+) -> Optional[Dict[str, Any]]:
+    """The billing user behind the site's `rh_session` cookie, or None.
+
+    A site account meets billing on first sight: the row is found by the
+    cached `auth_user_id`, else by email (so an account that already logged
+    in by magic link keeps its credits), else created. The free-credit
+    grant follows the magic-link rules: none for a disposable domain and
+    none past the per-IP daily sign-up cap, but the account itself is still
+    created so the person can buy. A `master` site account is an admin
+    here; the flag is only ever raised, never lowered, so an operator grant
+    made with the CLI survives.
+    """
+    token = _cookies(headers).get(SITE_COOKIE)
+    if not token or auth_store is None:
+        return None
+    try:
+        site = auth_store.user_for_session(token)
+    except Exception:  # noqa: BLE001 - a broken auth db must not 500 every request
+        log.exception("site session lookup failed")
+        return None
+    if not site:
+        return None
+    auth_id = str(site.get("id"))
+    email = str(site.get("email") or "").strip().lower()
+    if not email:
+        return None
+    user = store.user_by_auth_id(auth_id)
+    if user is None:
+        free = config.free_credits
+        domain = email.rsplit("@", 1)[-1]
+        if domain in config.blocked_domains:
+            free = 0
+        elif config.signups_per_ip_per_day > 0 and store.user_by_email(email) is None:
+            if store.signups_from(ip, 86400.0) >= config.signups_per_ip_per_day:
+                free = 0
+        user, _created = store.create_or_get(email, free, ip=ip)
+        store.link_auth_user(user["id"], auth_id)
+        user = dict(user, auth_user_id=auth_id)
+    if site.get("role") == "master" and not user.get("is_admin"):
+        store.set_admin(user["id"], True)
+        user = dict(user, is_admin=1)
+    return dict(user, site_user=True, name=site.get("name"))
 
 
 def looks_unchanged(content_type: str, body: bytes) -> Optional[bool]:
@@ -250,6 +313,31 @@ class PaywallMiddleware:
 
     # -- helpers -----------------------------------------------------------
 
+    @staticmethod
+    def _auth_store(scope: Dict[str, Any]) -> Any:
+        """The site's `AuthStore`, when the server mounted one; else None."""
+        app = scope.get("app")
+        state = getattr(app, "state", None)
+        return getattr(state, "auth_store", None) if state is not None else None
+
+    @staticmethod
+    def _sign_in_body(auth_store: Any) -> Dict[str, Any]:
+        """The 401 body. The shipped site redirects on `sign_in_required`
+        (what `humanizer.api.auth` answers), so that is the code whenever
+        its accounts exist; a bare paywall keeps the magic-link code."""
+        if auth_store is not None:
+            return {
+                "error": "sign_in_required",
+                "detail": "Sign in at /signin, or POST /api/auth/signin, then retry.",
+                "signin_url": "/signin",
+                "login": "/api/auth/request-link",
+            }
+        return {
+            "error": "login_required",
+            "detail": "Sign in to use this engine. POST /api/auth/request-link with your email.",
+            "login": "/api/auth/request-link",
+        }
+
     def _refund(self, user_id: str, cost: int, why: str) -> int:
         return self.store.credit(user_id, cost, kind="refund", ref=why)
 
@@ -314,7 +402,10 @@ class PaywallMiddleware:
             )
             return
 
+        auth_store = self._auth_store(scope)
         user = authenticate(self.store, headers)
+        if user is None:
+            user = bridge_site_user(self.store, self.config, auth_store, headers, ip)
         scope.setdefault("state", {})
         scope["state"]["billing_user"] = user
         scope["state"]["billing_config"] = self.config
@@ -380,40 +471,42 @@ class PaywallMiddleware:
             # A GPTZero call on the operator's key is charged; no GPU involved.
 
         if user is None:
-            await _json_response(
-                send,
-                401,
-                {
-                    "error": "login_required",
-                    "detail": "Sign in to use this engine. POST /api/auth/request-link with your email.",
-                    "login": "/api/auth/request-link",
-                },
-            )
+            await _json_response(send, 401, self._sign_in_body(auth_store))
             return
 
         n_words = word_count(str(data.get("text") or ""))
-        cost = credits_for_words(n_words, self.config.words_per_credit)
+        wpc = self.config.words_per_credit
+        cost = credits_for_words(n_words, wpc)
         effort = 1
         if rule in ("charge", "park"):
             effort = effort_multiplier(data.get("n_candidates", 6), data.get("rounds", 1), data.get("repair_attempts", 0))
             cost *= effort
         ref = uuid.uuid4().hex[:12]
+        # A plan allowance that fell due this month lands before the charge,
+        # so a subscriber is never refused on the first of the month.
+        self.store.topup_if_due(user["id"])
         balance = self.store.charge(user["id"], cost, kind="charge", ref="%s %s" % (path, ref))
         if balance is None:
-            have = int(user.get("credits") or 0)
+            have = self.store.balance(user["id"])
+            have = int(user.get("credits") or 0) if have is None else int(have)
             await _json_response(
                 send,
                 402,
                 {
                     "error": "insufficient_credits",
                     "detail": "This request costs %d credit%s (%d words at %d words per credit%s); you have %d." % (
-                        cost, "" if cost == 1 else "s", n_words, self.config.words_per_credit,
+                        cost, "" if cost == 1 else "s", n_words, wpc,
                         "" if effort == 1 else ", x%d for extra candidates or rounds" % effort, have
                     ),
                     "needed": cost,
                     "effort": effort,
                     "balance": have,
+                    "words": n_words,
+                    "words_needed": cost * wpc,
+                    "words_left": have * wpc,
+                    "words_per_credit": wpc,
                     "packs": "/api/billing/packs",
+                    "plans": "/api/billing/plans",
                     "checkout": "/api/billing/checkout",
                 },
             )

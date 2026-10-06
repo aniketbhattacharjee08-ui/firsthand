@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 98 24" width="98" height="24" fill="currentColor" role="img" aria-label="Vervly">
+  <!-- editable source for wordmark.svg: live text, needs Fira Sans loaded; use wordmark.svg (paths) everywhere else -->
+  <g opacity=".55"><rect x="3" y="6" width="3" height="3"/><rect x="7.5" y="6" width="3" height="3"/><rect x="12" y="6" width="3" height="3"/><rect x="16.5" y="6" width="3" height="3"/></g>
+  <rect x="3" y="15" width="13.5" height="3"/>
+  <rect x="18" y="13.5" width="3" height="6" fill="#a8e6b0"/>
+  <text x="34" y="18" font-family="Fira Sans, sans-serif" font-weight="500" font-size="22" letter-spacing="-0.22">Vervly</text>
+</svg>

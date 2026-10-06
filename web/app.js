@@ -1,39 +1,44 @@
-/* ══════════════════════════════════════════════════════════════════════════
-   humanizer — Stage 0 front end.
+/* Humanizer front end.
 
-   No build step, no bundler, no runtime dependency. One classic script so the
-   page also works from file:// (ES-module imports are blocked there).
+   No build step, no bundler, no runtime dependency. One classic script.
 
-   Non-negotiable design constraints:
-     1. no textarea — a real document model with one span per sentence;
-     2. two dials, risk and quality, never one;
-     3. name the measurement every time — value, human band, consequence, and
-        a plain-language explanation one click away;
-     4. green/red are reserved for the future rewrite diff; risk gets its own
-        warm sand -> clay ramp; uncertainty gets its own visual state;
-     5. the disclaimers stay: the score comes from a published pretrained
-        checkpoint and not from a commercial detector, the quality dial is a
-        placeholder formula, and mock mode is labelled everywhere it appears;
-     6. this project writes no detection arithmetic. When the published model
-        cannot run there is NO number, not a substitute one. The style
-        signals are explanation and are never summed into a score.
-   ══════════════════════════════════════════════════════════════════════════ */
+   The pipeline rewrites a draft with a base language model, a judge ranks
+   the candidates, and meaning gates decide what is allowed to win. This file
+   shows the draft on the left, the rewrite on the right, and the judge's
+   reading of each. The rewrite never touches the draft until Use this.
+   Everything else sits behind Details.
+
+   The judge is a free local estimate of GPTZero unless a bench configured
+   GPTZero itself (see judgeName). Typing pauses measure the draft once it is
+   long enough, Measure does it on demand, and a finished Humanize run
+   measures the rewrite. anim.js listens for the events emitted here.
+
+   Also here: the divider between the panes (drag, arrow keys, Enter to
+   fold), the two switches, and the construction layer that outlines every
+   region with its label and the API field that fills it. */
 (function () {
   'use strict';
 
   var PARAMS = new URLSearchParams(location.search);
   var API_BASE = PARAMS.get('api') || '';
   var DEBOUNCE_MS = 900;
-  var ARC = 163.363;            /* pi * r, r = 52 — matches the SVG path */
+  var AUTO_MEASURE_CHARS = 250;
 
-  /* ── small utilities ───────────────────────────────────────────────────── */
+  var LLM_STREAM_PATH = '/api/humanize/stream';
+  var LLM_BLOCKING_PATH = '/api/humanize/llm';
+  var RULE_PATH = '/api/humanize';
+  /* the server plans 55 s per paragraph plus a 120 s repair stage (capped at
+     480 + 120 s); the ceiling sits above that so a long document is stopped
+     by the server's own budget, not by the page. */
+  var LLM_CEILING_MS = 660000;
+
+  /* ── small utilities ─────────────────────────────────────────────────── */
 
   function $(id) { return document.getElementById(id); }
 
   function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
 
-  /* the humanize endpoint returns sentence_index as a string, so anything that
-     reads a number off an API payload goes through this instead */
+  /* some endpoints send numbers as strings */
   function loose(v) {
     if (typeof v === 'number') return isFinite(v) ? v : null;
     if (typeof v === 'string' && v.trim() !== '') {
@@ -43,11 +48,15 @@
     return null;
   }
 
-  /* every numeric in the contract may be null (NaN server-side) */
   function fmt(v, digits) {
     var n = num(v);
     if (n === null) return 'n/a';
     return n.toFixed(digits === undefined ? 2 : digits);
+  }
+
+  function pct(p) {
+    var n = num(p);
+    return n === null ? 'n/a' : Math.round(n * 100) + '%';
   }
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -65,136 +74,60 @@
 
   function plural(n, one, many) { return n === 1 ? one : (many || one + 's'); }
 
+  function pickString() {
+    for (var i = 0; i < arguments.length; i++) {
+      if (typeof arguments[i] === 'string' && arguments[i].trim()) return arguments[i];
+    }
+    return '';
+  }
+
+  function words(text) {
+    var m = text.toLowerCase().match(/[a-z][a-z'\u2019-]*/g);
+    return m || [];
+  }
+
   var reduceMotion = window.matchMedia
     ? window.matchMedia('(prefers-reduced-motion: reduce)')
     : { matches: false };
 
-  /* the animation layer in anim.js listens for these; nothing depends on it */
+  /* anim.js listens for these; nothing depends on it */
   function emit(name, detail) {
     try { document.dispatchEvent(new CustomEvent(name, { detail: detail || null })); }
-    catch (e) { /* older engines: animation is optional anyway */ }
+    catch (e) { /* animation is optional */ }
   }
 
-  /* ── the measurement table ───────────────────────────────────────────────
-     Bands are the ones the Python extractor checks, plus the published
-     academic-register targets. Nothing is shown without its band, its source
-     and a plain-language reading of what the number means. */
+  /* ── the measurement table (Details) ─────────────────────────────────── */
 
   var FEATURES = [
-    {
-      key: 'sent_len_cv', label: 'sentence-length variation (CV)', band: [0.42, 0.60], digits: 2,
-      source: 'measured across five pre-2023 corpora',
-      note: 'a band, not a maximum. A measured GPT baseline sits at 0.50, inside it, and 0.85 is as anomalous as 0.30',
-      plain: 'How much your sentence lengths vary: the spread of your sentence lengths divided by their average. ' +
-             'Human academic writing lands between 0.42 and 0.60. Below that, every sentence is roughly the same ' +
-             'length, which is the most reliable tell there is. Above it you have overcorrected, and 0.85 is as ' +
-             'strange to a detector as 0.30.'
-    },
-    {
-      key: 'sent_lag1_autocorr', label: 'lag-1 sentence autocorrelation', band: [-0.10, 0.25], digits: 2,
-      source: 'the typical human value is 0.01 to 0.10; the band shown is the tolerated range',
-      note: 'humans do not alternate long and short; a strong negative value is the signature of a naive burstiness rule',
-      plain: 'Whether a long sentence tends to be followed by another long one. Humans sit near zero: no pattern ' +
-             'either way. A clearly negative number means you are alternating long, short, long, short. That is ' +
-             'what a naive "add burstiness" instruction produces, and it is easy to spot.'
-    },
-    {
-      key: 'sent_short_share', label: 'sentences under 10 words', band: [0.09, 0.14], pct: true,
-      source: '',
-      note: 'widen the tails, not the middle',
-      plain: 'The share of your sentences that are under ten words. Human academic prose keeps 9 to 14 per cent ' +
-             'this short. A few genuinely short sentences buy you more variation than nudging every sentence a ' +
-             'word or two.'
-    },
-    {
-      key: 'sent_long_share', label: 'sentences over 30 words', band: [0.18, 0.28], pct: true,
-      source: '',
-      plain: 'The share of your sentences that run past thirty words. Humans sit between 18 and 28 per cent. ' +
-             'If your variation is low, the usual cause is that nothing here is long, not that nothing is short.'
-    },
-    {
-      key: 'para_words_cv', label: 'paragraph-length variation (CV)', band: [0.42, 0.71], digits: 2,
-      source: '',
-      note: 'higher than the sentence CV in every genre measured',
-      plain: 'The same spread measure, applied to paragraphs instead of sentences. Human paragraphs vary more ' +
-             'than human sentences do, in every genre anyone has measured. Evenly sized blocks of text read as ' +
-             'generated even when the sentences inside them do not.'
-    },
-    {
-      key: 'ai_vocab_weighted_per_1k', label: 'AI vocabulary, weighted /1k', band: [0, 8], digits: 1,
-      source: 'anything past the top of the band is flagged',
-      note: 'weights are published excess-frequency ratios (delve 25x, tapestry 18x in phrase, underscores 13.8x)',
-      plain: 'Words and phrases that turn up far more often in model output than in human writing, weighted by ' +
-             'how lopsided the gap is: "delve" about 25 times more often, "tapestry" about 18, "underscores" ' +
-             'about 13.8. This is the strongest lexical signal in the catalogue and it survives paraphrasing. ' +
-             'Removing it costs you nothing at all.'
-    },
-    {
-      key: 'formal_connective_per_1k', label: 'formal connectives /1k', band: [1, 8], digits: 1,
-      source: 'better essays rise from 0.84 to 3.75 across PERSUADE scores 1 to 6',
-      note: 'stripping these is the one edit that cuts detection risk and raises the grade',
-      plain: '"Moreover", "Furthermore", "Additionally", "Consequently". Models open sentences with these far ' +
-             'more often than people do. This is the single best edit available to you: it lowers detection ' +
-             'risk and raises your grade at the same time, because top-band coherence is the kind that never ' +
-             'announces itself.'
-    },
-    {
-      key: 'nominalization_per_1k', label: 'nominalizations /1k', band: [55, 80], digits: 1,
-      source: 'academic sub-registers 61.0 to 72.1 (Biber & Gray)',
-      note: 'better essays are MORE nominalized, so do not cut this to sound human',
-      plain: 'Verbs and adjectives turned into nouns: "investigate" becomes "investigation". Academic writing ' +
-             'runs 61 to 72 per thousand words. Counter-intuitively, stronger essays are more nominalized, not ' +
-             'less, so do not strip these in an attempt to sound human. You would trade a small risk gain for ' +
-             'a real grade loss.'
-    },
-    {
-      key: 'passive_per_1k', label: 'passives /1k', band: [12, 25], digits: 1,
-      source: 'academic prose averages 18.5, about a quarter of all finite verbs (Biber et al.)',
-      plain: 'Passive constructions per thousand words. Academic prose sits around 18.5, roughly a quarter of ' +
-             'all finite verbs. The familiar advice to avoid the passive comes from journalism style guides, ' +
-             'not from anyone who counted academic writing.'
-    },
-    {
-      key: 'comma_per_1k', label: 'commas /1k', band: [57, 65], digits: 1,
-      source: 'this project\u2019s own measurement',
-      note: 'punctuation is the most author-stable family measured (commas ICC 0.44)',
-      plain: 'Commas per thousand words. Punctuation habits are the most stable thing about an individual ' +
-             'writer, which makes them a strong identity signal, and they barely move when text is ' +
-             'paraphrased, so they are hard to launder.'
-    },
-    {
-      key: 'contraction_per_1k', label: 'contractions /1k', band: [0, 1.4], digits: 2,
-      source: 'research articles sit at the very bottom of this band',
-      note: 'contractions help evasion and cost grade, so they are a never in body edit for academic targets',
-      plain: '"Don\u2019t", "it\u2019s", "we\u2019ve". Research articles keep these under 1.4 per thousand words. ' +
-             'Adding contractions genuinely does lower detection risk, and it also lowers your grade under ' +
-             'academic genre conventions. That makes it a "never in the body" edit for academic work.'
-    },
-    {
-      key: 'mtld', label: 'lexical diversity (MTLD)', band: null, digits: 1,
-      source: 'no published academic band, so this is reported for context only',
-      note: 'academic type-token ratio is LOWER than fiction and news; raising it is not an improvement',
-      plain: 'How varied your vocabulary is, measured in a way that does not punish long documents. There is no ' +
-             'published academic band, so this is here for context only. Academic writing is less lexically ' +
-             'varied than fiction or journalism, on purpose: terms of art get repeated rather than elegantly ' +
-             'varied. A higher number here is not automatically better writing.'
-    },
-    {
-      key: 'n_words', label: 'words', band: null, digits: 0,
-      source: 'shape features are noisy and detectors hedge below 300 words',
-      plain: 'How long your draft is. Below roughly 300 words every shape measure above is noisy, and detectors ' +
-             'themselves start hedging, so treat the whole page as provisional until you are past that.'
-    },
-    {
-      key: 'n_sentences', label: 'sentences', band: null, digits: 0,
-      source: 'as split by the service',
-      plain: 'How many sentences the service found. The splitter knows about "Dr.", "e.g." and similar, but no ' +
-             'splitter is perfect, so an odd count usually means an unusual abbreviation or a stray full stop.'
-    }
+    { key: 'sent_len_cv', label: 'sentence length variation', band: [0.42, 0.60], digits: 2,
+      plain: 'The spread of your sentence lengths divided by their average. Human academic writing lands between 0.42 and 0.60. Below it every sentence is about the same length; above it you have overcorrected.' },
+    { key: 'sent_lag1_autocorr', label: 'long after long', band: [-0.10, 0.25], digits: 2,
+      plain: 'Whether a long sentence tends to follow another long one. Humans sit near zero. A clearly negative value means long, short, long, short, which is what a naive burstiness rule produces.' },
+    { key: 'sent_short_share', label: 'sentences under 10 words', band: [0.09, 0.14], pct: true,
+      plain: 'Human academic prose keeps 9 to 14 percent of sentences this short. A few genuinely short sentences buy more variation than nudging every sentence a word or two.' },
+    { key: 'sent_long_share', label: 'sentences over 30 words', band: [0.18, 0.28], pct: true,
+      plain: 'Humans sit between 18 and 28 percent. If your variation is low, the usual cause is that nothing is long, not that nothing is short.' },
+    { key: 'para_words_cv', label: 'paragraph length variation', band: [0.42, 0.71], digits: 2,
+      plain: 'Human paragraphs vary more than human sentences do, in every genre measured. Evenly sized blocks read as generated even when the sentences inside them do not.' },
+    { key: 'ai_vocab_weighted_per_1k', label: 'AI vocabulary per 1k words', band: [0, 8], digits: 1,
+      plain: 'Words that turn up far more often in model output than in human writing, weighted by how lopsided the gap is. The strongest lexical signal there is, and removing it costs nothing.' },
+    { key: 'formal_connective_per_1k', label: 'formal connectives per 1k', band: [1, 8], digits: 1,
+      plain: '"Moreover", "Furthermore", "Additionally". Models open sentences with these far more often than people do. Cutting them lowers detection risk and raises the grade at the same time.' },
+    { key: 'nominalization_per_1k', label: 'nominalizations per 1k', band: [55, 80], digits: 1,
+      plain: 'Verbs turned into nouns. Academic writing runs 61 to 72 per thousand words, and stronger essays are more nominalized, not less, so do not strip these to sound human.' },
+    { key: 'passive_per_1k', label: 'passives per 1k', band: [12, 25], digits: 1,
+      plain: 'Academic prose sits around 18.5 passives per thousand words, roughly a quarter of finite verbs. The advice to avoid the passive comes from journalism, not from anyone who counted academic writing.' },
+    { key: 'comma_per_1k', label: 'commas per 1k', band: [57, 65], digits: 1,
+      plain: 'Punctuation habits are the most stable thing about a writer and barely move under paraphrase, which makes them a strong identity signal.' },
+    { key: 'contraction_per_1k', label: 'contractions per 1k', band: [0, 1.4], digits: 2,
+      plain: 'Research articles keep these under 1.4 per thousand words. Adding contractions lowers detection risk and lowers the grade, so it is a never in the body edit for academic work.' },
+    { key: 'mtld', label: 'lexical diversity (MTLD)', band: null, digits: 1,
+      plain: 'How varied your vocabulary is. There is no published academic band, and academic writing is less varied than fiction on purpose, so a higher number is not automatically better.' },
+    { key: 'n_words', label: 'words', band: null, digits: 0,
+      plain: 'Below roughly 300 words every shape measure above is noisy, and detectors hedge too.' },
+    { key: 'n_sentences', label: 'sentences', band: null, digits: 0,
+      plain: 'How many sentences the service found. An odd count usually means an unusual abbreviation or a stray full stop.' }
   ];
-
-  var FEATURE_BY_KEY = {};
-  FEATURES.forEach(function (f) { FEATURE_BY_KEY[f.key] = f; });
 
   function formatFeature(spec, value) {
     var n = num(value);
@@ -211,7 +144,6 @@
     return lo.toFixed(d) + ' to ' + hi.toFixed(d);
   }
 
-  /* server bands win; one is computed only when the server did not send it */
   function bandState(spec, value, serverBands) {
     var fromServer = serverBands && serverBands[spec.key];
     if (fromServer && fromServer !== 'unknown') return fromServer;
@@ -223,116 +155,38 @@
     return 'in band';
   }
 
-  /* Rule 3: never a bare label. This is the one-line form used in the status
-     bar and the sentence inspector. */
-  function namedMeasurement(spec, value, serverBands) {
-    var band = formatBand(spec);
-    var s = spec.label + ' ' + formatFeature(spec, value);
-    if (band) s += ', where human academic prose runs ' + band;
-    var st = bandState(spec, value, serverBands);
-    if (st === 'low') s += ', you are below it';
-    else if (st === 'high') s += ', you are above it';
-    else if (st === 'in band') s += ', you are inside it';
-    return s;
-  }
-
-  /* ── grade-cost classification ───────────────────────────────────────────
-     The API sends grade_cost as free text from the conflict matrix ("none,
-     slightly positive", "negative, it raises the grade", "medium if added",
-     "high if reduced further"). The whole point of the product is that some
-     edits pay twice and some trade, so the string is classified rather than
-     printed bare — and the raw string is still shown beside it. */
-
-  function classifyGradeCost(raw) {
-    var s = String(raw === undefined || raw === null ? '' : raw).toLowerCase().trim();
-    if (!s) return { kind: 'neutral', label: 'grade cost not stated', raw: '' };
-    if (s.indexOf('negative') === 0 || s.indexOf('raises the grade') >= 0) {
-      return { kind: 'gain', label: 'fixing this also raises the grade', raw: raw };
-    }
-    if (s.indexOf('positive') >= 0 && s.indexOf('none') === 0) {
-      return { kind: 'gain', label: 'free to fix, slightly positive', raw: raw };
-    }
-    if (s === 'none' || s.indexOf('none') === 0) {
-      return { kind: 'neutral', label: 'no grade cost to fix', raw: raw };
-    }
-    if (/\bhigh\b/.test(s)) return { kind: 'cost', label: 'high grade cost', raw: raw };
-    if (/\bmedium\b/.test(s)) return { kind: 'cost', label: 'medium grade cost', raw: raw };
-    if (/\blow\b/.test(s)) return { kind: 'cost', label: 'low grade cost', raw: raw };
-    return { kind: 'neutral', label: 'grade cost: ' + s, raw: raw };
-  }
-
-  var SEVERITY_WEIGHT = { high: 6, medium: 3, low: 1, info: 0 };
   var SEVERITY_ORDER = { high: 0, medium: 1, low: 2, info: 3 };
 
-  /* ── samples ─────────────────────────────────────────────────────────────
-     Two drafts chosen so the difference is visible in the dials immediately:
-     the first is uniform, connective-heavy and vocabulary-flagged; the second
-     varies its sentence and paragraph lengths, carries dated and numbered
-     specifics, and states a counterargument. */
+  /* ── the example drafts ──────────────────────────────────────────────── */
 
+  var SAMPLE = [
+    'The relationship between urban green space and public health has become a pivotal area of academic inquiry. Researchers across a range of disciplines have begun to delve into the mechanisms that connect vegetation cover to wellbeing. Moreover, this work underscores a broader shift in how modern cities are planned, managed and understood. It is important to note that this shift is multifaceted, ongoing and highly context dependent.',
+    'Furthermore, a comprehensive review of the existing literature reveals several recurring themes worth considering. First, access to green space is consistently associated with improved mental health indicators. Second, the observed effect appears robust across a wide range of demographic groups. Third, the underlying causal mechanisms remain the subject of considerable scholarly debate. These findings collectively demonstrate the significance of the topic for policy makers.',
+    'Additionally, it is worth noting that methodological challenges persist throughout this body of research. Many studies rely on cross sectional designs that cannot establish causal direction with confidence. Consequently, the strength of the evidence base remains somewhat limited in scope. Nevertheless, the overall pattern of reported results is compelling and deserves attention. Therefore, further investigation is not merely desirable but genuinely necessary.',
+    'In conclusion, urban green space represents an intricate intersection of environmental, social and psychological factors. Future research should explore the causal pathways at play in far greater depth. Ultimately, such work will pave the way for more effective and more equitable urban policy. This is not simply an academic exercise, but a pressing societal concern.'
+  ].join('\n\n');
+
+  /* the chips under the empty sheet; each is long enough to be measured on its own */
   var SAMPLES = {
-    ai: [
-      'The relationship between urban green space and public health has become a pivotal area of academic inquiry. Researchers across a range of disciplines have begun to delve into the mechanisms that connect vegetation cover to wellbeing. Moreover, this work underscores a broader shift in how modern cities are planned, managed and understood. It is important to note that this shift is multifaceted, ongoing and highly context dependent.',
-      'Furthermore, a comprehensive review of the existing literature reveals several recurring themes worth considering. First, access to green space is consistently associated with improved mental health indicators. Second, the observed effect appears robust across a wide range of demographic groups. Third, the underlying causal mechanisms remain the subject of considerable scholarly debate. These findings collectively demonstrate the significance of the topic for policy makers.',
-      'Additionally, it is worth noting that methodological challenges persist throughout this body of research. Many studies rely on cross sectional designs that cannot establish causal direction with confidence. Consequently, the strength of the evidence base remains somewhat limited in scope. Nevertheless, the overall pattern of reported results is compelling and deserves attention. Therefore, further investigation is not merely desirable but genuinely necessary.',
-      'The implications of these findings extend well beyond the boundaries of a single discipline. Planners, clinicians and community organisations all have a crucial stake in the eventual outcome. Similarly, the instruments used to measure exposure to green space deserve renewed scrutiny. Overall, the field now stands at an important juncture in its development.',
-      'In conclusion, urban green space represents an intricate intersection of environmental, social and psychological factors. Future research should explore the causal pathways at play in far greater depth. Ultimately, such work will pave the way for more effective and more equitable urban policy. This is not simply an academic exercise, but a pressing societal concern.'
+    ai: SAMPLE,
+    letter: [
+      'I am writing to express my strong interest in the Research Assistant position at the Institute for Urban Studies. With a robust academic background in geography and a proven track record of collaborative fieldwork, I am confident that I would be a valuable addition to your dynamic team.',
+      'Throughout my undergraduate studies, I honed my analytical skills and developed a deep passion for evidence based policy. Moreover, my role as a teaching assistant allowed me to cultivate strong communication skills and a commitment to fostering inclusive learning environments. Additionally, I have leveraged geographic information systems to deliver actionable insights on housing access.',
+      'I am particularly drawn to the Institute because of its commitment to innovative, community centred research. I would welcome the opportunity to contribute to your ongoing projects and to further develop my expertise. Thank you for considering my application. I look forward to the possibility of discussing how my skills align with your needs.'
     ].join('\n\n'),
-
-    human: [
-      'Between 1993 and 2011 Leipzig lost close to a fifth of its population, and the vacant lots that demolition left behind were converted, piecemeal and without any coordinating plan, into small neighbourhood parks. The sequence of demolitions was determined by structural condition and by the availability of federal reconstruction money, not by the affluence of the surrounding blocks, which makes the allocation of new green space close to exogenous. Kabisch and Haase treated that sequence as a natural experiment, and the municipal documentation was complete enough to support the design. Their analysis covers 4,100 households across three survey waves. Attrition ran to eleven per cent, which is high, though not unusual for a postal instrument of this length.',
-      'The measured effect is small, and the authors are careful not to oversell it. Residents within 300 metres of a converted lot reported better general health on the SF-12 than residents at 800 metres, by roughly 0.14 standard deviations, after adjustment for income, age and prior diagnosis. The gap widened slightly across the study period, though not by enough to carry the argument. At the final wave the confidence interval includes zero, and the authors say so in the text.',
-      'Two objections deserve more attention than the published discussion gives them. The first is spatial: demolition was concentrated in the northeast, and the northeast differed from the remaining districts in ways that were measured only imperfectly at baseline, among them the density of ground-floor commercial space and the proportion of households in receipt of housing assistance. In contrast, the second objection is procedural, and it is harder to dismiss. Self-reported health was collected by postal questionnaire, and the response rate near the converted lots ran eleven points above the rate elsewhere. If residents in better health were also more willing to return a survey about their own neighbourhood park, then the estimated benefit is inflated by an amount the data cannot recover. The authors acknowledge the problem in a footnote and make no attempt at correction.',
-      'None of this makes the study worthless. It makes the interpretation conditional.',
-      'On balance the Leipzig evidence is suggestive rather than decisive, and the reasons are worth stating precisely. The identification strategy is stronger than anything that preceded it in the German literature. The estimated benefit is small enough to be produced by residual confounding alone, and the direction of the likely selection bias runs toward the reported finding. A replication in a city where demolition was dispersed rather than clustered would settle most of the remaining doubt. Halle offers a plausible setting, since its own demolition programme was administered building by building between 1999 and 2009, and the case records survive, complete, in the municipal archive.'
+    report: [
+      'The purpose of this experiment was to investigate the effect of temperature on the rate of an enzyme catalysed reaction. Catalase was selected as a model enzyme because it is readily available and its activity can be quantified through the volume of oxygen released. It is important to note that enzyme kinetics are highly sensitive to environmental conditions.',
+      'Samples were incubated at five distinct temperatures ranging from 10 to 50 degrees Celsius. Subsequently, the volume of oxygen produced over a two minute interval was recorded for each condition. The results clearly demonstrate that reaction rate increased with temperature up to approximately 37 degrees, after which a marked decline was observed. This pattern is consistent with the denaturation of the enzyme at elevated temperatures.',
+      'In conclusion, the findings underscore the crucial role of temperature in regulating enzymatic activity. Furthermore, they highlight the importance of maintaining optimal conditions in biological systems. Future experiments could explore a broader range of temperatures and incorporate additional replicates to enhance the reliability of the data.'
+    ].join('\n\n'),
+    history: [
+      'The causes of the First World War have long been the subject of intense historical debate. Scholars have delved into a wide array of factors, ranging from the intricate web of alliances to the pervasive influence of nationalism. Moreover, the role of individual decision makers in the summer of 1914 continues to be scrutinised. It is essential to recognise that no single cause can fully account for the outbreak of hostilities.',
+      'Firstly, the alliance system created a landscape in which a regional dispute could rapidly escalate into a continental conflict. Secondly, the arms race between the great powers fostered a climate of mutual suspicion and heightened tensions. Additionally, imperial rivalries in Africa and Asia exacerbated existing frictions between the European states. These factors collectively contributed to a volatile international environment.',
+      'Ultimately, the assassination of Archduke Franz Ferdinand served as the catalyst that transformed underlying tensions into open war. Nevertheless, it would be overly simplistic to attribute the conflict to this single event. In conclusion, the war emerged from a complex interplay of structural pressures and contingent decisions, a combination that continues to shape how historians approach the period.'
     ].join('\n\n')
   };
 
-  /* ── client-side lexicons, used for the per-sentence explanation and for
-     mock mode. Weights mirror the Python ai_lexicon module. ─────────────── */
-
-  var AI_WORDS = {
-    delve: 25, delves: 28, delving: 20, underscore: 12, underscores: 13.8,
-    underscoring: 11, showcase: 9, showcases: 9, showcasing: 10.7, pivotal: 8.5,
-    intricate: 8, intricacies: 8, intricately: 5.5, realm: 7.5, realms: 7,
-    garnered: 7, burgeoning: 6.5, noteworthy: 6, meticulous: 6, meticulously: 6,
-    commendable: 6, encompassing: 5.5, multifaceted: 5.5, nuanced: 5, leverage: 5,
-    leveraging: 5, harness: 4.5, harnessing: 4.5, unveiling: 4.5, unravel: 4.5,
-    elucidate: 4.5, endeavors: 4, paramount: 4, profound: 4, seamless: 4,
-    seamlessly: 4, robust: 3.5, crucial: 3.5, vital: 3, significant: 2,
-    comprehensive: 3, holistic: 4, innovative: 3.5, transformative: 4.5,
-    groundbreaking: 4.5, landscape: 4, tapestry: 12, testament: 8, camaraderie: 12
-  };
-
-  var AI_PHRASES = {
-    'it is important to note': 15, 'it is worth noting': 12, 'it is crucial to': 10,
-    'plays a crucial role': 12, 'plays a vital role': 11, 'plays a pivotal role': 14,
-    'in the realm of': 14, 'in the ever-evolving': 16, "in today's fast-paced": 14,
-    "in today's digital age": 14, 'navigating the complexities': 16,
-    'a testament to': 10, 'rich tapestry': 18, 'delve into': 20, 'delves into': 22,
-    'shed light on': 8, 'sheds light on': 8, 'at the forefront': 8,
-    'pave the way': 8, 'paves the way': 8, 'paving the way': 8,
-    'when it comes to': 5, 'in conclusion': 8, 'in summary': 6, 'to sum up': 6
-  };
-
-  var FORMAL_CONNECTIVES = [
-    'additionally', 'moreover', 'furthermore', 'consequently', 'therefore',
-    'thus', 'hence', 'nevertheless', 'nonetheless', 'accordingly',
-    'subsequently', 'similarly', 'likewise', 'conversely', 'notably',
-    'importantly', 'specifically', 'ultimately', 'overall', 'indeed',
-    'in addition', 'in conclusion', 'in summary', 'in contrast',
-    'on the other hand', 'as a result', 'for instance', 'for example'
-  ];
-
-  function words(text) {
-    var m = text.toLowerCase().match(/[a-z][a-z'\u2019-]*/g);
-    return m || [];
-  }
-
-  /* ── document model ──────────────────────────────────────────────────────
-     Paragraph and sentence ranges over the plain text. This is what replaces
-     the textarea: the canvas is rendered from these ranges and every span in
-     the DOM is addressable by sentence index. */
+  /* ── document model ──────────────────────────────────────────────────── */
 
   function paragraphRanges(text) {
     var out = [];
@@ -347,60 +201,13 @@
     return out;
   }
 
-  var ABBREV = /\b(?:Dr|Mr|Mrs|Ms|Prof|St|Fig|No|vs|etc|e\.g|i\.e|cf|al|Jr|Sr|Ph\.D)\.$/i;
-
-  function splitSentences(chunk) {
-    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
-      try {
-        var seg = new Intl.Segmenter('en', { granularity: 'sentence' });
-        var out = [];
-        var iter = seg.segment(chunk)[Symbol.iterator]();
-        var step = iter.next();
-        while (!step.done) {
-          var s = step.value;
-          if (s.segment.trim()) out.push({ from: s.index, to: s.index + s.segment.length });
-          step = iter.next();
-        }
-        /* UAX#29 has no abbreviation list, so it breaks "Dr. Smith". Merge a
-           segment ending in a known abbreviation into the one after it. */
-        var merged = [];
-        for (var k = 0; k < out.length; k++) {
-          var cur = out[k];
-          while (k + 1 < out.length && ABBREV.test(chunk.slice(cur.from, cur.to).trim())) {
-            k++;
-            cur = { from: cur.from, to: out[k].to };
-          }
-          merged.push(cur);
-        }
-        if (merged.length) return merged;
-      } catch (e) { /* fall through to the regex splitter */ }
-    }
-    var res = [], start = 0, i;
-    for (i = 0; i < chunk.length; i++) {
-      var c = chunk[i];
-      if (c === '.' || c === '!' || c === '?') {
-        var head = chunk.slice(start, i + 1);
-        if (ABBREV.test(head)) continue;
-        var next = chunk.slice(i + 1, i + 3);
-        if (/^\s/.test(next) || i === chunk.length - 1) {
-          if (head.trim()) res.push({ from: start, to: i + 1 });
-          start = i + 1;
-          while (start < chunk.length && /\s/.test(chunk[start])) start++;
-          i = start - 1;
-        }
-      }
-    }
-    if (start < chunk.length && chunk.slice(start).trim()) res.push({ from: start, to: chunk.length });
-    return res;
-  }
-
-  /* The API returns sentence text, not offsets, so each sentence is located in
-     the document text with a whitespace-tolerant forward scan. */
+  /* the API returns sentence text, not offsets, so each is located in the
+     document with a whitespace tolerant forward scan */
   function locateSentences(text, sentences) {
     var cursor = 0, out = [];
     (sentences || []).forEach(function (s) {
       var raw = s && typeof s.text === 'string' ? s.text.trim() : '';
-      if (!raw) { out.push(null); return; }
+      if (!raw) return;
       var from = text.indexOf(raw, cursor);
       var to;
       if (from >= 0) {
@@ -408,11 +215,9 @@
       } else {
         var tokens = raw.split(/\s+/).slice(0, 200).map(escapeRe);
         var hit = null;
-        try {
-          var re = new RegExp(tokens.join('\\s+'));
-          hit = re.exec(text.slice(cursor));
-        } catch (e) { hit = null; }
-        if (!hit) { out.push(null); return; }
+        try { hit = new RegExp(tokens.join('\\s+')).exec(text.slice(cursor)); }
+        catch (e) { hit = null; }
+        if (!hit) return;
         from = cursor + hit.index;
         to = from + hit[0].length;
       }
@@ -420,141 +225,30 @@
       out.push({
         index: num(s.index) === null ? out.length : s.index,
         text: text.slice(from, to),
-        paragraph_index: num(s.paragraph_index),
         length: num(s.length),
         risk: num(s.risk),
         from: from,
         to: to
       });
     });
-    return out.filter(Boolean);
+    return out;
   }
 
-  /* ── risk arithmetic shared by the fallback dial and by mock mode ──────── */
+  /* ── HTTP ────────────────────────────────────────────────────────────── */
 
-  function outOfBand(value, lo, hi) {
-    var n = num(value);
-    if (n === null) return null;
-    var half = Math.abs(hi - lo) / 2 || 1;
-    if (n < lo) return clamp((lo - n) / (half * 2), 0, 1);
-    if (n > hi) return clamp((n - hi) / (half * 2), 0, 1);
-    return 0;
+  /* The product API answers 401 {error: "sign_in_required"} when nobody is
+     signed in. Every HTTP path here funnels through this: the page goes to
+     the sign-in form and comes back to /app afterwards. Called at most once. */
+  var SIGN_IN_URL = '/signin?next=' + encodeURIComponent('/app');
+  var leaving = false;
+  function signInRequired() {
+    if (leaving) return;
+    leaving = true;
+    try { setStatus('idle', 'Sign in to continue.'); } catch (e) { /* before the DOM */ }
+    location.replace(SIGN_IN_URL);
   }
 
-  /* Used only when the API returns no detector. It is a distance from the
-     human bands, not a detector score, and it is labelled as such. */
-  function compositeRisk(f) {
-    var terms = [
-      [outOfBand(f.sent_len_cv, 0.42, 0.60), 1.4],
-      [outOfBand(f.sent_lag1_autocorr, -0.10, 0.25), 0.8],
-      [outOfBand(f.sent_short_share, 0.09, 0.14), 0.6],
-      [outOfBand(f.sent_long_share, 0.18, 0.28), 0.6],
-      [outOfBand(f.para_words_cv, 0.42, 0.71), 0.8],
-      [num(f.ai_vocab_weighted_per_1k) === null ? null : clamp(f.ai_vocab_weighted_per_1k / 20, 0, 1), 1.2],
-      [num(f.formal_connective_per_1k) === null ? null : clamp(f.formal_connective_per_1k / 16, 0, 1), 1.0]
-    ];
-    var sum = 0, wsum = 0;
-    terms.forEach(function (t) {
-      if (t[0] === null) return;
-      sum += t[0] * t[1]; wsum += t[1];
-    });
-    if (!wsum) return null;
-    return clamp(0.08 + 0.90 * (sum / wsum), 0, 0.99);
-  }
-
-  /* ══════════════════════════════════════════════════════════════════════
-     WRITING-QUALITY DIAL — client-side heuristic placeholder.
-
-     Labelled a placeholder everywhere it appears. It exists because risk must
-     never be shown without quality beside it, and the API returns no quality
-     score.
-
-       base            78        a mid-band essay
-       register term   +/- 18    five features that RISE with essay grade:
-                                 nominalization 55-80, passives 12-25, formal
-                                 connectives 1-8, commas 57-65, paragraph CV
-                                 0.42-0.71. Each worth +3.6 in band and down to
-                                 -3.6 outside, scaled by how far outside.
-       findings term   0 to -30  severity weight (high 6, medium 3, low 1)
-                                 times what the grade_cost string says:
-                                   x1.00 fixing costs grade, so the current
-                                         state is a genuine defect
-                                   x0.35 fixing is free — a detector problem,
-                                         not a quality problem
-                                   x0.15 fixing raises the grade — an
-                                         opportunity, barely a defect
-       short document  pulled halfway to 70 under 300 words.
-
-     Deliberately NOT a rubric score.
-     ══════════════════════════════════════════════════════════════════════ */
-
-  var QUALITY_REGISTER = [
-    { key: 'nominalization_per_1k', band: [55, 80] },
-    { key: 'passive_per_1k', band: [12, 25] },
-    { key: 'formal_connective_per_1k', band: [1, 8] },
-    { key: 'comma_per_1k', band: [57, 65] },
-    { key: 'para_words_cv', band: [0.42, 0.71] }
-  ];
-
-  function padRight(s, n) {
-    s = String(s);
-    while (s.length < n) s += ' ';
-    return s;
-  }
-  function padLeft(s, n) {
-    s = String(s);
-    while (s.length < n) s = ' ' + s;
-    return s;
-  }
-
-  function qualityScore(features, findings) {
-    var f = features || {};
-    var lines = [];
-    var score = 78;
-    var W = 28;
-    lines.push(padRight('base', W) + padLeft('78.0', 7));
-
-    var registerDelta = 0, counted = 0;
-    QUALITY_REGISTER.forEach(function (spec) {
-      var d = outOfBand(f[spec.key], spec.band[0], spec.band[1]);
-      if (d === null) return;
-      counted++;
-      registerDelta += d === 0 ? 3.6 : -3.6 * d;
-    });
-    score += registerDelta;
-    lines.push(padRight('academic register (' + counted + '/5)', W) +
-               padLeft((registerDelta >= 0 ? '+' : '') + registerDelta.toFixed(1), 7));
-
-    var penalty = 0;
-    (findings || []).forEach(function (fd) {
-      var w = SEVERITY_WEIGHT[fd.severity];
-      if (!w) return;
-      var kind = classifyGradeCost(fd.grade_cost).kind;
-      var mult = kind === 'cost' ? 1.0 : kind === 'gain' ? 0.15 : 0.35;
-      penalty += w * mult;
-    });
-    penalty = Math.min(penalty, 30);
-    score -= penalty;
-    lines.push(padRight('findings (' + (findings || []).length + ')', W) +
-               padLeft('-' + penalty.toFixed(1), 7));
-
-    var nWords = num(f.n_words);
-    var lowConfidence = nWords !== null && nWords < 300;
-    if (lowConfidence) {
-      score = 70 + (score - 70) * 0.5;
-      lines.push(padRight('under 300 words, halved to 70', W) + padLeft(score.toFixed(1), 7));
-    }
-    score = clamp(score, 0, 100);
-    lines.push(new Array(W + 8).join('-'));
-    lines.push(padRight('writing quality', W) + padLeft(score.toFixed(0), 7));
-
-    return { score: score, lowConfidence: lowConfidence, breakdown: lines.join('\n') };
-  }
-
-  /* ── HTTP ────────────────────────────────────────────────────────────────
-     Nothing here assumes a field exists. */
-
-  function request(path, body) {
+  function request(path, body, timeoutMs) {
     var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var opts = { method: body ? 'POST' : 'GET', headers: { Accept: 'application/json' } };
     if (body) {
@@ -562,10 +256,12 @@
       opts.body = JSON.stringify(body);
     }
     if (controller) opts.signal = controller.signal;
-    var timer = controller ? setTimeout(function () { controller.abort(); }, 30000) : null;
+    var limit = timeoutMs || 30000;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, limit) : null;
 
     return fetch(API_BASE + path, opts).then(function (res) {
       if (timer) clearTimeout(timer);
+      if (res.status === 401) signInRequired();
       if (!res.ok) {
         return res.text().catch(function () { return ''; }).then(function (t) {
           var detail = t;
@@ -576,7 +272,7 @@
       return res.json();
     }, function (err) {
       if (timer) clearTimeout(timer);
-      if (err && err.name === 'AbortError') throw new Error('the request timed out after 30 seconds');
+      if (err && err.name === 'AbortError') throw new Error('the request timed out');
       if (!navigator.onLine) throw new Error('the browser is offline');
       throw new Error((err && err.message) || 'network error');
     });
@@ -589,374 +285,57 @@
     }).map(function (f) {
       return {
         code: typeof f.code === 'string' ? f.code : '',
-        severity: SEVERITY_WEIGHT.hasOwnProperty(f.severity) ? f.severity : 'info',
+        severity: SEVERITY_ORDER.hasOwnProperty(f.severity) ? f.severity : 'info',
         message: f.message,
-        detail: typeof f.detail === 'string' ? f.detail : '',
-        grade_cost: f.grade_cost
+        detail: typeof f.detail === 'string' ? f.detail : ''
       };
     }) : [];
-    findings.sort(function (a, b) {
-      return (SEVERITY_ORDER[a.severity] === undefined ? 9 : SEVERITY_ORDER[a.severity]) -
-             (SEVERITY_ORDER[b.severity] === undefined ? 9 : SEVERITY_ORDER[b.severity]);
-    });
+    findings.sort(function (a, b) { return SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]; });
+    var ss = r.ai_style_signals && typeof r.ai_style_signals === 'object' ? r.ai_style_signals : null;
     return {
       features: r.features && typeof r.features === 'object' ? r.features : {},
       bands: r.bands && typeof r.bands === 'object' ? r.bands : {},
       findings: findings,
-      reference: r.reference && typeof r.reference === 'object' ? r.reference : null,
-      referenceName: typeof r.reference_name === 'string' ? r.reference_name : '',
       detectors: r.detectors && typeof r.detectors === 'object' ? r.detectors : {},
-      deviations: r.deviations && typeof r.deviations === 'object' ? r.deviations : {},
+      detectorRan: r.detector_ran === true,
+      detectorError: typeof r.detector_error === 'string' && r.detector_error ? r.detector_error : null,
       sentences: Array.isArray(r.sentences) ? r.sentences : [],
-      advisory: r.sentence_risk_is_advisory !== false,
-      /* the published model could not run: the reason, and no score anywhere */
-      detectorError: typeof r.detector_error === 'string' && r.detector_error
-        ? r.detector_error : null,
-      /* explanation, never evidence: is_a_detector is false on the wire and
-         there is deliberately no aggregate to read off these */
-      styleSignals: r.ai_style_signals && typeof r.ai_style_signals === 'object'
-        ? {
-            signals: r.ai_style_signals.signals && typeof r.ai_style_signals.signals === 'object'
-              ? r.ai_style_signals.signals : {},
-            sources: r.ai_style_signals.sources && typeof r.ai_style_signals.sources === 'object'
-              ? r.ai_style_signals.sources : {},
-            isDetector: r.ai_style_signals.is_a_detector === true,
-            note: typeof r.ai_style_signals.note === 'string' ? r.ai_style_signals.note : ''
-          }
-        : null,
-      mock: r.mock === true
+      signals: ss && ss.signals && typeof ss.signals === 'object' ? ss.signals : null
     };
   }
 
-  /* ══════════════════════════════════════════════════════════════════════
-     MOCK MODE (?mock=1, or the button on the error / offline state).
-
-     A reduced in-browser reimplementation of the Stage 0 extractor so the
-     whole interface can be exercised with the Python service down. It computes
-     real numbers from the real text using the same feature definitions; it is
-     abridged, it has no reference distribution and no trained detector, and
-     the UI says so in a persistent banner.
-     ══════════════════════════════════════════════════════════════════════ */
-
-  function mtldPass(tokens, threshold) {
-    var factors = 0, types = Object.create(null), tokenCount = 0, typeCount = 0, i;
-    for (i = 0; i < tokens.length; i++) {
-      tokenCount++;
-      if (!types[tokens[i]]) { types[tokens[i]] = 1; typeCount++; }
-      var ttr = typeCount / tokenCount;
-      if (ttr <= threshold) {
-        factors++; types = Object.create(null); tokenCount = 0; typeCount = 0;
-      }
-    }
-    if (tokenCount > 0) {
-      var last = typeCount / tokenCount;
-      factors += (1 - last) / (1 - threshold);
-    }
-    return factors > 0 ? tokens.length / factors : tokens.length;
-  }
-
-  function countPhrases(lower, table) {
-    var total = 0, hits = [];
-    Object.keys(table).forEach(function (p) {
-      var re;
-      try { re = new RegExp('\\b' + escapeRe(p).replace(/\\ /g, '\\s+').replace(/ /g, '\\s+') + '\\b', 'g'); }
-      catch (e) { return; }
-      var m = lower.match(re);
-      if (m) { total += table[p] * m.length; hits.push({ surface: p, weight: table[p], count: m.length }); }
-    });
-    return { weight: total, hits: hits };
-  }
-
-  function aiVocabHits(fragment) {
-    var lower = fragment.toLowerCase();
-    var hits = [];
-    var weight = 0;
-    words(fragment).forEach(function (w) {
-      if (AI_WORDS[w]) { hits.push({ surface: w, weight: AI_WORDS[w] }); weight += AI_WORDS[w]; }
-    });
-    var ph = countPhrases(lower, AI_PHRASES);
-    weight += ph.weight;
-    ph.hits.forEach(function (h) { hits.push({ surface: h.surface, weight: h.weight }); });
-    return { weight: weight, hits: hits };
-  }
-
-  function connectiveOpener(sentence) {
-    var head = sentence.toLowerCase().replace(/^[^a-z]+/, '');
-    for (var i = 0; i < FORMAL_CONNECTIVES.length; i++) {
-      var c = FORMAL_CONNECTIVES[i];
-      if (head.indexOf(c) === 0) return c;
-    }
-    return null;
-  }
-
-  var PASSIVE_RE = /\b(?:is|are|was|were|be|been|being|am)\s+(?:\w+ly\s+)?(?:\w+ed|born|known|shown|given|taken|seen|made|found|used|held|done|built|written|drawn|brought|thought)\b/g;
-  var NOMINAL_RE = /\b\w{5,}(?:tion|tions|sion|sions|ment|ments|ness|ity|ities|ance|ence|ancy|ency|ism|isms)\b/g;
-  /* possessive "today's" is not a contraction; only unambiguous suffixes,
-     plus pronoun + 's/'d, are counted */
-  var CONTRACTION_RE = /\b(?:\w+['\u2019](?:re|ve|ll|m|t)|(?:it|he|she|that|there|here|what|who|where|when|how|let|one|nobody|somebody)['\u2019](?:s|d))\b/gi;
-
-  function mockAnalyze(text) {
-    var paras = paragraphRanges(text);
-    var sentences = [];
-    paras.forEach(function (p, pi) {
-      var chunk = text.slice(p.from, p.to);
-      splitSentences(chunk).forEach(function (s) {
-        var rawSlice = chunk.slice(s.from, s.to);
-        var lead = rawSlice.length - rawSlice.replace(/^\s+/, '').length;
-        var body = rawSlice.trim();
-        if (!body) return;
-        sentences.push({
-          index: sentences.length,
-          text: body,
-          paragraph_index: pi,
-          length: words(body).length
-        });
-      });
-    });
-
-    var allWords = words(text);
-    var n = allWords.length;
-    var per1k = function (count) { return n ? (count / n) * 1000 : null; };
-    var lengths = sentences.map(function (s) { return s.length; });
-
-    var mean = lengths.length ? lengths.reduce(function (a, b) { return a + b; }, 0) / lengths.length : null;
-    var sd = null, cv = null, lag1 = null;
-    if (lengths.length > 1 && mean) {
-      var variance = lengths.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / (lengths.length - 1);
-      sd = Math.sqrt(variance);
-      cv = sd / mean;
-      var numr = 0, den = 0;
-      for (var i = 0; i < lengths.length; i++) {
-        den += (lengths[i] - mean) * (lengths[i] - mean);
-        if (i < lengths.length - 1) numr += (lengths[i] - mean) * (lengths[i + 1] - mean);
-      }
-      lag1 = den ? numr / den : null;
-    }
-
-    var paraWordCounts = paras.map(function (p) { return words(text.slice(p.from, p.to)).length; })
-      .filter(function (c) { return c > 0; });
-    var paraCv = null;
-    if (paraWordCounts.length > 1) {
-      var pm = paraWordCounts.reduce(function (a, b) { return a + b; }, 0) / paraWordCounts.length;
-      var pv = paraWordCounts.reduce(function (a, b) { return a + (b - pm) * (b - pm); }, 0) / (paraWordCounts.length - 1);
-      paraCv = pm ? Math.sqrt(pv) / pm : null;
-    }
-
-    var ai = aiVocabHits(text);
-    var lower = text.toLowerCase();
-    var connectiveCount = 0;
-    FORMAL_CONNECTIVES.forEach(function (c) {
-      var re;
-      try { re = new RegExp('\\b' + escapeRe(c).replace(/ /g, '\\s+') + '\\b', 'g'); } catch (e) { return; }
-      var m = lower.match(re);
-      if (m) connectiveCount += m.length;
-    });
-
-    var passives = (text.match(PASSIVE_RE) || []).length;
-    var nominals = (lower.match(NOMINAL_RE) || []).length;
-    var contractions = (text.match(CONTRACTION_RE) || []).length;
-    var commas = (text.match(/,/g) || []).length;
-    var openerFormal = 0, seenPara = {};
-    sentences.forEach(function (s) {
-      if (seenPara[s.paragraph_index]) return;
-      seenPara[s.paragraph_index] = 1;
-      if (connectiveOpener(s.text)) openerFormal++;
-    });
-    var coordinatorOpeners = sentences.filter(function (s) {
-      return /^(and|but|so)\b/i.test(s.text.replace(/^[^A-Za-z]+/, ''));
-    }).length;
-
-    var features = {
-      n_words: n,
-      n_sentences: sentences.length,
-      n_paragraphs: paras.length,
-      sent_len_mean: mean,
-      sent_len_sd: sd,
-      sent_len_cv: cv,
-      sent_lag1_autocorr: lag1,
-      sent_short_share: lengths.length ? lengths.filter(function (l) { return l < 10; }).length / lengths.length : null,
-      sent_long_share: lengths.length ? lengths.filter(function (l) { return l > 30; }).length / lengths.length : null,
-      para_words_cv: paraCv,
-      ai_vocab_weighted_per_1k: per1k(ai.weight),
-      formal_connective_per_1k: per1k(connectiveCount),
-      nominalization_per_1k: per1k(nominals),
-      passive_per_1k: per1k(passives),
-      comma_per_1k: per1k(commas),
-      contraction_per_1k: per1k(contractions),
-      mtld: allWords.length >= 20
-        ? (mtldPass(allWords, 0.72) + mtldPass(allWords.slice().reverse(), 0.72)) / 2
-        : null,
-      para_opener_formal_share: paras.length ? openerFormal / paras.length : null,
-      sent_initial_coordinator_share: sentences.length ? coordinatorOpeners / sentences.length : null
-    };
-
-    var bands = {};
-    FEATURES.forEach(function (spec) {
-      if (!spec.band) return;
-      bands[spec.key] = bandState(spec, features[spec.key], null);
-    });
-
-    /* findings mirror the Python report module: same codes, same grade_cost
-       strings, abridged thresholds. */
-    var findings = [];
-    var aiV = features.ai_vocab_weighted_per_1k || 0;
-    if (aiV > 8) findings.push({
-      code: 'ai_vocabulary', severity: aiV > 20 ? 'high' : 'medium',
-      message: 'AI vocabulary density is ' + aiV.toFixed(1) + ' per 1,000 words.',
-      detail: 'Highest-effect lexical signal in the catalog and it survives paraphrasing. Removing it also removes the red highlights a human grader sees.',
-      grade_cost: 'none, slightly positive'
-    });
-    var fc = features.formal_connective_per_1k || 0;
-    if (fc > 8) findings.push({
-      code: 'formal_connectives', severity: fc > 15 ? 'high' : 'medium',
-      message: 'Formal connectives run ' + fc.toFixed(1) + ' per 1,000 words.',
-      detail: 'Stripping these is the single best joint move: high detector benefit, and it raises the grade because top-band coherence "attracts no attention".',
-      grade_cost: 'negative, it raises the grade'
-    });
-    if (num(features.para_opener_formal_share) !== null && features.para_opener_formal_share > 0.04) findings.push({
-      code: 'paragraph_openers', severity: 'medium',
-      message: Math.round(features.para_opener_formal_share * 100) + '% of paragraphs open with a formal connective.',
-      detail: 'Human academic prose runs at most 3-4%.',
-      grade_cost: 'none'
-    });
-    if (bands.sent_len_cv === 'low') findings.push({
-      code: 'uniform_sentences', severity: 'high',
-      message: 'Sentence-length CV is ' + fmt(cv) + ', below the human band.',
-      detail: 'Human academic prose runs 0.42-0.60. Widen the tails rather than the middle: target 9-14% of sentences under 10 words and 18-28% over 30.',
-      grade_cost: 'none, rubrics reward sentence variety'
-    });
-    else if (bands.sent_len_cv === 'high') findings.push({
-      code: 'overshot_variance', severity: 'medium',
-      message: 'Sentence-length CV is ' + fmt(cv) + ', above the human band.',
-      detail: 'Overshooting is as anomalous as undershooting. A CV of 0.85 sits as far outside the human distribution as 0.30.',
-      grade_cost: 'none'
-    });
-    if (bands.sent_lag1_autocorr === 'low') findings.push({
-      code: 'alternating_sentences', severity: 'medium',
-      message: 'Sentence lengths alternate long and short (lag-1 autocorrelation ' + fmt(lag1) + ').',
-      detail: 'Humans do not alternate; their lag-1 sits near zero and the real structure is long-range. This is the signature of a naive burstiness rule.',
-      grade_cost: 'none'
-    });
-    if (num(paraCv) !== null && paraCv < 0.35) findings.push({
-      code: 'uniform_paragraphs', severity: 'medium',
-      message: 'Paragraph lengths are uniform (CV ' + fmt(paraCv) + ').',
-      detail: 'Human paragraph CV runs 0.42-0.71, above the sentence CV in every genre.',
-      grade_cost: 'none'
-    });
-    if ((features.contraction_per_1k || 0) > 1.4) findings.push({
-      code: 'contractions_in_academic', severity: 'medium',
-      message: 'Contractions run ' + fmt(features.contraction_per_1k) + ' per 1,000 words.',
-      detail: 'Research articles sit under 1.4. Contractions help evade detection but cost grade under genre conventions, so they are a "never in body" edit for academic targets.',
-      grade_cost: 'medium if added'
-    });
-    var opinion = (lower.match(/\bi (?:think|feel|believe)\b|\bin my opinion\b/g) || []).length;
-    if (opinion) findings.push({
-      code: 'opinion_markers', severity: 'high',
-      message: 'Found ' + opinion + ' bare opinion ' + plural(opinion, 'marker') + ' such as "I think".',
-      detail: 'First person for argumentative acts ("I argue") is fine and endorsed by style guides. Bare opinion reads as an unsupported position and is a "never" edit.',
-      grade_cost: 'high'
-    });
-    if (num(features.nominalization_per_1k) !== null && features.nominalization_per_1k < 40) findings.push({
-      code: 'low_nominalization', severity: 'low',
-      message: 'Nominalization is ' + fmt(features.nominalization_per_1k, 1) + ' per 1,000 words.',
-      detail: 'Academic sub-registers run 61-72. Better essays are MORE nominalized, not less, so do not reduce this to sound human.',
-      grade_cost: 'high if reduced further'
-    });
-    if (num(features.sent_initial_coordinator_share) !== null && features.sent_initial_coordinator_share > 0.05) findings.push({
-      code: 'sentence_initial_coordinators', severity: 'low',
-      message: Math.round(features.sent_initial_coordinator_share * 100) + '% of sentences open with And/But/So.',
-      detail: 'This falls from 5.1% to 2.3% between a weak and a strong essay, so heavy use reads as a lower grade band.',
-      grade_cost: 'low to medium'
-    });
-
-    /* per-sentence advisory risk: the document composite, nudged by the named
-       patterns actually present in that sentence */
-    var docRisk = compositeRisk(features);
-    var base = docRisk === null ? 0.4 : docRisk;
-    var outSentences = sentences.map(function (s) {
-      var local = 0;
-      var hits = aiVocabHits(s.text);
-      local += clamp(hits.weight / 30, 0, 0.22);
-      if (connectiveOpener(s.text)) local += 0.12;
-      if ((s.text.match(/,/g) || []).length >= 3 && /\band\b/.test(s.text.toLowerCase())) local += 0.06;
-      if (mean !== null && Math.abs(s.length - mean) < 2.5) local += 0.06;
-      if (/\d/.test(s.text)) local -= 0.10;
-      if (/\b[A-Z][a-z]+\s+(?:and|&)?\s*[A-Z][a-z]+\b/.test(s.text)) local -= 0.04;
-      return {
-        index: s.index, text: s.text, paragraph_index: s.paragraph_index,
-        length: s.length, risk: clamp(0.12 + 0.60 * base + local, 0.02, 0.98)
-      };
-    });
-
-    return {
-      features: features,
-      bands: bands,
-      findings: findings,
-      /* no reference distribution exists in the browser, so none is invented */
-      reference: null,
-      reference_name: '',
-      detectors: docRisk === null ? {} : {
-        'mock-heuristic': {
-          ai_probability: docRisk,
-          label: docRisk > 0.65 ? 'ai' : docRisk < 0.35 ? 'human' : 'mixed',
-          confidence: n < 300 ? 'uncertain' : 'moderate'
-        }
-      },
-      deviations: {},
-      sentences: outSentences,
-      sentence_risk_is_advisory: true,
-      mock: true
-    };
-  }
-
-  /* ══════════════════════════════════════════════════════════════════════
-     STATE
-     ══════════════════════════════════════════════════════════════════════ */
+  /* ── state ───────────────────────────────────────────────────────────── */
 
   var state = {
     text: '',
-    analyzedText: '',
-    analysis: null,      /* normalized response */
-    detectors: null,     /* POST /api/detect result */
-    heatSource: 'advisory',  /* 'advisory' | 'perplexity' */
-    humanize: null,          /* the last /api/humanize response */
-    preHumanize: null,       /* the draft as it was before, for undo */
-    humanizeAvailable: null, /* null = unknown, false = endpoint absent */
-    located: [],         /* sentences with document offsets */
-    selected: null,      /* sentence index */
-    reference: '',
-    referencesLoaded: false,
-    mock: PARAMS.get('mock') === '1',
-    status: 'idle',
+    analysis: null,
+    located: [],
+    reading: null,        /* GPTZero's last reading of the text: {p, label, derived, text} */
+    readingError: null,
+    view: 'reading',      /* 'reading' | 'run': what the verdict block shows */
+    humanize: null,       /* the last rewrite result; shown in the after pane */
+    afterLocated: [],     /* the rewrite's sentences with risk, for shading */
+    afterToken: 0,
+    preHumanize: null,    /* the draft as it was before Use this, for undo */
+    yardstick: null,      /* null = the service has not said; 'gptzero' or a local model name */
     requestToken: 0,
-    openMeasure: null    /* which measurement row has its plain reading open */
+    openMeasure: null
   };
 
   var editor, scroller, statusLine, errorBox;
-  /* set while the canvas is being rebuilt, so the programmatic selection
-     restore does not re-enter selectSentence through selectionchange */
   var rendering = false;
 
-  /* ── editor plumbing ─────────────────────────────────────────────────────
-     The document model is the plain text plus the sentence ranges. The DOM is
-     a rendering of it, rebuilt only when an analysis lands, with the full
-     selection (anchor AND focus, not just a collapsed caret) restored by
-     character offset and the scroll position preserved. */
+  /* ── editor plumbing ─────────────────────────────────────────────────── */
 
   function getText() {
     var t = editor.innerText || '';
     return t.replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n');
   }
 
-  /* offsets are measured over the concatenated text nodes of the editor, and
-     read back the same way, so the round trip is self-consistent even though
-     paragraph breaks are element boundaries rather than characters */
   function nodeOffset(container, offset) {
     var walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
     var acc = 0, node;
     if (container === editor) {
-      /* selection anchored on the element itself: count the text in the
-         children that precede the given child index */
       var i = 0;
       while ((node = walker.nextNode())) {
         if (i >= offset) break;
@@ -1009,16 +388,66 @@
       var sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(r);
-    } catch (e) { /* selection restore is best-effort */ }
+    } catch (e) { /* best effort */ }
   }
 
   function riskTier(risk) {
     var r = num(risk);
-    if (r === null) return { cls: 'risk-0', confidence: 'none', tier: null };
-    var tier = Math.min(5, Math.floor(r * 6));
-    /* uncertainty is its own state, never a mid-ramp fill */
-    var lowConfidence = Math.abs(r - 0.5) < 0.15;
-    return { cls: 'risk-' + tier, confidence: lowConfidence ? 'low' : 'high', tier: tier };
+    if (r === null) return '';
+    return 'risk-' + Math.min(5, Math.floor(r * 6));
+  }
+
+  function hasRisk() {
+    return state.located.some(function (s) { return num(s.risk) !== null; });
+  }
+
+  /* paragraphs with each located sentence wrapped and shaded by risk; used
+     for the draft on the left and the rewrite on the right */
+  function paintParagraphs(host, text, located) {
+    clear(host);
+    paragraphRanges(text).forEach(function (p) {
+      var para = el('p');
+      var pos = p.from;
+      located.forEach(function (s) {
+        if (s.from < p.from || s.from >= p.to) return;
+        if (s.from > pos) para.appendChild(document.createTextNode(text.slice(pos, s.from)));
+        var end = Math.min(s.to, p.to);
+        var tier = riskTier(s.risk);
+        var span = el('span', 'sent' + (tier ? ' ' + tier : ''), text.slice(s.from, end));
+        span.setAttribute('data-index', String(s.index));
+        if (tier) span.title = 'Estimated sentence risk ' + fmt(s.risk);
+        para.appendChild(span);
+        pos = end;
+      });
+      if (pos < p.to) para.appendChild(document.createTextNode(text.slice(pos, p.to)));
+      if (!para.childNodes.length) para.appendChild(el('br'));
+      host.appendChild(para);
+    });
+    if (!host.childNodes.length) host.appendChild(el('p', null, ''));
+  }
+
+  /* the after pane: the rewrite, read only, shaded once its sentences are scored */
+  function renderAfter() {
+    var host = $('after');
+    var h = state.humanize;
+    clear(host);
+    $('after-empty').hidden = !!h;
+    if (h) paintParagraphs(host, h.text, state.afterLocated);
+    var afterRisk = state.afterLocated.some(function (s) { return num(s.risk) !== null; });
+    if (afterRisk) $('legend').hidden = false;
+    refreshAfterActions();
+    emit('humanizer:canvas');
+  }
+
+  function rewriteInUse() {
+    var h = state.humanize;
+    return !!h && state.text.trim() === h.text.trim();
+  }
+
+  function refreshAfterActions() {
+    var h = state.humanize;
+    $('copy-btn').disabled = !h;
+    $('use-btn').disabled = !h || h.unchanged || rewriteInUse() || !!activeRun;
   }
 
   function renderCanvas() {
@@ -1029,540 +458,190 @@
     var wasFocused = document.activeElement === editor;
 
     rendering = true;
-    clear(editor);
-
-    paragraphRanges(text).forEach(function (p) {
-      var para = el('p');
-      var pos = p.from;
-      located.forEach(function (s) {
-        if (!s || s.from < p.from || s.from >= p.to) return;
-        if (s.from > pos) para.appendChild(document.createTextNode(text.slice(pos, s.from)));
-        var end = Math.min(s.to, p.to);
-        var heat = heatValue(s);
-        var perplexityMode = state.heatSource === 'perplexity' && state.overlay && state.overlay.ok;
-        var tier = riskTier(heat);
-        var span = el('span', 'sent ' + tier.cls, text.slice(s.from, end));
-        span.setAttribute('data-index', String(s.index));
-        span.setAttribute('data-confidence', tier.confidence);
-        span.title = heat === null
-          ? 'no score returned for this sentence'
-          : perplexityMode
-            ? 'GPT-2 perplexity signal ' + fmt(heat) + ' of 1.00, the classic signal, not evidence'
-            : 'sentence risk ' + fmt(heat) + ' of 1.00. Click for the named patterns behind it';
-        if (state.selected === s.index) span.setAttribute('aria-current', 'true');
-        para.appendChild(span);
-        pos = end;
-      });
-      if (pos < p.to) para.appendChild(document.createTextNode(text.slice(pos, p.to)));
-      if (!para.childNodes.length) para.appendChild(el('br'));
-      editor.appendChild(para);
-    });
-    if (!editor.childNodes.length) editor.appendChild(el('p', null, ''));
+    paintParagraphs(editor, text, located);
+    editor.setAttribute('data-empty', text.trim() ? '0' : '1');
 
     scroller.scrollTop = scroll;
     if (wasFocused) restoreSelection(saved);
-    /* selectionchange is async in some engines, so the guard is lifted on the
-       next tick rather than immediately */
     setTimeout(function () { rendering = false; }, 0);
 
     $('empty-state').hidden = !!text.trim();
+    $('legend').hidden = !hasRisk();
     emit('humanizer:canvas');
   }
 
   function setText(text) {
     state.text = text;
     state.located = [];
-    state.selected = null;
     renderCanvas();
     renderCounts();
-    /* setText fires no input event, so anything keyed off the text has to be
-       refreshed here as well as in the input handler */
     refreshHumanizeButton();
   }
 
   function renderCounts() {
-    var wordCount = words(state.text).length;
-    var sentCount = state.located.length;
     var node = $('doc-counts');
-    if (!state.text.trim()) { node.textContent = 'Nothing yet.'; return; }
-    var parts = [wordCount + ' ' + plural(wordCount, 'word')];
-    if (sentCount) parts.push(sentCount + ' ' + plural(sentCount, 'sentence'));
-    parts.push(wordCount < 300
-      ? 'under 300 words, so every shape measure below is noisy'
-      : 'long enough for the shape measures to settle');
-    node.textContent = parts.join(' \u00b7 ');
+    if (!state.text.trim()) { node.textContent = ''; return; }
+    var w = words(state.text).length;
+    var s = state.located.length;
+    var t = w + ' ' + plural(w, 'word');
+    if (s) t += ', ' + s + ' ' + plural(s, 'sentence');
+    node.textContent = t;
   }
 
-  /* ══════════════════════════════════════════════════════════════════════
-     THE HERO READOUT
-
-     One number leads: how likely this reads as AI written. The quality score
-     sits beside it as a secondary readout rather than a second dial, because
-     risk shown alone pushes people toward worse writing, and that trade is
-     the whole point of the product.
-     ══════════════════════════════════════════════════════════════════════ */
-
-  function pickDetector(detectors) {
-    var best = null;
-    Object.keys(detectors || {}).forEach(function (name) {
-      var d = detectors[name];
-      if (!d || typeof d !== 'object' || d.error) return;
-      var p = num(d.ai_probability);
-      if (p === null) return;
-      if (!best || p > best.p) {
-        best = {
-          name: name, p: p, label: d.label, confidence: d.confidence,
-          /* the checkpoint the service actually ran, so the caption names it
-             instead of asserting something this file made up */
-          model: typeof d.model === 'string' && d.model ? d.model : '',
-          /* three states, not two: true, explicitly false, and "the service
-             did not say", which must not be reported as either */
-          published: d.is_published_detector === true ? true
-                   : d.is_published_detector === false ? false : null
-        };
+  function jumpToSentence(index) {
+    Array.prototype.forEach.call(editor.querySelectorAll('.sent'), function (node) {
+      if (Number(node.getAttribute('data-index')) !== index) return;
+      if (node.scrollIntoView) {
+        node.scrollIntoView({ block: 'center', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
       }
-    });
-    return best;
-  }
-
-  function bandOf(p) {
-    if (p === null) return 'none';
-    return p > 0.66 ? 'alert' : p > 0.33 ? 'caution' : 'calm';
-  }
-
-  var heroTween = null, heroSettle = null;
-
-  function setHeroNumber(node, target, suffix) {
-    if (heroTween) { cancelAnimationFrame(heroTween); heroTween = null; }
-    if (heroSettle) { clearTimeout(heroSettle); heroSettle = null; }
-    if (target === null) { node.textContent = 'n/a'; return; }
-    var settled = Math.round(target) + (suffix || '');
-    if (reduceMotion.matches) { node.textContent = settled; return; }
-
-    var from = parseFloat(node.textContent);
-    if (!isFinite(from)) from = 0;
-
-    var hook = window.__hzAnim && window.__hzAnim.countTo;
-    if (hook) {
-      try {
-        hook(node, from, target, suffix || '');
-        heroSettle = setTimeout(function () { node.textContent = settled; }, 500);
-        return;
-      } catch (e) { /* fall through */ }
-    }
-    var t0 = performance.now();
-    var step = function (now) {
-      var k = clamp((now - t0) / 400, 0, 1);
-      var eased = 1 - Math.pow(1 - k, 3);
-      node.textContent = Math.round(from + (target - from) * eased) + (suffix || '');
-      if (k < 1) heroTween = requestAnimationFrame(step); else heroTween = null;
-    };
-    heroTween = requestAnimationFrame(step);
-    heroSettle = setTimeout(function () {
-      if (heroTween) { cancelAnimationFrame(heroTween); heroTween = null; }
-      node.textContent = settled;
-    }, 460);
-  }
-
-  function renderHero() {
-    var a = state.analysis;
-    var value = $('hero-value');
-    var engine = $('hero-engine');
-    var qual = $('quality-value');
-
-    if (!a) {
-      setHeroNumber(value, null);
-      value.setAttribute('data-band', 'none');
-      value.removeAttribute('aria-label');
-      engine.textContent = 'No measurement yet.';
-      qual.textContent = 'n/a';
-      $('quality-breakdown').textContent = '';
-      renderReferenceLine(null);
-      return { risk: null, quality: null };
-    }
-
-    var det = pickDetector(a.detectors);
-    /* Mock mode computes its own labelled number. The live service does not:
-       if no published detector answered there is no score, and the old
-       fall back to a locally computed composite would be exactly the invented
-       arithmetic this project removed. */
-    var p = det ? det.p : (state.mock ? compositeRisk(a.features) : null);
-
-    setHeroNumber(value, p === null ? null : p * 100, '%');
-    value.setAttribute('data-band', bandOf(p));
-    value.setAttribute('aria-label', p === null
-      ? 'No AI likelihood could be measured'
-      : Math.round(p * 100) + ' per cent likely to read as AI written');
-
-    /* name the engine, and say what it is not */
-    if (state.mock) {
-      engine.textContent = 'Engine: a reduced in browser reimplementation. Mock mode, not the service.';
-    } else if (det) {
-      engine.textContent = 'Engine: ' + (det.model || det.name) +
-        (det.published === true ? ', a published pretrained checkpoint the service runs'
-         : det.published === false ? ', whose scoring was written in this project and fitted to nothing'
-         : '') +
-        '. Not GPTZero, Turnitin or Pangram, and not calibrated against them.' +
-        (det.label ? ' It calls this draft "' + det.label + '".' : '');
-    } else if (a.detectorError) {
-      engine.textContent = 'No score. The published detector could not run: ' + a.detectorError +
-        ' This project writes no detection arithmetic of its own, so there is no substitute ' +
-        'number to show. Everything else on this page still measured.';
-    } else {
-      engine.textContent = 'No detector answered this draft, so there is no likelihood to report. ' +
-        'The measurements and the style signals below still hold.';
-    }
-
-    var q = qualityScore(a.features, a.findings);
-    qual.textContent = Math.round(q.score);
-    $('quality-breakdown').textContent = q.breakdown;
-
-    renderReferenceLine(a);
-    return { risk: p === null ? null : p * 100, quality: q.score };
-  }
-
-  /* the service reports reference_name as whatever it was given — sometimes a
-     bare name, sometimes the path of the JSON it was started with */
-  function prettyReference(name) {
-    if (!name) return '';
-    return String(name).replace(/^.*\//, '').replace(/\.json$/i, '');
-  }
-
-  function renderReferenceLine(a) {
-    var line = $('reference-line');
-    var text;
-    if (state.mock) {
-      text = 'Mock mode holds no reference corpus, so there is no distance to report. ' +
-             'Only the bands below are in play. ';
-    } else if (a && a.reference) {
-      var used = prettyReference(a.referenceName) || state.reference || 'the service default';
-      line.title = a.referenceName ? 'reference_name: ' + a.referenceName : '';
-      text = 'Measured against "' + used + '": Mahalanobis distance ' + fmt(a.reference.distance, 1) +
-        ', which puts this draft at the ' + fmt(a.reference.percentile, 0) +
-        'th percentile of that human corpus, meaning ' + fmt(a.reference.percentile, 0) +
-        '% of the human documents in it look less unusual than yours. ' +
-        (num(a.reference.n_features) === null ? '' :
-          'Computed over ' + a.reference.n_features + ' features at ' +
-          Math.round((num(a.reference.coverage) || 0) * 100) + '% coverage. ');
-    } else if (a) {
-      text = state.reference
-        ? 'Reference "' + state.reference + '" was selected, but the service returned no distance. '
-        : 'No reference distribution came back with this analysis, so the bands below are all there is. ';
-    } else {
-      text = 'No analysis yet. ';
-    }
-    /* the "?" button is the last child and must survive the update */
-    if (line.firstChild && line.firstChild.nodeType === 3) line.firstChild.nodeValue = text;
-    else line.insertBefore(document.createTextNode(text), line.firstChild);
-  }
-
-  /* ══════════════════════════════════════════════════════════════════════
-     DETECTOR ENSEMBLE — POST /api/detect
-
-     The dial shows one number. This panel shows every detector the service
-     ran, including the ones that failed to load and the one that has been
-     measured and does not work on this genre. The service's own disclaimer is
-     printed verbatim above the list, because it is more honest than anything
-     this front end could write.
-     ══════════════════════════════════════════════════════════════════════ */
-
-  /* What the service reports about each published checkpoint, restated
-     plainly. Every figure here is the service’s own measurement on its
-     28-paragraph set, and the false positive count sits beside the separation
-     score in every single row on purpose: ranking well and accusing people are
-     different things, and a checkpoint was rejected from this project for
-     scoring 0.959 pairwise while calling 13 of 14 real human academic
-     paragraphs AI. */
-  var DETECTOR_NOTES = {
-    modern: 'desklib/ai-text-detector-v1.01, an open fine-tuned DeBERTa-v3-large with 435M ' +
-            'parameters, trained on the RAID corpus, which it led. Same architectural class ' +
-            'GPTZero uses today, and that is the whole of the resemblance. On this repo’s own ' +
-            '28 paragraph set: 1.000 pairwise separation, 1 of 14 genuine human academic ' +
-            'paragraphs called AI.',
-    fakespot: 'A published checkpoint, same wrapper as the default with different weights. ' +
-              '1.000 pairwise separation here, but 3 of 14 genuine human academic paragraphs ' +
-              'called AI, three times the default’s false positive rate.',
-    academic: 'roberta-academic-detector, a published checkpoint aimed at academic prose. ' +
-              '0.980 pairwise separation here with 1 of 14 human paragraphs called AI.',
-    fast: 'e5-small-lora, 33M parameters, published. It is the fastest engine here and the ' +
-          'least safe to act on: 0.944 pairwise separation but 8 of 14 genuine human academic ' +
-          'paragraphs called AI. Ranking well and accusing people are different things.',
-    radar: 'The only engine here trained adversarially against a paraphraser, which is the ' +
-           'attack this product is closest to. 0.867 pairwise separation with 1 of 14 human ' +
-           'paragraphs called AI, but it missed half the AI paragraphs.',
-    perplexity: 'GPTZero’s ORIGINAL January-2023 published method: per-sentence GPT-2 perplexity ' +
-                'plus burstiness. GPT-2 is published; the mapping from its perplexities to a ' +
-                'probability was written in this project and fitted to nothing, so it reports ' +
-                'is_published_detector false and is excluded from every default. 0.740 pairwise ' +
-                'here with 13 of 14 genuine human paragraphs called AI. Do not act on this number.',
-    classifier: 'OpenAI’s 2019 RoBERTa GPT-2 output detector, published but measured below ' +
-                'chance here at 0.444 pairwise. It was trained to recognise GPT-2, a model ' +
-                'generation that no longer resembles what students use, and OpenAI withdrew its ' +
-                'own detector in 2023 for low accuracy.',
-    ensemble: 'A combination of the members above. It inherits every weakness they have; ' +
-              'combining uncalibrated scores does not calibrate them.'
-  };
-
-  /* members that must never be presented as authoritative, each for its own
-     measured reason */
-  var UNRELIABLE = {
-    perplexity: 'Not a published detector. The probability mapping was written in this project ' +
-                'and fitted to nothing, and it called 13 of 14 genuine human academic paragraphs ' +
-                'AI. Treat this number as decoration, not evidence.',
-    fast: 'It called 8 of 14 genuine human academic paragraphs AI. A false positive here is a ' +
-          'student accused of cheating, so this row is reported and not used.',
-    classifier: 'Measured at 0.444 pairwise separation on this repo’s own corpus, where 0.5 is ' +
-                'a coin flip. That is below chance. Treat this number as decoration.'
-  };
-
-  /* ── the per-sentence overlay ────────────────────────────────────────────
-     Only the perplexity detector returns real per-sentence values; the other
-     two return an empty array. The detector agent routed segmentation through
-     the same Document.parse the analyze endpoint uses, so index i lines up
-     with sentence i — but an overlay that silently mis-highlights is worse
-     than no overlay, so the alignment is checked rather than trusted:
-       · the score array must be the same length as the analyzer's sentences,
-       · and the detector's own sentence texts must match the analyzer's.
-     If either check fails the canvas falls back to advisory risk and says so. */
-
-  function perplexityDetector() {
-    var d = state.detectors;
-    if (!d || d.error || !d.detectors) return null;
-    for (var i = 0; i < d.detectors.length; i++) {
-      if (d.detectors[i] && d.detectors[i].name === 'perplexity') return d.detectors[i];
-    }
-    return null;
-  }
-
-  function normText(t) { return String(t || '').trim().replace(/\s+/g, ' '); }
-
-  /* → { ok, scores, reason } */
-  function perplexityOverlay() {
-    var a = state.analysis;
-    if (!a) return { ok: false, reason: 'nothing has been analyzed yet' };
-    if (state.mock) return { ok: false, reason: 'mock mode does not run the detector ensemble' };
-
-    var d = state.detectors;
-    if (!d) return { ok: false, reason: 'the detector ensemble has not answered yet' };
-    if (d.error) return { ok: false, reason: 'the detector request failed' };
-
-    var det = perplexityDetector();
-    if (!det) return { ok: false, reason: 'the service ran no perplexity detector' };
-    if (!det.available) return { ok: false, reason: 'the perplexity detector did not load' };
-
-    var scores = det.sentence_scores;
-    if (!Array.isArray(scores) || !scores.length) {
-      return { ok: false, reason: 'the perplexity detector returned no per-sentence scores' };
-    }
-
-    var mine = a.sentences || [];
-    if (scores.length !== mine.length) {
-      return { ok: false, reason: 'the two endpoints disagree on the sentence count (' +
-        scores.length + ' scores against ' + mine.length + ' sentences), so nothing is shaded' };
-    }
-
-    /* the texts must line up too, not just the counts */
-    var theirs = d.sentences || [];
-    if (theirs.length === mine.length) {
-      for (var i = 0; i < mine.length; i++) {
-        if (normText(theirs[i]) !== normText(mine[i] && mine[i].text)) {
-          return { ok: false, reason: 'the two endpoints segmented sentence ' + (i + 1) +
-            ' differently, so nothing is shaded' };
-        }
-      }
-    }
-    return { ok: true, scores: scores, detector: det };
-  }
-
-  /* the score that actually shades a sentence, honouring the picker */
-  function heatValue(sentence) {
-    if (state.heatSource === 'perplexity') {
-      var ov = state.overlay;
-      if (ov && ov.ok) {
-        var v = num(ov.scores[sentence.index]);
-        if (v !== null) return v;
-      }
-      return null;
-    }
-    return num(sentence.risk);
-  }
-
-  function refreshOverlay() {
-    state.overlay = perplexityOverlay();
-    var note = $('heat-note');
-    var pbtn = $('heat-perplexity');
-    var legend = $('legend-label');
-
-    var have = state.overlay && state.overlay.ok;
-    pbtn.disabled = !have;
-    pbtn.title = have
-      ? 'Shade the canvas with the per-sentence GPT-2 perplexity signal'
-      : 'Unavailable: ' + (state.overlay ? state.overlay.reason : 'no data');
-
-    if (state.heatSource === 'perplexity' && !have) {
-      /* never mis-highlight: drop back rather than draw the wrong thing */
-      note.setAttribute('data-state', 'fallback');
-      note.textContent = 'Falling back to advisory risk, because ' +
-        (state.overlay ? state.overlay.reason : 'no per-sentence data') + '.';
-      legend.textContent = 'Sentence risk';
-    } else if (state.heatSource === 'perplexity') {
-      note.setAttribute('data-state', 'ok');
-      note.textContent = 'Per sentence GPT-2 perplexity, the classic signal, not evidence. ' +
-        'It carries the same calibration problem as the document score above it.';
-      legend.textContent = 'Perplexity signal';
-    } else {
-      note.setAttribute('data-state', 'ok');
-      note.textContent = 'Advisory per-sentence risk from the analyzer.';
-      legend.textContent = 'Sentence risk';
-    }
-
-    $('heat-advisory').setAttribute('aria-pressed', state.heatSource === 'advisory' ? 'true' : 'false');
-    pbtn.setAttribute('aria-pressed', state.heatSource === 'perplexity' ? 'true' : 'false');
-  }
-
-  function setHeatSource(which) {
-    state.heatSource = which;
-    refreshOverlay();
-    renderCanvas();
-    renderFlagged();
-    renderInspector();
-  }
-
-  /* ══════════════════════════════════════════════════════════════════════
-     THE ENGINE PANEL, one engine only.
-
-     The three row ensemble is gone on purpose. The heuristic and classifier
-     rows told the reader nothing they could act on, and the perplexity row
-     invited trust in a number the service itself says is barely better than a
-     coin flip on academic prose. What survives is the engine behind the hero
-     number, plus the perplexity overlay offer, which is the only part of the
-     ensemble that produces genuine per sentence data.
-     ══════════════════════════════════════════════════════════════════════ */
-
-  function renderDetectors() {
-    var host = $('engine-detail');
-    if (!host) return;
-    clear(host);
-
-    var box = $('overlay-toggle');
-    var ov = state.overlay;
-    var can = !!(ov && ov.ok);
-    if (box) {
-      box.hidden = !can && state.heatSource !== 'perplexity';
-      $('heat-perplexity').hidden = state.heatSource === 'perplexity';
-      $('heat-advisory').hidden = state.heatSource !== 'perplexity';
-    }
-
-    if (state.mock) {
-      host.appendChild(el('p', 'muted',
-        'Mock mode runs no detectors. The number above is computed in your browser from the ' +
-        'features on this page, using matching feature definitions and abridged thresholds.'));
-      return;
-    }
-
-    var a = state.analysis;
-    var det = a ? pickDetector(a.detectors) : null;
-    if (!det) {
-      if (a && a.detectorError) {
-        var bad = el('article', 'detector');
-        bad.setAttribute('data-available', 'false');
-        var badTop = el('div', 'detector-top');
-        badTop.appendChild(el('span', 'detector-name', 'no detector ran'));
-        badTop.appendChild(el('span', 'detector-p', 'n/a'));
-        bad.appendChild(badTop);
-        bad.appendChild(el('code', 'detector-err', a.detectorError));
-        bad.appendChild(el('p', 'detector-note',
-          'The published checkpoint could not load, so there is no likelihood on this page. ' +
-          'This project writes no detection arithmetic of its own, so the honest answer is no ' +
-          'number rather than a substitute one. The measurements, the findings and the style ' +
-          'signals below were all computed without it.'));
-        host.appendChild(bad);
-        return;
-      }
-      host.appendChild(el('p', 'muted', 'No analysis yet.'));
-      return;
-    }
-
-    var card = el('article', 'detector');
-    card.setAttribute('data-available', 'true');
-
-    var top = el('div', 'detector-top');
-    var nameWrap = el('span');
-    nameWrap.appendChild(el('span', 'detector-name', det.name));
-    if (det.label) {
-      var tag = el('span', 'detector-tag', det.label);
-      tag.setAttribute('data-label', String(det.label));
-      nameWrap.appendChild(tag);
-    }
-    top.appendChild(nameWrap);
-    top.appendChild(el('span', 'detector-p', Math.round(det.p * 100) + '%'));
-    card.appendChild(top);
-
-    var bar = el('div', 'detector-bar');
-    var fill = el('i');
-    fill.style.width = clamp(det.p * 100, 0, 100) + '%';
-    fill.style.background = det.p > 0.66 ? 'var(--risk-alert-txt)'
-      : det.p > 0.33 ? 'var(--risk-caution-txt)' : 'var(--risk-calm-txt)';
-    bar.appendChild(fill);
-    bar.setAttribute('role', 'img');
-    bar.setAttribute('aria-label', det.name + ' reports p(AI) ' + fmt(det.p));
-    card.appendChild(bar);
-
-    card.appendChild(el('p', 'detector-note',
-      DETECTOR_NOTES[det.name] ||
-      'A published pretrained checkpoint the service runs. This project wrote none of the ' +
-      'detection arithmetic behind it, and has not calibrated it against anything.'));
-
-    if (UNRELIABLE[det.name]) {
-      var unrel = el('p', 'detector-warn');
-      unrel.appendChild(el('strong', null, 'Do not act on this number. '));
-      unrel.appendChild(document.createTextNode(UNRELIABLE[det.name]));
-      card.appendChild(unrel);
-    }
-
-    var warn = el('p', 'detector-warn');
-    warn.appendChild(el('strong', null, 'Not a commercial detector. '));
-    warn.appendChild(document.createTextNode(
-      'It has never been calibrated against GPTZero, Turnitin or Pangram, so a low number here ' +
-      'guarantees nothing. Use it to find patterns worth editing, not to predict a marker.'));
-    card.appendChild(warn);
-
-    host.appendChild(card);
-  }
-
-  function fetchDetectors(text, token) {
-    if (state.mock) { state.detectors = null; refreshOverlay(); renderDetectors(); return; }
-    request('/api/detect', { text: text }).then(function (raw) {
-      if (token !== state.requestToken) return;
-      var r = raw && typeof raw === 'object' ? raw : {};
-      state.detectors = {
-        detectors: Array.isArray(r.detectors) ? r.detectors : [],
-        sentences: Array.isArray(r.sentences) ? r.sentences : [],
-        disclaimer: typeof r.disclaimer === 'string' ? r.disclaimer : '',
-        isGptzero: r.is_gptzero === true,
-        backend_available: r.backend_available,
-        error: null
-      };
-      afterDetectors();
-    }, function (err) {
-      if (token !== state.requestToken) return;
-      state.detectors = { detectors: [], sentences: [], disclaimer: '',
-                          error: (err && err.message) || 'request failed' };
-      afterDetectors();
+      node.classList.remove('flash');
+      void node.offsetWidth;
+      node.classList.add('flash');
+      setTimeout(function () { node.classList.remove('flash'); }, 1200);
     });
   }
 
-  /* the ensemble usually lands after the analysis, so the overlay is
-     recomputed here and the canvas repainted only if it is actually in use */
-  function afterDetectors() {
-    refreshOverlay();
-    renderDetectors();
-    if (state.heatSource === 'perplexity') {
-      renderCanvas();
-      renderFlagged();
-      renderInspector();
-    }
+  /* ── GPTZero's reading ───────────────────────────────────────────────── */
+
+  function labelOf(raw, p) {
+    var s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (s === 'ai' || s === 'ai-generated' || s === 'ai_generated' || s === 'machine') return { label: 'ai', derived: false };
+    if (s === 'human' || s === 'human-written' || s === 'human_written') return { label: 'human', derived: false };
+    if (s === 'mixed') return { label: 'mixed', derived: false };
+    var n = num(p);
+    if (n === null) return { label: null, derived: false };
+    return { label: n >= 0.5 ? 'ai' : 'human', derived: true };
   }
+
+  /* The judge's row: the free surrogate by default, GPTZero when a bench
+     configures it. Whichever the service ran is the only row it sends. */
+  function readGptzero(a) {
+    var rows = a && a.detectors && typeof a.detectors === 'object' ? a.detectors : {};
+    var key = rows.gptzero ? 'gptzero' : Object.keys(rows)[0];
+    var d = key ? rows[key] : null;
+    if (!d || typeof d !== 'object' || d.error) return null;
+    var p = loose(d.ai_probability);
+    var lab = labelOf(d.label, p);
+    if (p === null && !lab.label) return null;
+    return { p: p, label: lab.label, derived: lab.derived };
+  }
+
+  function tipFor(judge, what) {
+    return 'The chance ' + what + ' is AI written, as ' + judge + ' reads it. From 50% up it reads as AI.';
+  }
+
+  function setWord(id, label, placeholder) {
+    var node = $(id);
+    node.textContent = label || placeholder || 'unscored';
+    node.setAttribute('data-label', label || 'none');
+  }
+
+  function renderVerdict() {
+    paintVerdict();
+    emit('humanizer:verdict');
+  }
+
+  function paintVerdict() {
+    var panel = $('verdict');
+    var line = $('verdict-line');
+    var strip = $('verdict-strip');
+    var kept = $('verdict-kept');
+    var refused = $('verdict-refused');
+    var beforeCell = $('v-before');
+    var afterCell = $('v-after');
+    var h = state.humanize;
+    var text = state.text.trim();
+
+    kept.hidden = true;
+    refused.hidden = true;
+    clear(refused);
+    beforeCell.removeAttribute('data-stale');
+    afterCell.removeAttribute('data-stale');
+
+    /* what each number is, and who judged it */
+    var judgeNow = h && state.view === 'run' ? h.judge : judgeName();
+    var hasBefore = !!(state.reading || (h && state.view === 'run' && h.before.label));
+    var assumedBefore = !!(h && state.view === 'run' && h.before.assumed);
+    beforeCell.setAttribute('data-tip', assumedBefore
+      ? 'Your draft is treated as AI written and every paragraph is rewritten. Add your own GPTZero key for a measured reading.'
+      : hasBefore
+        ? tipFor(judgeNow, 'your draft')
+        : 'No reading yet. Measure scores the draft with ' + judgeNow + '.');
+    afterCell.setAttribute('data-tip', h ? tipFor(h.judge, 'the rewrite') : '');
+
+    /* the before pane: the run's own reading of the draft while the run is
+       current, otherwise the live reading */
+    var r = state.reading;
+    if (h && state.view === 'run') {
+      $('verdict-h').textContent = h.judge;
+      setWord('v-before-word', h.before.label);
+      $('v-before-p').textContent = h.before.p === null ? '' : pct(h.before.p);
+      if (text !== h.source.trim() && !rewriteInUse()) beforeCell.setAttribute('data-stale', '1');
+    } else {
+      $('verdict-h').textContent = judgeName();
+      if (r) {
+        setWord('v-before-word', r.label);
+        $('v-before-p').textContent = r.p === null ? '' : pct(r.p);
+        if (text !== r.text.trim()) beforeCell.setAttribute('data-stale', '1');
+      } else {
+        setWord('v-before-word', null, state.readingError ? 'unscored' : 'not measured');
+        $('v-before-p').textContent = '';
+      }
+    }
+
+    /* the after pane: quiet until there is a rewrite */
+    if (!h) {
+      afterCell.hidden = true;
+      strip.hidden = true;
+      line.textContent = '';
+      panel.setAttribute('data-outcome', 'none');
+      return;
+    }
+    afterCell.hidden = false;
+    setWord('v-after-word', h.after.label);
+    $('v-after-p').textContent = h.after.p === null ? '' : pct(h.after.p);
+    strip.hidden = false;
+
+    var t;
+    if (!h.before.label && !h.after.label) {
+      panel.setAttribute('data-outcome', 'none');
+      t = 'No verdict came back on either side, so there is nothing to compare.';
+    } else if (h.flipped) {
+      panel.setAttribute('data-outcome', 'flipped');
+      t = 'Read as AI. Now reads as ' + h.after.label + '.';
+    } else if (h.before.label !== 'ai') {
+      panel.setAttribute('data-outcome', 'none');
+      t = 'Nothing to flip. ' + h.judge + ' already read your draft as ' + h.before.label + '.';
+    } else if (h.after.label === 'mixed') {
+      panel.setAttribute('data-outcome', 'mixed');
+      t = 'Read as AI. Now reads as mixed: closer, not there.';
+    } else {
+      panel.setAttribute('data-outcome', 'held');
+      t = 'Still reads as ' + (h.after.label || 'unscored') + '. The probability moved; the verdict did not.';
+    }
+    if (h.unchanged) {
+      kept.hidden = false;
+      kept.textContent = 'Your draft was kept. ' + (h.reason || 'No rewrite passed the meaning gates.');
+    }
+    if (h.invented.length) {
+      refused.hidden = false;
+      refused.appendChild(el('p', 'refused-h', 'Refused because they are not in your draft:'));
+      var ul = el('ul', 'refused-list');
+      h.invented.forEach(function (x) { ul.appendChild(el('li', null, x)); });
+      refused.appendChild(ul);
+      refused.appendChild(el('p', 'refused-hint',
+        'If any of these are true, add them under Facts you can vouch for and run again.'));
+    }
+    if (rewriteInUse()) {
+      t += ' In use as your draft.';
+    } else if (text !== h.source.trim()) {
+      afterCell.setAttribute('data-stale', '1');
+      t += ' Your draft has changed since this run.';
+    }
+    line.textContent = t;
+  }
+
+  /* ── Details: measurements, findings, signals, flagged ───────────────── */
 
   function renderMeasurements() {
     var host = $('measurements');
@@ -1573,18 +652,18 @@
     FEATURES.forEach(function (spec) {
       var value = a.features[spec.key];
       var stateName = bandState(spec, value, a.bands);
+      var plainId = 'plain-' + spec.key;
+      var open = state.openMeasure === spec.key;
 
       var row = el('button', 'measure');
       row.type = 'button';
-      var plainId = 'plain-' + spec.key;
-      var open = state.openMeasure === spec.key;
       row.setAttribute('aria-expanded', open ? 'true' : 'false');
       row.setAttribute('aria-controls', plainId);
 
       var top = el('div', 'measure-top');
-      top.appendChild(el('div', 'measure-name', spec.label));
-      var right = el('div', 'measure-right');
-      right.appendChild(el('span', 'measure-value', formatFeature(spec, value)));
+      top.appendChild(el('span', 'measure-name', spec.label));
+      var right = el('span', 'measure-right');
+      right.appendChild(el('span', 'measure-value num', formatFeature(spec, value)));
       if (spec.band) {
         var chip = el('span', 'state', stateName);
         chip.setAttribute('data-state', stateName);
@@ -1594,12 +673,7 @@
       row.appendChild(top);
 
       var band = formatBand(spec);
-      var bits = [];
-      if (band) bits.push('human academic prose runs ' + band);
-      if (spec.source) bits.push(spec.source);
-      var caption = bits.join(', ');
-      if (spec.note) caption += (caption ? '. ' : '') + spec.note;
-      row.appendChild(el('div', 'measure-band', caption));
+      if (band) row.appendChild(el('div', 'measure-band', 'human band ' + band));
 
       var plain = el('div', 'measure-plain');
       plain.id = plainId;
@@ -1621,60 +695,39 @@
     });
   }
 
-  /* ── findings, each with its grade cost. The differentiator. ─────────────── */
-
   function renderFindings() {
     var host = $('findings');
     clear(host);
     var a = state.analysis;
     if (!a) { host.appendChild(el('p', 'muted', 'No analysis yet.')); return; }
     if (!a.findings.length) {
-      host.appendChild(el('p', 'muted',
-        'Nothing to fix. Every feature the service checks is sitting inside its human band.'));
+      host.appendChild(el('p', 'muted', 'Nothing to fix. Every measured feature sits inside its human band.'));
       return;
     }
-
     a.findings.forEach(function (f) {
       var card = el('article', 'finding');
       card.setAttribute('data-severity', f.severity);
-
       var top = el('div', 'finding-top');
       top.appendChild(el('span', 'sev', f.severity));
-      top.appendChild(el('span', 'finding-code', f.code || 'unnamed'));
+      if (f.code) top.appendChild(el('span', 'finding-code', f.code));
       card.appendChild(top);
-
       card.appendChild(el('p', 'finding-msg', f.message));
       if (f.detail) card.appendChild(el('p', 'finding-detail', f.detail));
-
-      var g = classifyGradeCost(f.grade_cost);
-      var chip = el('span', 'grade');
-      chip.setAttribute('data-kind', g.kind);
-      chip.appendChild(el('b', null, g.label));
-      if (g.raw) chip.appendChild(el('span', 'grade-raw', 'grade_cost: \u201c' + g.raw + '\u201d'));
-      card.appendChild(chip);
-
       host.appendChild(card);
     });
   }
 
-  /* ── AI style signals: explanation, and never a score ────────────────────
-     The service sends these with `is_a_detector: false`, a research citation
-     per signal and, on purpose, no aggregate. Summing them would rebuild the
-     hand-written detector that was deleted, so nothing here totals anything.
-     ─────────────────────────────────────────────────────────────────────── */
-
   var SIGNAL_LABELS = {
-    ai_vocab_weighted: 'AI vocabulary, weighted by how lopsided each word is',
-    cv_band_distance: 'Sentence length variety, distance outside the human band',
-    formal_connective: 'Formal connectives such as "moreover" and "furthermore"',
+    ai_vocab_weighted: 'AI vocabulary',
+    cv_band_distance: 'Uniform sentence lengths',
+    formal_connective: 'Formal connectives',
     participial_tail: 'Participial tail clauses',
     tricolon: 'Three part lists',
-    negative_parallel: 'The "not X, but Y" construction',
-    para_opener_formal: 'Paragraphs opening on a formal connective',
+    negative_parallel: '"Not X, but Y"',
+    para_opener_formal: 'Paragraphs opening on a connective',
     uniform_paragraphs: 'Paragraphs all the same length',
-    no_contractions: 'No contractions anywhere in the draft'
+    no_contractions: 'No contractions anywhere'
   };
-
   var SIGNAL_FLOOR = 0.25;
 
   function signalLabel(key) {
@@ -1684,261 +737,235 @@
 
   function renderStyleSignals() {
     var host = $('style-signals');
-    if (!host) return;
     clear(host);
-
     var a = state.analysis;
     if (!a) { host.appendChild(el('p', 'muted', 'No analysis yet.')); return; }
-    if (state.mock) {
-      host.appendChild(el('p', 'muted',
-        'Mock mode does not compute the style signals. They come from the service.'));
-      return;
-    }
-    var ss = a.styleSignals;
-    if (!ss) {
-      host.appendChild(el('p', 'muted',
-        'This service returned no style signals with the analysis.'));
-      return;
-    }
+    if (!a.signals) { host.appendChild(el('p', 'muted', 'The service returned no style signals.')); return; }
 
     var rows = [];
-    Object.keys(ss.signals).forEach(function (k) {
-      var v = num(ss.signals[k]);
-      if (v === null) return;
-      rows.push({ key: k, v: clamp(v, 0, 1) });
+    Object.keys(a.signals).forEach(function (k) {
+      var v = num(a.signals[k]);
+      if (v !== null) rows.push({ key: k, v: clamp(v, 0, 1) });
     });
     rows.sort(function (x, y) { return y.v - x.v; });
-
     var present = rows.filter(function (r) { return r.v >= SIGNAL_FLOOR; });
 
-    if (!rows.length) {
-      host.appendChild(el('p', 'muted', 'No style signals came back for this draft.'));
-      return;
-    }
+    if (!rows.length) { host.appendChild(el('p', 'muted', 'No style signals came back for this draft.')); return; }
     if (!present.length) {
       host.appendChild(el('p', 'muted',
-        'None of the ' + rows.length + ' known tells is strongly present in this draft. The ' +
-        'strongest, ' + signalLabel(rows[0].key).toLowerCase() + ', reads ' + fmt(rows[0].v) +
-        ' out of 1.00.'));
+        'None of the ' + rows.length + ' known tells is strongly present. The strongest, ' +
+        signalLabel(rows[0].key).toLowerCase() + ', reads ' + fmt(rows[0].v) + ' of 1.00.'));
+      return;
     }
-
     present.forEach(function (r) {
       var row = el('div', 'signal');
-
       var head = el('div', 'signal-head');
       head.appendChild(el('span', 'signal-name', signalLabel(r.key)));
       head.appendChild(el('span', 'signal-v num', fmt(r.v)));
       row.appendChild(head);
-
       var bar = el('div', 'signal-bar');
       var fill = el('i');
       fill.style.width = Math.round(r.v * 100) + '%';
       bar.appendChild(fill);
       bar.setAttribute('role', 'img');
-      bar.setAttribute('aria-label', signalLabel(r.key) + ', ' + fmt(r.v) + ' out of 1.00');
+      bar.setAttribute('aria-label', signalLabel(r.key) + ', ' + fmt(r.v) + ' of 1.00');
       row.appendChild(bar);
-
-      var src = ss.sources[r.key];
-      if (typeof src === 'string' && src) row.appendChild(el('p', 'signal-src', src));
-
       host.appendChild(row);
     });
-
-    /* the service's own words, verbatim, because paraphrasing this one would
-       be the exact mistake it exists to prevent */
-    if (ss.note) host.appendChild(el('p', 'signal-note', ss.note));
-    host.appendChild(el('p', 'signal-note',
-      'There is no total on this panel on purpose. Each value is one feature scaled to a 0 to 1 ' +
-      'reading aid, nothing here was trained, and nothing here votes on the percentage above. ' +
-      (present.length ? 'Showing the ' + present.length + ' of ' + rows.length +
-        ' signals reading 0.25 or higher.' : '')));
-
-    if (ss.isDetector) {
-      host.appendChild(el('p', 'signal-note',
-        'The service marked these as a detector, which contradicts the contract this panel was ' +
-        'built against. They are still shown as explanation only.'));
-    }
   }
-
-  /* ── highest-risk sentences: the keyboard route into the canvas ─────────── */
 
   function renderFlagged() {
     var host = $('flagged');
     clear(host);
-    if (!state.located.length) {
-      host.appendChild(el('p', 'muted', 'No analysis yet.'));
+    if (!state.located.length || !hasRisk()) {
+      host.appendChild(el('p', 'muted', state.readingError
+        ? 'No sentence scores. ' + judgeName() + ' could not run: ' + state.readingError
+        : 'No reading yet. Add a few more sentences, or press Measure.'));
       return;
     }
-    var scored = state.located.map(function (s) { return { s: s, v: heatValue(s) }; })
-      .filter(function (x) { return x.v !== null; });
-    if (!scored.length) {
-      var why = state.analysis && state.analysis.detectorError;
-      host.appendChild(el('p', 'muted', why
-        ? 'No per sentence scores, because the published detector could not run: ' + why
-        : 'The service returned no per sentence score for this draft.'));
-      return;
-    }
-    var ranked = scored.sort(function (a, b) { return b.v - a.v; });
-    /* only the ones actually worth looking at, and never more than five */
-    var top = ranked.filter(function (x) { return x.v >= 0.5; }).slice(0, 5);
+    var ranked = state.located.filter(function (s) { return num(s.risk) !== null; })
+      .sort(function (a, b) { return b.risk - a.risk; });
+    var top = ranked.filter(function (s) { return s.risk >= 0.5; }).slice(0, 5);
     if (!top.length) {
-      var best = ranked[0];
       host.appendChild(el('p', 'muted',
-        'Nothing here reads as AI written. The highest scoring sentence is ' + fmt(best.v) +
-        ' out of 1.00, which is well inside the calm end of the range.'));
+        'No sentence reads as AI. The highest is ' + fmt(ranked[0].risk) + ' of 1.00.'));
       return;
     }
-
-    top.forEach(function (item, i) {
-      var s = item.s;
+    top.forEach(function (s) {
       var btn = el('button', 'flag-btn');
       btn.type = 'button';
-      btn.title = 'Jump to this sentence in your draft';
-      btn.appendChild(el('span', 'flag-rank', String(i + 1)));
-      btn.appendChild(el('span', 'flag-risk num', fmt(item.v)));
+      btn.title = 'Jump to this sentence';
+      btn.appendChild(el('span', 'flag-risk num', fmt(s.risk)));
       btn.appendChild(el('span', 'flag-text', s.text));
-      btn.addEventListener('click', function () { selectSentence(s.index, true); });
+      btn.addEventListener('click', function () { jumpToSentence(s.index); });
       host.appendChild(btn);
     });
-
     if (ranked.length > top.length) {
-      host.appendChild(el('p', 'muted',
-        'Showing the ' + top.length + ' highest of ' + ranked.length + ' sentences. ' +
-        'The rest scored below 0.50.'));
+      host.appendChild(el('p', 'muted', 'The other ' + (ranked.length - top.length) + ' scored below 0.50.'));
     }
   }
 
-  /* ── sentence inspector: why this sentence looks the way it does ────────── */
+  /* ── Details: the run and its edits ──────────────────────────────────── */
 
-  function selectSentence(index, scrollTo) {
-    state.selected = index;
-    Array.prototype.forEach.call(editor.querySelectorAll('.sent'), function (node) {
-      if (Number(node.getAttribute('data-index')) === index) {
-        node.setAttribute('aria-current', 'true');
-        if (scrollTo && node.scrollIntoView) {
-          node.scrollIntoView({ block: 'center', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
-          node.classList.remove('flash');
-          void node.offsetWidth;          /* restart the animation */
-          node.classList.add('flash');
-          setTimeout(function () { node.classList.remove('flash'); }, 1200);
-        }
-      } else {
-        node.removeAttribute('aria-current');
-      }
-    });
-    renderInspector();
+  function addRow(host, label, value) {
+    if (value === null || value === undefined || value === '') return;
+    var r = el('div', 'row');
+    r.appendChild(el('span', 'row-k', label));
+    r.appendChild(el('span', 'row-v', String(value)));
+    host.appendChild(r);
   }
 
-  function renderInspector() {
-    var host = $('sentence-inspector');
+  /* one sentence under the buttons about the last run; Details has the rest */
+  function renderChanged(h) {
+    var strip = $('changed');
+    if (!strip) return;
+    if (!h) { strip.hidden = true; strip.textContent = ''; return; }
+    var sm = h.summary || {};
+    var bits = [];
+    var pr = loose(sm.paragraphs_rewritten), pu = loose(sm.paragraphs_unchanged);
+    if (h.unchanged) bits.push('Your draft was kept as it was');
+    else if (pr !== null) bits.push('Rewrote ' + pr + ' ' + plural(pr, 'paragraph') + (pu ? ' and kept ' + pu : ''));
+    else bits.push('Rewrote your draft');
+    if (h.edits.length) bits.push(h.edits.length + ' ' + plural(h.edits.length, 'edit'));
+    var total = loose(sm.n_candidates_total), passed = loose(sm.n_candidates_passed);
+    if (total !== null && passed !== null) bits.push(passed + ' of ' + total + ' candidates passed the meaning gates');
+    else if (total !== null) bits.push(total + ' ' + plural(total, 'candidate') + ' written');
+    var secs = loose(sm.seconds) !== null ? loose(sm.seconds) : h.elapsed;
+    if (secs !== null && secs !== undefined) bits.push(secs.toFixed(0) + 's');
+    strip.textContent = bits.join(', ');
+    strip.title = 'Every edit is listed under Details.';
+    strip.hidden = false;
+  }
+
+  /* the repair stage's log: one line per attempt, diagnosis, action, result */
+  function renderRepairs(h) {
+    var section = $('repairs-section');
+    var host = $('repairs');
+    if (!section || !host) return;
     clear(host);
-    var s = null;
-    state.located.forEach(function (item) { if (item.index === state.selected) s = item; });
-    if (!s) {
-      host.appendChild(el('p', 'muted',
-        'Click any sentence in your draft, or just move the caret into one, and the named ' +
-        'patterns behind its shading appear here.'));
-      return;
-    }
-
-    host.appendChild(el('blockquote', 'inspect-quote', s.text));
-
-    var rows = el('div', 'inspect-rows');
-    var tier = riskTier(heatValue(s));
-    function addRow(label, value) {
-      var r = el('div', 'inspect-row');
-      r.appendChild(el('span', null, label));
-      r.appendChild(el('span', null, value));
-      rows.appendChild(r);
-    }
-    addRow('advisory risk, 0 to 1', fmt(s.risk));
-    var ov = state.overlay;
-    if (ov && ov.ok) {
-      addRow('perplexity signal, 0 to 1', fmt(ov.scores[s.index]));
-      var det = ov.detector && ov.detector.raw;
-      var sp = det && Array.isArray(det.sentence_perplexities) ? num(det.sentence_perplexities[s.index]) : null;
-      if (sp !== null) addRow('raw GPT-2 perplexity', sp.toFixed(0));
-    }
-    addRow('how sure', tier.confidence === 'none' ? 'no score returned'
-      : tier.confidence === 'low' ? 'not sure, within 0.15 of the 0.50 midpoint'
-      : 'clear of the ambiguous middle');
-    var len = num(s.length) === null ? words(s.text).length : s.length;
-    addRow('length', len + ' ' + plural(len, 'word'));
-    var docMean = state.analysis ? num(state.analysis.features.sent_len_mean) : null;
-    if (docMean !== null) {
-      addRow('vs your average sentence',
-        (len - docMean >= 0 ? '+' : '') + fmt(len - docMean, 1) + ' words');
-    }
-    addRow('paragraph', num(s.paragraph_index) === null ? 'n/a' : String(s.paragraph_index + 1));
-    host.appendChild(rows);
-
-    host.appendChild(el('p', 'inspect-why-h', 'Named patterns in this sentence'));
-
-    var reasons = [];
-    var hits = aiVocabHits(s.text);
-    hits.hits.slice(0, 5).forEach(function (h) {
-      reasons.push('AI-vocabulary hit \u201c' + h.surface + '\u201d, which appears about ' + h.weight +
-        ' times more often in model output than in human writing.');
+    var sm = h && h.summary && typeof h.summary === 'object' ? h.summary : null;
+    var log = sm && Array.isArray(sm.repair_log) ? sm.repair_log : [];
+    if (!log.length) { section.hidden = true; return; }
+    section.hidden = false;
+    log.forEach(function (rec) {
+      if (!rec || typeof rec !== 'object') return;
+      var para = loose(rec.paragraph);
+      var attempt = loose(rec.attempt);
+      var label = (para === null ? 'paragraph' : 'paragraph ' + (para + 1)) +
+        (attempt === null ? '' : ', try ' + attempt);
+      var res = rec.result && typeof rec.result === 'object' ? rec.result : {};
+      var passed = loose(res.passed);
+      var best = loose(res.best);
+      var outcome = [
+        passed === null ? null : passed + ' passed the gates',
+        best === null ? null : 'best ' + best.toFixed(3),
+        res.accepted === true ? 'accepted' : (res.accepted === false ? 'not accepted' : null)
+      ].filter(Boolean).join(', ');
+      var parts = [];
+      if (typeof rec.diagnosis === 'string' && rec.diagnosis) parts.push(rec.diagnosis + '.');
+      var action = pickString(rec.action_label, rec.action);
+      if (action) parts.push('Tried: ' + action + '.');
+      if (typeof rec.critic === 'string' && rec.critic) parts.push('Critic: ' + rec.critic);
+      if (typeof rec.note === 'string' && rec.note) parts.push('(' + rec.note + ')');
+      if (typeof rec.error === 'string' && rec.error) parts.push('Error: ' + rec.error);
+      if (outcome) parts.push('Result: ' + outcome + '.');
+      addRow(host, label, parts.join(' '));
     });
-    var opener = connectiveOpener(s.text);
-    if (opener) {
-      reasons.push('Opens with the formal connective \u201c' + opener + '\u201d. Human academic paragraphs ' +
-        'open this way at most 3 to 4 per cent of the time.');
+    var tried = loose(sm.repairs_attempted), acc = loose(sm.repairs_accepted), resc = loose(sm.repairs_rescued);
+    if (tried !== null) {
+      addRow(host, 'in all', [
+        tried + ' ' + plural(tried, 'attempt'),
+        acc === null ? null : acc + ' accepted',
+        resc === null ? null : resc + ' ' + plural(resc, 'paragraph') + ' rescued'
+      ].filter(Boolean).join(', '));
     }
-    if (docMean !== null && Math.abs(len - docMean) < 2.5) {
-      var spec = FEATURE_BY_KEY.sent_len_cv;
-      var cv = state.analysis ? state.analysis.features.sent_len_cv : null;
-      reasons.push('Its length sits within 2.5 words of your document average, which is what drags ' +
-        namedMeasurement(spec, cv, state.analysis ? state.analysis.bands : null) + '.');
-    }
-    if ((s.text.match(/,/g) || []).length >= 3 && /\band\b/i.test(s.text)) {
-      reasons.push('Three-part coordinated list. Model output runs about twice the human rate on tricolons.');
-    }
-    if (/\d/.test(s.text)) {
-      reasons.push('Contains a number. Concrete dated or numbered specifics are the best joint move ' +
-        'available: they lower detection risk and raise the grade at the same time.');
-    }
-    if (!reasons.length) {
-      reasons.push('No named pattern from the catalogue fires on this sentence. Its shading comes from the ' +
-        'document-level score alone.');
-    }
-
-    var list = el('ul', 'inspect-list');
-    reasons.forEach(function (r) { list.appendChild(el('li', null, r)); });
-    host.appendChild(list);
-
-    host.appendChild(el('p', 'inspect-caveat',
-      'These are patterns present in the sentence, not an account of how the score was produced. ' +
-      'GPTZero says the same of its own AI Vocabulary tool. The document verdict is not an aggregate ' +
-      'of sentence scores, so these two numbers do not have to agree.'));
   }
 
-  /* ══════════════════════════════════════════════════════════════════════
-     THE STAGE CHECKLIST
+  function renderRun() {
+    var section = $('run-section');
+    var host = $('run-summary');
+    var h = state.humanize;
+    clear(host);
+    renderChanged(h);
+    renderFlow();
+    renderRepairs(h);
+    if (!h) { section.hidden = true; return; }
+    section.hidden = false;
+    var sm = h.summary || {};
+    var yard = sm.yardstick && typeof sm.yardstick === 'object' ? sm.yardstick : null;
 
-     A 30 second rewrite must never look stuck, so the run takes over the
-     middle of the page. The checklist sits in the SAME grid cell as the
-     writing canvas: while it is up it is the active thing, not a spinner in
-     a corner.
+    addRow(host, 'judge', yard
+      ? (yard.kind === 'gptzero' ? 'GPTZero' : pickString(yard.name, yard.kind)) +
+        (pickString(yard.model) ? ', ' + yard.model : '')
+      : h.judge);
+    addRow(host, 'rewriter', h.engine === 'llm' ? (h.model || 'model not reported') : 'rule based engine');
+    addRow(host, 'setting', h.level);
+    addRow(host, 'facts supplied', typeof sm.facts_supplied === 'boolean' ? (sm.facts_supplied ? 'yes' : 'no') : null);
+    var total = loose(sm.n_candidates_total), passed = loose(sm.n_candidates_passed), rej = loose(sm.n_candidates_rejected);
+    if (total !== null || passed !== null || rej !== null) {
+      addRow(host, 'candidates', [
+        total === null ? null : total + ' written',
+        passed === null ? null : passed + ' passed',
+        rej === null ? null : rej + ' rejected'
+      ].filter(Boolean).join(', '));
+    }
+    if (sm.gate_rejections && typeof sm.gate_rejections === 'object') {
+      var gates = Object.keys(sm.gate_rejections).filter(function (k) { return loose(sm.gate_rejections[k]) > 0; })
+        .map(function (k) { return k + ' ' + sm.gate_rejections[k]; });
+      if (gates.length) addRow(host, 'gate rejections', gates.join(', '));
+    }
+    var pr = loose(sm.paragraphs_rewritten), pu = loose(sm.paragraphs_unchanged);
+    if (pr !== null || pu !== null) {
+      addRow(host, 'paragraphs', [
+        pr === null ? null : pr + ' rewritten',
+        pu === null ? null : pu + ' kept'
+      ].filter(Boolean).join(', '));
+    }
+    addRow(host, 'edits', h.edits.length);
+    var secs = loose(sm.seconds) !== null ? loose(sm.seconds) : h.elapsed;
+    if (secs !== null && secs !== undefined) addRow(host, 'time', secs.toFixed(1) + 's');
+    var tps = loose(sm.tokens_per_second);
+    if (tps !== null) addRow(host, 'generation', tps.toFixed(0) + ' tokens per second');
+    addRow(host, 'progress', h.streamed ? 'streamed live' : 'estimated');
+    if (typeof sm.backend_error === 'string' && sm.backend_error) addRow(host, 'backend error', sm.backend_error);
+  }
 
-     Each stage is a ring that fills, driven by the streamed progress value
-     from 0 to 1. Pending is an empty ring reading "waiting", active fills
-     and is highlighted, done draws a check. State is carried by geometry, by
-     a glyph and by words, so colour is never the only signal.
+  function renderEdits() {
+    var section = $('edits-section');
+    var host = $('edits');
+    var h = state.humanize;
+    clear(host);
+    if (!h || !h.edits.length) { section.hidden = true; return; }
+    section.hidden = false;
 
-     Stage keys are the stable names the pipeline reports. Anything it sends
-     that this build has never heard of is appended with a generated label
-     rather than dropped.
-     ══════════════════════════════════════════════════════════════════════ */
+    h.edits.forEach(function (e) {
+      if (!e || typeof e !== 'object') return;
+      var card = el('article', 'edit');
+      var si = loose(e.sentence_index);
+      card.appendChild(el('p', 'edit-kind',
+        (typeof e.kind === 'string' && e.kind ? e.kind : 'edit') + (si === null ? '' : ', sentence ' + (si + 1))));
+      var diff = el('p', 'edit-diff');
+      if (typeof e.before === 'string' && e.before) diff.appendChild(el('span', 'edit-del', e.before));
+      if (e.before && e.after) diff.appendChild(el('span', 'edit-arrow', ' → '));
+      if (typeof e.after === 'string' && e.after) diff.appendChild(el('span', 'edit-ins', e.after));
+      card.appendChild(diff);
+      if (typeof e.rationale === 'string' && e.rationale) card.appendChild(el('p', 'edit-why', e.rationale));
+      host.appendChild(card);
+    });
+  }
+
+  /* ── the stage checklist ─────────────────────────────────────────────
+     A 30 second rewrite must never look stuck. Each stage is a ring driven
+     by the streamed progress value. State is carried by geometry, a glyph
+     and words, so colour is never the only signal. */
 
   var RING_R = 15;
   var RING_C = 2 * Math.PI * RING_R;
 
-  /* The weights drive the ESTIMATED timeline only, used when the service
-     cannot stream. They are a guess at where a 30 second run spends itself,
-     and the panel says "estimated" out loud rather than passing a guess off
-     as a measurement. */
+  /* weights drive the estimated timeline only, used when the service does
+     not stream */
   var STAGES = [
+    { key: 'queue',    label: 'Waiting for another rewrite to finish', weight: 0.5 },
     { key: 'analyze',  label: 'Reading your draft',           weight: 1.5 },
     { key: 'plan',     label: 'Planning the rewrite',         weight: 3.0 },
     { key: 'generate', label: 'Writing candidate versions',   weight: 10.0 },
@@ -1948,10 +975,7 @@
     { key: 'select',   label: 'Choosing the best one',        weight: 1.5 },
     { key: 'finalize', label: 'Polishing the final draft',    weight: 3.0 }
   ];
-
-  var RULE_STAGE = [
-    { key: 'rewrite', label: 'Rewriting with the rule based engine', weight: 1.0 }
-  ];
+  var RULE_STAGE = [{ key: 'rewrite', label: 'Rewriting with the rule based engine', weight: 1.0 }];
 
   function stageSpec(key) {
     for (var i = 0; i < STAGES.length; i++) if (STAGES[i].key === key) return STAGES[i];
@@ -1973,18 +997,10 @@
   }
 
   var prog = {
-    open: false,
-    rows: {},
-    order: [],
-    weights: {},
-    mode: 'unknown',     /* unknown | estimated | live | rule */
-    started: 0,
-    ticker: null,
-    estimator: null,
-    armTimer: null,
-    said: '',
-    warned: false,
-    wasEditable: 'true'
+    open: false, rows: {}, order: [], weights: {},
+    mode: 'unknown',      /* unknown | estimated | live | rule */
+    started: 0, ticker: null, estimator: null, armTimer: null,
+    said: '', warned: false, wasEditable: 'true'
   };
 
   function buildStageRow(key, label) {
@@ -1996,10 +1012,7 @@
     var svg = svgEl('svg', { viewBox: '0 0 40 40', focusable: 'false' });
     svg.setAttribute('aria-hidden', 'true');
     svg.appendChild(svgEl('circle', { 'class': 'ring-track', cx: 20, cy: 20, r: RING_R }));
-    var fill = svgEl('circle', {
-      'class': 'ring-fill', cx: 20, cy: 20, r: RING_R,
-      'stroke-dasharray': RING_C.toFixed(3)
-    });
+    var fill = svgEl('circle', { 'class': 'ring-fill', cx: 20, cy: 20, r: RING_R, 'stroke-dasharray': RING_C.toFixed(3) });
     fill.style.strokeDashoffset = RING_C.toFixed(3);
     svg.appendChild(fill);
     svg.appendChild(svgEl('path', { 'class': 'ring-check', d: 'M13.4 20.4 L18.1 25.1 L26.9 15.4' }));
@@ -2009,45 +1022,25 @@
     body.appendChild(el('span', 'stage-label', label));
     var detail = el('span', 'stage-detail', '');
     body.appendChild(detail);
-
-    var pct = el('span', 'stage-pct num', 'waiting');
+    var pctNode = el('span', 'stage-pct num', 'waiting');
 
     li.appendChild(ringWrap);
     li.appendChild(body);
-    li.appendChild(pct);
-    return { li: li, fill: fill, detail: detail, pct: pct,
-             value: 0, status: 'pending', determinate: false };
+    li.appendChild(pctNode);
+    return { li: li, fill: fill, detail: detail, pct: pctNode, value: 0, status: 'pending', determinate: false };
   }
 
-  /* the one place a ring moves. Reduced motion snaps straight to the value:
-     no tween, ever. */
-  function setRing(row, value, animated) {
+  /* the glide between values is a CSS transition on stroke-dashoffset */
+  function setRing(row, value) {
     var v = clamp(num(value) === null ? row.value : value, 0, 1);
-    var from = RING_C * (1 - row.value);
     row.value = v;
-    var to = RING_C * (1 - v);
-
-    /* The inline style is ALWAYS written, so the ring is correct the instant
-       the value is known even if the animation layer is absent, blocked or
-       broken. Motion One, when it is there, plays a Web Animations tween
-       from the old value to the new one; a running animation outranks the
-       inline style in the cascade, so the tween is what is seen and this
-       value is what it lands on. */
-    row.fill.style.strokeDashoffset = to.toFixed(3);
-
-    var anim = window.__hzAnim;
-    if (animated && !reduceMotion.matches && anim && typeof anim.ringTo === 'function' &&
-        Math.abs(to - from) > 0.5) {
-      anim.ringTo(row.fill, from, to);
-    }
+    row.fill.style.strokeDashoffset = (RING_C * (1 - v)).toFixed(3);
   }
 
   function progSetStages(list) {
     var host = $('stages');
     clear(host);
-    prog.rows = {};
-    prog.order = [];
-    prog.weights = {};
+    prog.rows = {}; prog.order = []; prog.weights = {};
     list.forEach(function (s) {
       var row = buildStageRow(s.key, s.label);
       prog.rows[s.key] = row;
@@ -2075,29 +1068,43 @@
     }
   }
 
+  /* one number for the whole run, for the ASCII tile in the checklist */
+  function progFraction() {
+    if (!prog.order.length) return 0;
+    var sum = 0;
+    prog.order.forEach(function (k) {
+      var row = prog.rows[k];
+      if (!row) return;
+      if (row.status === 'done' || row.status === 'skipped') sum += 1;
+      else if (row.status === 'active') sum += clamp(row.value, 0, 0.98);
+    });
+    return sum / prog.order.length;
+  }
+  function progEmit(fraction) {
+    emit('humanizer:progress', { fraction: fraction === undefined ? progFraction() : fraction, open: prog.open });
+  }
+
   function progSay(text) {
     if (text === prog.said) return;
     prog.said = text;
     $('progress-say').textContent = text;
   }
 
-  function progOpen(level) {
+  function progOpen() {
     prog.open = true;
     prog.mode = 'unknown';
     prog.started = Date.now();
     prog.said = '';
     prog.warned = false;
+    prog.eta = null;
 
     progSetStages(stageList());
     $('progress-title').textContent = 'Rewriting your draft';
-    $('progress-kicker').textContent = 'Working';
     progSetEngine('Contacting the service', null);
-    progSetNote(null,
-      'Your draft is not touched until this finishes. The "' + level + '" setting is being used.');
+    progSetNote(null, 'Your draft is not touched until this finishes.');
     $('progress-elapsed').textContent = '0.0s';
     $('progress').hidden = false;
 
-    /* nothing may edit the document underneath a run */
     prog.wasEditable = editor.getAttribute('contenteditable') || 'true';
     editor.setAttribute('contenteditable', 'false');
 
@@ -2105,8 +1112,6 @@
     prog.ticker = setInterval(progTick, 100);
     progTick();
 
-    /* If real events arrive first the estimate never starts. If nothing has
-       arrived by then, an estimated timeline begins, clearly labelled. */
     if (prog.armTimer) clearTimeout(prog.armTimer);
     prog.armTimer = setTimeout(function () {
       prog.armTimer = null;
@@ -2114,18 +1119,18 @@
     }, 900);
 
     emit('humanizer:progress-open');
-    try { $('progress-cancel').focus(); } catch (e) { /* headless or detached */ }
+    progEmit(0);
+    try { $('progress-cancel').focus(); } catch (e) { /* detached */ }
   }
 
   function progTick() {
     if (!prog.open) return;
     var t = (Date.now() - prog.started) / 1000;
     $('progress-elapsed').textContent = t.toFixed(1) + 's';
-    if (!prog.warned && t > 45 && prog.mode !== 'rule') {
+    var slowAfter = prog.eta ? Infinity : 45;
+    if (!prog.warned && t > slowAfter && prog.mode !== 'rule') {
       prog.warned = true;
-      progSetNote('warn',
-        'This is slower than the 30 seconds the pipeline usually takes. It is still running. ' +
-        'You can stop it at any time and your draft stays exactly as it is.');
+      progSetNote('warn', 'Still running. Long drafts take a few minutes on this machine. You can stop at any time and keep your draft.');
     }
   }
 
@@ -2134,15 +1139,12 @@
     if (prog.armTimer) { clearTimeout(prog.armTimer); prog.armTimer = null; }
   }
 
-  /* the fallback timeline: honest about being a guess */
   function progStartEstimate(mode) {
     progStopEstimate();
     prog.mode = mode;
     if (mode === 'estimated') {
-      progSetEngine('LLM rewrite pipeline', { kind: 'est', label: 'estimated' });
-      progSetNote(null,
-        'The service is not reporting its progress, so these steps are running on an estimated ' +
-        'timeline rather than a measured one. The result itself is real.');
+      progSetEngine('Rewrite pipeline', { kind: 'est', label: 'estimated' });
+      progSetNote(null, 'The service is not reporting progress, so these steps run on an estimated timeline. The result is real.');
     }
     var slow = reduceMotion.matches;
     prog.estimator = setInterval(function () {
@@ -2159,8 +1161,6 @@
         if (local >= 1 && !last) {
           progStage(k, { status: 'done', progress: 1 });
         } else {
-          /* the final ring is never allowed to complete on a guess: only the
-             arrival of the result completes a run */
           prog.rows[k].determinate = true;
           progStage(k, { status: 'active', progress: Math.min(local, last ? 0.95 : 0.99) });
         }
@@ -2168,33 +1168,20 @@
     }, slow ? 900 : 110);
   }
 
-  /* real events have started: the estimate stands down */
   function progAdoptLive() {
     if (prog.mode === 'live') return;
     progStopEstimate();
     prog.mode = 'live';
-    progSetEngine('LLM rewrite pipeline', { kind: 'live', label: 'measured' });
-    progSetNote(null,
-      'Each step above is reported by the service as it happens. Your draft is not touched ' +
-      'until this finishes.');
+    progSetEngine('Rewrite pipeline', { kind: 'live', label: 'measured' });
+    progSetNote(null, 'Each step is reported by the service as it happens. Your draft is not touched until this finishes.');
   }
 
-  /* the LLM pipeline is not there: fall back and say so in place */
-  /* `why` is the reason this run is not using the LLM path, already written
-     as a sentence. It is attributed to the service ONLY when the service
-     actually said it: the word-limit check is made in this file from the
-     limit the service published, and claiming otherwise would be a small lie
-     in the one panel whose whole job is to tell the truth about what is
-     happening. */
   function progSwitchToRule(why) {
     progStopEstimate();
     prog.mode = 'rule';
     progSetStages(RULE_STAGE);
     progSetEngine('Rule based engine', { kind: 'est', label: 'fallback' });
-    progSetNote(null,
-      (why || 'The LLM pipeline is not available on this service.') +
-      ' The rule based engine is running instead. It works in a single pass, so there are no ' +
-      'stages to report.');
+    progSetNote(null, (why || 'The rewrite pipeline is not available.') + ' The rule based engine is running instead.');
     progStartEstimate('rule');
   }
 
@@ -2202,17 +1189,14 @@
     var s = String(raw === undefined || raw === null ? '' : raw).toLowerCase().trim();
     if (!s) return null;
     if (s === 'active' || s === 'running' || s === 'started' || s === 'start' ||
-        s === 'progress' || s === 'in_progress' || s === 'in-progress' ||
-        s === 'working') return 'active';
-    if (s === 'done' || s === 'complete' || s === 'completed' || s === 'finished' ||
-        s === 'ok' || s === 'end') return 'done';
+        s === 'progress' || s === 'in_progress' || s === 'in-progress' || s === 'working') return 'active';
+    if (s === 'done' || s === 'complete' || s === 'completed' || s === 'finished' || s === 'ok' || s === 'end') return 'done';
     if (s === 'skip' || s === 'skipped') return 'skipped';
     if (s === 'error' || s === 'failed' || s === 'failure') return 'error';
     if (s === 'pending' || s === 'queued' || s === 'waiting') return 'pending';
     return null;
   }
 
-  /* 0..1, but a service that speaks in percent is not a reason to break */
   function normalizeProgress(raw) {
     var p = loose(raw);
     if (p === null) return null;
@@ -2226,9 +1210,17 @@
     if (!row) {
       row = buildStageRow(key, stageLabel(key));
       prog.rows[key] = row;
-      prog.order.push(key);
-      prog.weights[key] = 2;
-      $('stages').appendChild(row.li);
+      var spec = stageSpec(key);
+      prog.weights[key] = spec ? spec.weight : 2;
+      /* the queue stage arrives before analyze when the model is busy; it
+         belongs above the pipeline's own rows */
+      if (key === 'queue') {
+        prog.order.unshift(key);
+        $('stages').insertBefore(row.li, $('stages').firstChild);
+      } else {
+        prog.order.push(key);
+        $('stages').appendChild(row.li);
+      }
     }
 
     var status = normalizeStatus(ev && ev.status);
@@ -2236,24 +1228,19 @@
     if (status === 'done') p = 1;
     if (p === null) p = row.value;
     if (status === null) status = p >= 1 ? 'done' : (p > 0 ? 'active' : row.status);
-
-    /* rings only go backwards when a stage genuinely restarts */
     if (status === row.status && p < row.value && row.status !== 'pending') p = row.value;
 
     row.status = status;
     row.li.setAttribute('data-status', status);
 
-    /* The service reports intra-stage progress for some stages and not for
-       others: `generate` runs for seconds emitting only a start and a done.
-       Claiming 0% for that is worse than admitting we do not know, so the
-       ring goes indeterminate, sweeps, and reads "working". It becomes a
-       real percentage the moment a real value above zero arrives. */
+    /* some stages report no intra-stage progress: the ring sweeps and reads
+       "working" rather than claiming 0% */
     if (normalizeProgress(ev && ev.progress) > 0) row.determinate = true;
     var unknown = status === 'active' && !row.determinate;
     if (unknown) row.li.setAttribute('data-progress', 'unknown');
     else row.li.removeAttribute('data-progress');
 
-    setRing(row, unknown ? 0.28 : p, true);
+    setRing(row, unknown ? 0.28 : p);
 
     row.pct.textContent =
       status === 'done'    ? 'done' :
@@ -2266,8 +1253,6 @@
 
     if (status === 'active' || status === 'error') {
       var at = prog.order.indexOf(key);
-      /* a service reporting stage 4 has finished 1 to 3, whether it said so
-         or not */
       for (var i = 0; i < at; i++) {
         var earlier = prog.rows[prog.order[i]];
         if (earlier && earlier.status !== 'done' && earlier.status !== 'skipped') {
@@ -2275,17 +1260,16 @@
           earlier.li.setAttribute('data-status', 'done');
           earlier.li.removeAttribute('data-progress');
           earlier.pct.textContent = 'done';
-          setRing(earlier, 1, true);
+          setRing(earlier, 1);
         }
       }
       var d = row.detail.textContent;
       progSay('Step ' + (at + 1) + ' of ' + prog.order.length + ', ' +
-              row.li.querySelector('.stage-label').textContent.toLowerCase() +
-              (d ? ', ' + d : '') + '.');
+        row.li.querySelector('.stage-label').textContent.toLowerCase() + (d ? ', ' + d : '') + '.');
     }
+    progEmit();
   }
 
-  /* durations and details the service reports once it is finished */
   function progApplyReported(stages) {
     if (!Array.isArray(stages)) return;
     stages.forEach(function (s) {
@@ -2296,10 +1280,9 @@
       var bits = [];
       if (typeof s.detail === 'string' && s.detail) bits.push(s.detail);
       var e = loose(s.seconds !== undefined && s.seconds !== null ? s.seconds
-              : (s.elapsed !== undefined && s.elapsed !== null ? s.elapsed : s.duration));
-      /* a stage that finished in under 50ms is noise as "0.0s" */
+        : (s.elapsed !== undefined && s.elapsed !== null ? s.elapsed : s.duration));
       if (e !== null && e >= 0.05) bits.push(e.toFixed(1) + 's');
-      if (bits.length) row.detail.textContent = bits.join('  ·  ');
+      if (bits.length) row.detail.textContent = bits.join(', ');
     });
   }
 
@@ -2313,12 +1296,12 @@
       row.li.setAttribute('data-status', 'done');
       row.li.removeAttribute('data-progress');
       row.pct.textContent = 'done';
-      setRing(row, 1, true);
+      setRing(row, 1);
     });
     progApplyReported(stages);
-    $('progress-kicker').textContent = 'Finished';
+    $('progress-title').textContent = 'Done';
     progSay('All steps finished.');
-    /* a short beat so the last ring is seen to close, none under reduced motion */
+    progEmit(1);
     setTimeout(function () { progClose(); if (done) done(); }, reduceMotion.matches ? 0 : 340);
   }
 
@@ -2331,169 +1314,74 @@
     $('progress-say').textContent = '';
     if (editor) editor.setAttribute('contenteditable', prog.wasEditable || 'true');
     emit('humanizer:progress-close');
-
-    /* Focus came from the Humanize button and goes back to it. Deferred by a
-       turn because the button is still in its busy state at this point: the
-       caller re-enables it immediately after, and focusing a disabled button
-       silently drops focus onto the body. */
     setTimeout(function () {
       try {
         var btn = $('humanize-btn');
         if (btn && !btn.disabled) btn.focus();
         else if (editor) editor.focus();
-      } catch (e) { /* nothing focusable, nothing to do */ }
+      } catch (e) { /* nothing focusable */ }
     }, 0);
   }
 
-  /* ══════════════════════════════════════════════════════════════════════
-     HUMANIZE — the transport
-
-     Three routes, tried in order, because the LLM pipeline is being built in
-     parallel with this interface and may not be there yet:
-
-       1. Server-Sent Events, so the checklist is driven by measured
-          progress. Tried on whatever streaming path the schema advertises,
-          otherwise on /api/humanize/llm with an event-stream Accept header,
-          which costs nothing: a service that answers JSON on that path is
-          simply the blocking case, handled on the same response.
-       2. The blocking POST /api/humanize/llm, with the checklist on an
-          ESTIMATED timeline, labelled estimated rather than measured.
-       3. POST /api/humanize, the rule based engine that already exists. The
-          panel switches to it in place and the result says which engine ran.
-
-     A 404, 405, 501, 422 or 400 on one route falls through to the next. Only
-     the last route's error is ever shown, so the user never sees a stack of
-     failures for endpoints they did not ask for.
-     ══════════════════════════════════════════════════════════════════════ */
+  /* ── humanize: the transport ─────────────────────────────────────────
+     Three routes, tried in order: the SSE stream so the checklist is driven
+     by measured progress, the blocking LLM route on an estimated timeline,
+     and the rule based engine as a last resort. A refusal on one route
+     falls through to the next; only the last error is ever shown. */
 
   var AGGRESSIVENESS = { light: 'light', balanced: 'balanced', strong: 'strong' };
-  var LLM_CEILING_MS = 120000;
 
   var caps = {
-    probed: false,
-    rule: null,        /* /api/humanize is in the schema */
-    llm: null,         /* /api/humanize/llm is in the schema */
-    stream: null,      /* a separate streaming path, if one is advertised */
-    streamMethods: [],
-    /* from GET /api/humanize/llm/health, which is cheap and touches no
-       weights. Null everywhere means the endpoint is not there. */
-    llmReady: null,    /* true | false | null = never answered */
+    llmReady: null,     /* true | false | null = never answered */
     llmReason: '',
     model: '',
-    stageNames: null,  /* the service's own stage order, authoritative */
+    stageNames: null,
     maxWords: null
   };
 
   var activeRun = null;
 
-  var STREAM_HINT = /(stream|sse|events?|progress|watch)$/i;
-
-  function declaresEventStream(pathItem) {
-    if (!pathItem || typeof pathItem !== 'object') return false;
-    var found = false;
-    Object.keys(pathItem).forEach(function (method) {
-      var op = pathItem[method];
-      if (!op || typeof op !== 'object' || !op.responses) return;
-      Object.keys(op.responses).forEach(function (code) {
-        var r = op.responses[code];
-        if (r && r.content && typeof r.content === 'object' &&
-            Object.keys(r.content).some(function (ct) { return ct.indexOf('text/event-stream') >= 0; })) {
-          found = true;
-        }
-      });
-    });
-    return found;
+  /* The judge is the free local estimate of GPTZero unless a bench set
+     GPTZero itself. Either way the tool is usable; no key is required. */
+  function judgeName() {
+    return state.yardstick === 'gptzero' ? 'GPTZero' : 'GPTZero estimate';
   }
 
   function setHumanizeState(kind, message) {
     var btn = $('humanize-btn');
     var label = $('humanize-label');
+    btn.removeAttribute('data-busy');
     if (kind === 'busy') {
       btn.disabled = true;
       btn.setAttribute('data-busy', '1');
-      label.textContent = 'Humanizing your draft';
+      label.textContent = 'Humanizing';
       return;
     }
-    btn.removeAttribute('data-busy');
-    if (kind === 'absent') {
+    label.textContent = 'Humanize';
+    if (kind === 'absent' || kind === 'empty') {
       btn.disabled = true;
-      label.textContent = 'Humanize this draft';
-      btn.title = message || 'The rewriting service is not available yet.';
-      return;
-    }
-    if (kind === 'empty') {
-      btn.disabled = true;
-      label.textContent = 'Humanize this draft';
-      btn.title = 'Paste or type a draft first.';
+      btn.title = message || '';
       return;
     }
     btn.disabled = false;
-    label.textContent = 'Humanize this draft';
-    btn.title = 'Rewrite the flagged sentences, then show you exactly what changed and what it costs.';
+    btn.title = 'Rewrite the draft. Ctrl+Enter or Cmd+Enter.';
   }
 
   function refreshHumanizeButton() {
-    if (activeRun) { setHumanizeState('busy'); return; }
-    if (state.humanizeAvailable === false) {
-      setHumanizeState('absent',
-        'The rewriting endpoint is not built yet. Measurement still works; this button will ' +
-        'switch on by itself once POST /api/humanize exists.');
-      return;
-    }
-    if (state.mock) {
-      setHumanizeState('absent', 'Mock mode cannot rewrite. It has no service to ask.');
-      return;
-    }
-    if (!state.text.trim()) { setHumanizeState('empty'); return; }
+    var measure = $('analyze-btn');
+    renderCost();
+    if (activeRun) { setHumanizeState('busy'); measure.disabled = true; refreshAfterActions(); return; }
+    measure.disabled = !state.text.trim();
+    renderFlow();
+    if (!state.text.trim()) { setHumanizeState('empty', 'Paste or type a draft first.'); refreshAfterActions(); return; }
     setHumanizeState('ready');
+    refreshAfterActions();
   }
 
-  /* one capability probe on load, so the button and the panel are honest
-     before anything is clicked */
-  function probeHumanize() {
-    if (state.mock) { refreshHumanizeButton(); return; }
-    request('/openapi.json').then(function (doc) {
-      var paths = doc && doc.paths && typeof doc.paths === 'object' ? doc.paths : null;
-      if (!paths) { state.humanizeAvailable = null; refreshHumanizeButton(); return; }
-      caps.probed = true;
-      var keys = Object.keys(paths);
-      caps.rule = keys.indexOf('/api/humanize') >= 0;
-      caps.llm = keys.indexOf('/api/humanize/llm') >= 0;
-      caps.stream = null;
-      caps.streamMethods = [];
-      for (var i = 0; i < keys.length; i++) {
-        var k = keys[i];
-        if (k.indexOf('humanize') < 0) continue;
-        if (k === '/api/humanize' || k === '/api/humanize/llm') continue;
-        if (STREAM_HINT.test(k) || declaresEventStream(paths[k])) {
-          caps.stream = k;
-          caps.streamMethods = Object.keys(paths[k] || {}).map(function (m) { return m.toLowerCase(); });
-          break;
-        }
-      }
-      state.humanizeAvailable = !!(caps.rule || caps.llm);
-      refreshHumanizeButton();
-      /* a probe is a nicety; it must never take the page down with it, and a
-         fetch shim that throws synchronously would otherwise surface as an
-         unhandled rejection */
-      if (caps.llm) { try { probeLlmHealth(); } catch (e) { /* no health route */ } }
-    }, function () {
-      /* no schema to read: leave it enabled and find out on click */
-      state.humanizeAvailable = null;
-      refreshHumanizeButton();
-    });
-  }
-
-  /* The LLM path advertises its own readiness, the model it would run and the
-     stage names it will report, without touching a GPU. Asking is strictly
-     better than guessing, and a service that does not have this route simply
-     leaves every field null and nothing changes. */
+  /* cheap: touches no weights. Stage names, the word limit, and whether the
+     LLM path can run at all. */
   function probeLlmHealth() {
-    var p;
-    try { p = request('/api/humanize/llm/health'); }
-    catch (e) { return; }
-    if (!p || typeof p.then !== 'function') return;
-    p.then(function (h) {
+    request('/api/humanize/llm/health').then(function (h) {
       if (!h || typeof h !== 'object') return;
       caps.llmReady = h.available === true;
       caps.llmReason = typeof h.reason === 'string' ? h.reason : '';
@@ -2502,38 +1390,39 @@
       if (Array.isArray(h.stages) && h.stages.length) {
         caps.stageNames = h.stages.filter(function (x) { return typeof x === 'string' && x; });
       }
-    }, function () { /* no health route: every field stays null */ });
+      /* the older health route does not name the yardstick; this one does */
+      if (state.yardstick === null && typeof h.yardstick === 'string' && h.yardstick) applyYardstick(h.yardstick);
+    }, function () { /* no route: every field stays null */ });
   }
 
-  /* the checklist is built from the service's own stage order when it gives
-     one, so a pipeline that adds or drops a stage does not need this file
-     changed */
   function stageList() {
-    if (!caps.stageNames || !caps.stageNames.length) return STAGES;
+    if (!caps.stageNames || !caps.stageNames.length) return STAGES.filter(function (s) { return s.key !== 'queue'; });
     return caps.stageNames.map(function (key) {
-      var spec = stageSpec(key);
-      return spec || { key: key, label: stageLabel(key), weight: 2 };
+      return stageSpec(key) || { key: key, label: stageLabel(key), weight: 2 };
     });
   }
 
   function httpFail(res) {
+    if (res.status === 401) signInRequired();
     return res.text().catch(function () { return ''; }).then(function (t) {
-      var detail = t;
-      try { var j = JSON.parse(t); if (j && j.detail) detail = String(j.detail); } catch (e) { /* text */ }
       var body = null;
       try { body = JSON.parse(t); } catch (e) { body = null; }
-      var e2 = new Error('HTTP ' + res.status + (detail ? ': ' + String(detail).slice(0, 200) : ''));
+      var detail = body && body.detail ? String(body.detail) : t;
+      var e2 = new Error('HTTP ' + res.status + (detail ? ': ' + detail.slice(0, 200) : ''));
       e2.status = res.status;
-      /* The LLM routes refuse with a real status code and a body that names
-         where to go instead: 503 when MLX or the weights are missing, 413
-         over the word limit. The named endpoint is authoritative, so it is
-         checked before the status list. */
+      /* 402: the balance is short. A paywall event, not a failure, and never
+         a reason to fall through to the rule engine. The body carries
+         needed, balance, words_needed and words_left. */
+      if (res.status === 402) {
+        e2.paywall = body && typeof body === 'object' ? body : { error: 'insufficient_credits' };
+        throw e2;
+      }
+      /* the LLM routes refuse with a body naming where to go instead */
       if (body && typeof body.fallback_endpoint === 'string') {
         e2.missing = true;
         e2.fallbackNote = typeof body.detail === 'string' ? body.detail : '';
       } else if (res.status === 404 || res.status === 405 || res.status === 501 ||
-                 res.status === 503 || res.status === 413 ||
-                 res.status === 422 || res.status === 400) {
+                 res.status === 503 || res.status === 413 || res.status === 422 || res.status === 400) {
         e2.missing = true;
       }
       throw e2;
@@ -2546,15 +1435,12 @@
     return new Error((err && err.message) || 'network error');
   }
 
-  /* a Server-Sent Events reader built on fetch rather than EventSource, so a
-     POST body and an AbortController both work */
-  /* a frame is the result only if it actually carries a rewrite */
   function looksLikeResult(o) {
-    return !!(o && typeof o === 'object' && (
-      typeof o.humanized === 'string' || typeof o.rewritten === 'string' ||
-      typeof o.output === 'string' || (o.edits && o.summary)));
+    return !!(o && typeof o === 'object' && (typeof o.humanized === 'string' || (o.edits && o.summary)));
   }
 
+  /* an SSE reader on fetch rather than EventSource, so a POST body and an
+     AbortController both work */
   function readSse(reader, sink) {
     var dec = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
     var buf = '';
@@ -2585,18 +1471,20 @@
       if (lower === 'error' || (d && d.error && !d.stage)) {
         var msg = (d && (d.detail || d.error || d.message)) || dataStr || 'the rewrite failed';
         failure = new Error(String(msg).slice(0, 300));
-        /* the service names where to go instead; that is a fall-through to
-           the rule based engine, not an error to show the user */
         if (d && typeof d.fallback_endpoint === 'string') failure.missing = true;
+        /* a 402 can arrive as an error frame once the stream is open */
+        if (d && (d.error === 'insufficient_credits' || loose(d.status) === 402)) {
+          failure.paywall = d;
+          failure.missing = false;
+        }
         return;
       }
       if (lower === 'result' || lower === 'done' || lower === 'complete' || lower === 'final' ||
           (d && (typeof d.humanized === 'string' || (d.result && typeof d.result === 'object')))) {
         var payload = d && d.result && typeof d.result === 'object' ? d.result : d;
-        /* `event: done` carries {"ok":true} and arrives immediately AFTER
-           `event: result`. Accepting any payload here overwrote the rewrite
-           with the acknowledgement and reported an empty result. */
-        if (payload && typeof payload === 'object' && looksLikeResult(payload)) result = payload;
+        /* `event: done` carries {"ok":true} right after `event: result`, and
+           must not overwrite the rewrite */
+        if (looksLikeResult(payload)) result = payload;
         return;
       }
       if (d && typeof d === 'object') {
@@ -2630,34 +1518,22 @@
     return pump();
   }
 
-  function streamAttempt(path, method, body, signal, sink) {
-    var url = API_BASE + path;
+  function streamAttempt(path, body, signal, sink) {
     var opts = {
-      method: method,
-      headers: { Accept: 'text/event-stream, application/json' },
+      method: 'POST',
+      headers: { Accept: 'text/event-stream, application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
       cache: 'no-store'
     };
     if (signal) opts.signal = signal;
-    if (method === 'POST') {
-      opts.headers['Content-Type'] = 'application/json';
-      opts.body = JSON.stringify(body);
-    } else {
-      url += (url.indexOf('?') >= 0 ? '&' : '?') +
-        'text=' + encodeURIComponent(body.text) +
-        '&aggressiveness=' + encodeURIComponent(body.aggressiveness);
-    }
-
-    return fetch(url, opts).then(function (res) {
+    return fetch(API_BASE + path, opts).then(function (res) {
       if (!res.ok) return httpFail(res);
+      noteBalance(res);
       var ct = String(res.headers.get('Content-Type') || '').toLowerCase();
       if (ct.indexOf('text/event-stream') < 0) {
-        /* the service answered in one shot on the same path: that IS the
-           blocking fallback, and it cost no extra round trip */
         return res.json().then(function (j) { return { raw: j, streamed: false, stages: [] }; });
       }
       if (!res.body || typeof res.body.getReader !== 'function') {
-        /* no streaming reader in this engine: take the whole transcript and
-           parse it in one go. Late, but correct. */
         return res.text().then(function (t) {
           var fake = { read: function () {
             if (fake.spent) return Promise.resolve({ done: true });
@@ -2681,34 +1557,23 @@
     if (signal) opts.signal = signal;
     return fetch(API_BASE + path, opts).then(function (res) {
       if (!res.ok) return httpFail(res);
+      noteBalance(res);
       return res.json().then(function (j) { return { raw: j, streamed: false, stages: [] }; });
     }, function (err) { throw netFail(err); });
   }
 
-  /* the known streaming route, tried when the schema could not be read at all */
-  var LLM_STREAM_PATH = '/api/humanize/stream';
-  var LLM_BLOCKING_PATH = '/api/humanize/llm';
-  var RULE_PATH = '/api/humanize';
-
   function runAttempts(attempts, i, body, signal, sink) {
     if (i >= attempts.length) return Promise.reject(new Error('no rewriting endpoint answered'));
     var a = attempts[i];
-    var work = a.stream
-      ? streamAttempt(a.path, a.method || 'POST', body, signal, sink)
-      : plainAttempt(a.path, body, signal);
+    var work = a.stream ? streamAttempt(a.path, body, signal, sink) : plainAttempt(a.path, body, signal);
     return work.then(function (res) {
       res.engine = a.engine;
-      res.path = a.path;
       return res;
     }, function (err) {
       if (err && err.name === 'AbortError') throw err;
       if (err && err.missing && i + 1 < attempts.length) {
-        /* switching engine in front of the user, with the service's own
-           reason when it gave one */
         if (attempts[i + 1].engine === 'rule' && a.engine === 'llm') {
-          progSwitchToRule(err.fallbackNote
-            ? 'The service refused the LLM path: ' + err.fallbackNote
-            : '');
+          progSwitchToRule(err.fallbackNote ? 'The service refused the rewrite pipeline: ' + err.fallbackNote : '');
         }
         return runAttempts(attempts, i + 1, body, signal, sink);
       }
@@ -2716,60 +1581,122 @@
     });
   }
 
+  /* absent from the body when empty so `facts_supplied` reads false */
+  function factsText() {
+    var box = $('facts');
+    return box && typeof box.value === 'string' ? box.value.trim() : '';
+  }
+
+  /* The user's own GPTZero key, kept in this browser only. With it, GPTZero
+     judges and ranks the candidates for their request on their credits. */
+  var KEY_STORE = 'humanizer.gptzeroKey';
+  var OWN_KEY_STORE = 'humanizer.ownKey';
+
+  /* a switch is a button with role=switch; aria-checked is its state */
+  function switchOn(btn) { return !!btn && btn.getAttribute('aria-checked') === 'true'; }
+  function setSwitch(btn, on) { if (btn) btn.setAttribute('aria-checked', on ? 'true' : 'false'); }
+  function wireSwitch(btn, onChange) {
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      setSwitch(btn, !switchOn(btn));
+      onChange(switchOn(btn));
+    });
+  }
+
+  function ownKeyOn() { return switchOn($('own-key-switch')); }
+
+  /* the key is only ever read, and only ever sent, while the switch is on */
+  function userKey() {
+    if (!ownKeyOn()) return '';
+    var box = $('gptzero-key');
+    var v = box && typeof box.value === 'string' ? box.value.trim() : '';
+    return v;
+  }
+  (function wireKey() {
+    var box = $('gptzero-key');
+    var sw = $('own-key-switch');
+    var field = $('own-key-field');
+    if (!box) return;
+    var stored = '';
+    try { stored = localStorage.getItem(KEY_STORE) || ''; } catch (e) { /* private mode */ }
+    box.value = stored;
+    var on = false;
+    try {
+      var saved = localStorage.getItem(OWN_KEY_STORE);
+      on = saved === null ? !!stored : saved === '1';
+    } catch (e) { on = !!stored; }
+    function apply(v, save) {
+      setSwitch(sw, v);
+      if (field) field.hidden = !v;
+      if (save) { try { localStorage.setItem(OWN_KEY_STORE, v ? '1' : '0'); } catch (e) { /* private mode */ } }
+    }
+    apply(on, false);
+    wireSwitch(sw, function (v) {
+      apply(v, true);
+      if (v && !box.value) { try { box.focus(); } catch (e) { /* detached */ } }
+    });
+    box.addEventListener('input', function () {
+      try {
+        if (box.value.trim()) localStorage.setItem(KEY_STORE, box.value.trim());
+        else localStorage.removeItem(KEY_STORE);
+      } catch (e) { /* private mode */ }
+    });
+  })();
+
   function runRewrite(text, level, signal) {
     var body = { text: text, aggressiveness: level };
+    var facts = factsText();
+    if (facts) body.facts = facts;
+    var key = userKey();
+    if (key) body.gptzero_api_key = key;
+
     var sink = function (key, d) {
       progAdoptLive();
-      /* a run with rounds > 1 repeats from `generate` with `round`
-         incremented, so the detail says which pass this is */
       var detail = typeof d.detail === 'string' ? d.detail : '';
+      if (key === 'plan' && d.status === 'done') {
+        var eta = /about ([^,]+)$/.exec(detail);
+        if (eta) {
+          prog.eta = eta[1].trim();
+          progSetNote(null, 'Expected to take about ' + prog.eta + '. Your draft is not touched until this finishes.');
+        }
+      }
+      if (key === 'queue') {
+        progSetNote(d.status === 'done' ? null : 'warn', d.status === 'done'
+          ? 'The model is free. Your rewrite is starting.'
+          : 'Someone else\'s rewrite is using the model. Yours starts the moment it finishes. You can stop at any time and keep your draft.');
+      }
       var round = loose(d.round);
-      if (round !== null && round > 1) detail = detail ? detail + '  \u00b7  pass ' + round : 'pass ' + round;
+      if (round !== null && round > 1) detail = detail ? detail + ', pass ' + round : 'pass ' + round;
       progStage(key, { status: d.status, progress: d.progress, detail: detail });
     };
 
     var attempts = [];
-
-    /* The service already told us the LLM cannot run, or that this draft is
-       past its word limit. Say so up front and spend one request, not three. */
     var nWords = words(text).length;
     var over = caps.maxWords !== null && nWords > caps.maxWords;
     if (caps.llmReady === false || over) {
       progSwitchToRule(over
-        ? 'This draft is ' + nWords + ' words, past the ' + caps.maxWords +
-          ' word limit the LLM path publishes for itself.'
-        : (caps.llmReason
-            ? 'The LLM pipeline reported that it cannot run: ' + caps.llmReason
-            : 'The LLM pipeline is not available on this service.'));
+        ? 'This draft is ' + nWords + ' words, past the ' + caps.maxWords + ' word limit of the rewrite pipeline.'
+        : (caps.llmReason ? 'The rewrite pipeline cannot run: ' + caps.llmReason : ''));
       attempts.push({ path: RULE_PATH, engine: 'rule', stream: false });
       return runAttempts(attempts, 0, body, signal, sink);
     }
-
-    if (caps.stream) {
-      /* whatever streaming path the schema advertises, on whichever method */
-      var m = caps.streamMethods;
-      var getOnly = m.length && m.indexOf('post') < 0 && m.indexOf('get') >= 0;
-      attempts.push({ path: caps.stream, engine: 'llm', stream: true, method: getOnly ? 'GET' : 'POST' });
-      attempts.push({ path: LLM_BLOCKING_PATH, engine: 'llm', stream: false });
-    } else if (caps.probed) {
-      /* the schema was readable and named no streaming path, so one request
-         covers both the streaming and the blocking LLM case: a service that
-         answers JSON on this path IS the blocking fallback, at no extra cost */
-      attempts.push({ path: LLM_BLOCKING_PATH, engine: 'llm', stream: true, method: 'POST' });
-    } else {
-      /* no schema at all: try the documented streaming route, then blocking */
-      attempts.push({ path: LLM_STREAM_PATH, engine: 'llm', stream: true, method: 'POST' });
-      attempts.push({ path: LLM_BLOCKING_PATH, engine: 'llm', stream: true, method: 'POST' });
-    }
+    attempts.push({ path: LLM_STREAM_PATH, engine: 'llm', stream: true });
+    attempts.push({ path: LLM_BLOCKING_PATH, engine: 'llm', stream: false });
     attempts.push({ path: RULE_PATH, engine: 'rule', stream: false });
-
     return runAttempts(attempts, 0, body, signal, sink);
   }
 
   function humanize() {
     var text = getText();
-    if (!text.trim() || state.mock || state.humanizeAvailable === false) return;
-    if (activeRun) return;
+    if (!text.trim() || activeRun) return;
+
+    /* the balance is known to be short: the button stays live, but the
+       click opens the plans instead of a run the service would refuse */
+    if (billingShort(text)) {
+      setStatus('idle', 'Not enough words left for this draft. Choose a plan to continue.');
+      openPlans({ words_needed: words(text).length, words_left: billing.wordsLeft }, $('humanize-btn'));
+      return;
+    }
 
     var level = $('aggressiveness').value;
     if (!AGGRESSIVENESS[level]) level = 'balanced';
@@ -2780,13 +1707,12 @@
 
     run.ceiling = setTimeout(function () {
       run.timedOut = true;
-      if (ctl) { try { ctl.abort(); } catch (e) { /* already gone */ } }
+      if (ctl) { try { ctl.abort(); } catch (e) { /* gone */ } }
     }, LLM_CEILING_MS);
 
-    setHumanizeState('busy');
-    setStatus('loading',
-      'Rewriting your draft at the "' + level + '" setting. Nothing is kept until it finishes.');
-    progOpen(level);
+    refreshHumanizeButton();
+    setStatus('loading', 'Rewriting. Nothing is kept until it finishes.');
+    progOpen();
 
     runRewrite(text, level, ctl ? ctl.signal : null).then(function (res) {
       if (run.cancelled) return;
@@ -2802,22 +1728,19 @@
       clearTimeout(run.ceiling);
       activeRun = null;
       progClose();
-      var msg = (err && err.message) || 'unknown error';
-      if (run.timedOut || (err && err.name === 'AbortError')) {
-        setStatus('error',
-          'The rewrite did not finish within two minutes, so it was stopped. Your draft is untouched.');
-        refreshHumanizeButton();
-        return;
-      }
-      if (/HTTP 40[45]/.test(msg) || /no rewriting endpoint answered/.test(msg)) {
-        state.humanizeAvailable = false;
-        refreshHumanizeButton();
-        setStatus('idle',
-          'Rewriting is not available on this service yet. Measurement is unaffected, and your ' +
-          'draft is untouched.');
-        return;
-      }
       refreshHumanizeButton();
+      var msg = (err && err.message) || 'unknown error';
+      /* the service said the balance is short: the plans, not the error box */
+      if (err && err.paywall) {
+        billingFrom402(err.paywall);
+        setStatus('idle', 'Not enough words left for this draft. Choose a plan to continue.');
+        openPlans(err.paywall, $('humanize-btn'));
+        return;
+      }
+      if (run.timedOut || (err && err.name === 'AbortError')) {
+        setStatus('error', 'The rewrite did not finish within eleven minutes, so it was stopped. Your draft is untouched.');
+        return;
+      }
       setStatus('error', 'The rewrite did not work: ' + msg + '. Your draft is untouched.');
       showError(msg);
     });
@@ -2829,66 +1752,35 @@
     run.cancelled = true;
     clearTimeout(run.ceiling);
     activeRun = null;
-    if (run.ctl) { try { run.ctl.abort(); } catch (e) { /* already gone */ } }
+    if (run.ctl) { try { run.ctl.abort(); } catch (e) { /* gone */ } }
     refreshHumanizeButton();
     progClose();
-    setStatus('idle', 'Stopped. Your draft is exactly as you left it, and nothing was changed.');
+    setStatus('idle', 'Stopped. Your draft is exactly as you left it.');
   }
 
-  /* ── the result ─────────────────────────────────────────────────────────
-     Which engine ran, which model, how long it took, and the only measure
-     that actually matters: whether the verdict moved, not just the number. */
+  /* ── the result ──────────────────────────────────────────────────────── */
 
-  function pickString() {
-    for (var i = 0; i < arguments.length; i++) {
-      if (typeof arguments[i] === 'string' && arguments[i].trim()) return arguments[i];
-    }
-    return '';
+  function side(obj, reportedLabel) {
+    var o = obj && typeof obj === 'object' ? obj : {};
+    var p = loose(o.ai_probability);
+    if (p === null) p = loose(o.probability);
+    var lab = labelOf(pickString(reportedLabel, o.label), p);
+    return { p: p, label: lab.label, derived: lab.derived, assumed: o.assumed === true };
   }
 
-  function readModel(r) {
-    var m = pickString(r.model, r.model_name);
-    if (m) return m;
-    if (r.engine && typeof r.engine === 'object') {
-      var e = pickString(r.engine.model, r.engine.name);
-      if (e) return e;
+  function keptReason(r) {
+    var paras = Array.isArray(r.paragraphs) ? r.paragraphs : [];
+    for (var i = 0; i < paras.length; i++) {
+      var p = paras[i];
+      if (p && typeof p.fallback_reason === 'string' && p.fallback_reason) return p.fallback_reason;
     }
-    if (r.meta && typeof r.meta === 'object') {
-      var mm = pickString(r.meta.model, r.meta.model_name);
-      if (mm) return mm;
-    }
-    return '';
-  }
-
-  function readFlipped(r) {
     var sm = r.summary && typeof r.summary === 'object' ? r.summary : {};
-    if (typeof sm.verdict_flipped === 'boolean') return sm.verdict_flipped;
-    if (typeof sm.flipped === 'boolean') return sm.flipped;
-    if (typeof r.verdict_flipped === 'boolean') return r.verdict_flipped;
-    if (typeof r.flipped === 'boolean') return r.flipped;
-    return null;
-  }
-
-  /* a verdict, reported if the service reports one, otherwise read off the
-     probability at 0.50 and labelled as derived */
-  function verdictOf(side, reportedLabel) {
-    if (!side || typeof side !== 'object') side = {};
-    var raw = pickString(reportedLabel, side.label, side.verdict, side.decision, side.classification);
-    if (raw) {
-      var s = raw.trim().toLowerCase();
-      if (s === 'ai' || s === 'ai-generated' || s === 'ai_generated' || s === 'machine') {
-        return { label: 'ai', reported: true };
-      }
-      if (s === 'human' || s === 'human-written' || s === 'human_written') {
-        return { label: 'human', reported: true };
-      }
-      if (s === 'mixed') return { label: 'mixed', reported: true };
+    var rej = loose(sm.n_candidates_rejected);
+    if (rej !== null && rej > 0) {
+      return rej + ' ' + plural(rej, 'candidate') + ' ' + (rej === 1 ? 'was' : 'were') +
+        ' rejected for drifting from what you wrote.';
     }
-    if (typeof side.is_ai === 'boolean') return { label: side.is_ai ? 'ai' : 'human', reported: true };
-    var p = loose(side.ai_probability);
-    if (p === null) p = loose(side.probability);
-    if (p === null) return null;
-    return { label: p >= 0.5 ? 'ai' : 'human', reported: false };
+    return '';
   }
 
   function finishHumanize(res, text, level, elapsed) {
@@ -2900,225 +1792,196 @@
       return;
     }
 
+    var sm = r.summary && typeof r.summary === 'object' ? r.summary : {};
     var unchanged = out.trim() === text.trim();
-    /* Nothing to undo when nothing changed, and offering an undo button for a
-       no-op is a lie about what happened. */
-    state.preHumanize = unchanged
-      ? null
-      : (typeof r.original === 'string' && r.original.trim() ? r.original : text);
+    var before = side(r.before, sm.label_before);
+    var after = side(r.after, sm.label_after);
+    var yard = sm.yardstick && typeof sm.yardstick === 'object' ? sm.yardstick : null;
+    var flipped = typeof sm.verdict_flipped === 'boolean'
+      ? sm.verdict_flipped
+      : (before.label === 'ai' && after.label === 'human');
+    var invented = Array.isArray(sm.unverified_specifics)
+      ? sm.unverified_specifics.filter(function (x) { return typeof x === 'string' && x; })
+      : [];
+
     state.humanize = {
+      text: out,
+      source: text,
       unchanged: unchanged,
       edits: Array.isArray(r.edits) ? r.edits : [],
-      before: r.before && typeof r.before === 'object' ? r.before : null,
-      after: r.after && typeof r.after === 'object' ? r.after : null,
-      summary: r.summary && typeof r.summary === 'object' ? r.summary : null,
+      before: before,
+      after: after,
+      flipped: flipped,
+      summary: sm,
+      judge: yard && yard.kind === 'gptzero' ? 'GPTZero' : judgeName(),
+      reason: unchanged ? keptReason(r) : '',
+      invented: invented,
       level: pickString(r.aggressiveness, level),
       engine: res.engine,
       streamed: res.streamed === true,
-      model: readModel(r),
-      elapsed: loose(r.elapsed) !== null ? loose(r.elapsed) : elapsed,
-      /* The endpoint's own docstring says to read verdict_flipped and NOT
-         risk_delta, because research/13's DUPE result is that attacks which
-         halve the false-negative rate still earn almost no human verdicts.
-         That is the whole point of this line, so it is read first. */
-      flipped: readFlipped(r)
+      model: pickString(r.model, sm.model, caps.model),
+      elapsed: loose(r.elapsed) !== null ? loose(r.elapsed) : elapsed
     };
+    state.afterLocated = [];
+    state.view = 'run';
 
-    if (!unchanged) setText(out);
-    $('undo-btn').hidden = unchanged;
-    renderHumanizeResult();
-    refreshHumanizeButton();
-    if (unchanged) {
-      setStatus('idle',
-        'Your draft came back unchanged. Every rewrite the pipeline wrote failed one of its ' +
-        'own checks, so it kept yours. The detail is in the fold.');
+    /* the draft stays on the left, untouched; the rewrite goes on the right.
+       The run's before reading is the judge's reading of this exact draft. */
+    if (before.label) {
+      state.reading = { p: before.p, label: before.label, derived: before.derived, text: text };
+      state.readingError = null;
     }
-    analyze();
-  }
-
-  function undoHumanize() {
-    if (!state.preHumanize) return;
-    var original = state.preHumanize;
     state.preHumanize = null;
-    state.humanize = null;
     $('undo-btn').hidden = true;
-    renderHumanizeResult();
-    setText(original);
+    renderVerdict();
+    renderRun();
+    renderEdits();
+    renderAfter();
     refreshHumanizeButton();
-    setStatus('idle', 'Your original draft is back. Re-measuring it now.');
-    analyze();
-  }
 
-  function renderHumanizeResult() {
-    var block = $('ba-block');
-    var section = $('edits-section');
-    var host = $('edits');
-    var h = state.humanize;
-
-    if (!h) {
-      block.hidden = true;
-      section.hidden = true;
-      $('ba-verdict').hidden = true;
-      $('ba-engine').hidden = true;
-      clear(host);
+    if (unchanged) {
+      if (invented.length) {
+        var fold = $('facts-fold');
+        if (fold) fold.open = true;
+        setStatus('idle', 'Kept your draft. The best rewrites added material that is not in it; the list is under the verdict.');
+      } else {
+        setStatus('idle', 'Kept your draft. ' + (state.humanize.reason || 'No rewrite passed the meaning gates.'));
+      }
       return;
     }
 
-    /* before and after risk, side by side */
-    var before = h.before ? loose(h.before.ai_probability) : null;
-    var after = h.after ? loose(h.after.ai_probability) : null;
-    block.hidden = false;
-    $('ba-title').textContent = h.unchanged ? 'Left unchanged' : 'Humanized';
-    $('ba-before').textContent = before === null ? 'n/a' : Math.round(before * 100) + '%';
-    $('ba-after').textContent = after === null ? 'n/a' : Math.round(after * 100) + '%';
+    setStatus('ok', flipped
+      ? 'Done. ' + state.humanize.judge + ' reads the rewrite as ' + after.label + '. Use this makes it your draft.'
+      : 'Done. ' + state.humanize.judge + ' reads the rewrite as ' + (after.label || 'unscored') + '. Use this makes it your draft.');
 
-    /* ── the honest measure ── */
-    var vn = $('ba-verdict');
-    /* the LLM endpoint puts the two labels on `summary`, the rule endpoint
-       puts nothing anywhere, so both places are read before falling back to
-       the probability */
-    var sm = h.summary || {};
-    var vb = verdictOf(h.before, sm.label_before);
-    var va = verdictOf(h.after, sm.label_after);
-    var flipped = null;
-    clear(vn);
-    if (!vb || !va) {
-      /* Both verdicts missing is itself worth a sentence. Measured live: the
-         pipeline ran with no detector installed and reported no probability
-         on either side, and an empty slot would have read as "no news". */
-      vn.hidden = false;
-      vn.setAttribute('data-flip', 'na');
-      vn.appendChild(el('b', null, 'No verdict either way. '));
-      vn.appendChild(document.createTextNode(
-        'This run reported no detector score before or after, so there is nothing to compare ' +
-        'and no claim to make about whether it would now read as human.'));
-    } else {
-      vn.hidden = false;
-      flipped = h.flipped !== null && h.flipped !== undefined
-        ? h.flipped
-        : (vb.label === 'ai' && va.label !== 'ai');
-      if (vb.label !== 'ai') {
-        vn.setAttribute('data-flip', 'na');
-        vn.appendChild(el('b', null, 'There was no verdict to flip. '));
-        vn.appendChild(document.createTextNode(
-          'The detector already read this draft as ' + va.label + ' before the rewrite ran.'));
-      } else if (flipped) {
-        vn.setAttribute('data-flip', 'yes');
-        vn.appendChild(el('b', null, 'The verdict flipped. '));
-        vn.appendChild(document.createTextNode(
-          'It read as AI before and reads as ' + va.label + ' now.'));
-      } else {
-        vn.setAttribute('data-flip', 'no');
-        vn.appendChild(el('b', null, 'The verdict did not flip. '));
-        vn.appendChild(document.createTextNode(
-          'It still reads as AI. Cutting the probability is not the same as earning a human ' +
-          'verdict, and the verdict is the only thing a detector actually reports.'));
+    /* the one judge call after a run: per sentence risk for the rewrite */
+    analyzeAfter(state.humanize);
+  }
+
+  /* scores the rewrite's sentences so the after pane can shade them. The
+     verdict came with the run; this only adds the shading, and fills in a
+     reading if the run did not report one. */
+  function analyzeAfter(h) {
+    var token = ++state.afterToken;
+    request('/api/analyze', { text: h.text, detect: true }, 90000).then(function (raw) {
+      if (token !== state.afterToken || state.humanize !== h) return;
+      var a = normalizeAnalysis(raw);
+      state.afterLocated = locateSentences(h.text, a.sentences);
+      if (!h.after.label) {
+        var g = readGptzero(a);
+        if (g) {
+          h.after = { p: g.p, label: g.label, derived: g.derived };
+          h.flipped = h.before.label === 'ai' && g.label === 'human';
+          renderVerdict();
+        }
       }
-      vn.appendChild(document.createTextNode(
-        vb.reported && va.reported
-          ? ' Both verdicts come from the service.'
-          : ' Read from the probability at the 0.50 mark, because the service reported a number ' +
-            'and not a verdict.'));
+      renderAfter();
+    }, function () { /* shading is optional; the verdict is already shown */ });
+  }
+
+  /* Use this: the rewrite becomes the draft. Undo brings the old draft back. */
+  function useRewrite() {
+    var h = state.humanize;
+    if (!h || !h.text.trim() || activeRun || rewriteInUse()) return;
+    state.preHumanize = state.text;
+    state.view = 'reading';
+    state.reading = h.after.label ? { p: h.after.p, label: h.after.label, derived: h.after.derived, text: h.text } : null;
+    state.readingError = null;
+    setText(h.text);
+    state.located = state.afterLocated.slice();
+    if (state.located.length) renderCanvas();
+    $('undo-btn').hidden = false;
+    renderVerdict();
+    renderAfter();
+    setStatus('ok', 'The rewrite is now your draft. Undo brings the old one back.');
+    analyze({ detect: true });
+    try { editor.focus(); } catch (e) { /* nothing to focus */ }
+  }
+
+  function undoHumanize() {
+    if (state.preHumanize === null) return;
+    var original = state.preHumanize;
+    var h = state.humanize;
+    state.preHumanize = null;
+    state.view = h ? 'run' : 'reading';
+    /* the before reading is the judge's reading of this exact text */
+    state.reading = h && h.before.label ? { p: h.before.p, label: h.before.label, derived: h.before.derived, text: original } : null;
+    $('undo-btn').hidden = true;
+    setText(original);
+    renderVerdict();
+    renderAfter();
+    refreshHumanizeButton();
+    setStatus('idle', 'Your original draft is back. The rewrite is still on the right.');
+    analyze({ detect: true });
+  }
+
+  function copyRewrite() {
+    var h = state.humanize;
+    if (!h) return;
+    var done = function () { setStatus('ok', 'Copied the rewrite.'); };
+    var fail = function () { setStatus('error', 'Could not copy. Select the text on the right and copy it yourself.'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(h.text).then(done, fail);
+      return;
     }
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = h.text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.left = '-200vw';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) done(); else fail();
+    } catch (e) { fail(); }
+  }
 
-    /* The delta is drawn as a win only when the verdict actually moved. A
-       falling probability that leaves the draft still labelled AI is a real
-       measurement and is still shown, but it is not painted as a success. */
-    var deltaNode = $('ba-delta');
-    if (before !== null && after !== null) {
-      var d = (after - before) * 100;
-      deltaNode.textContent = (d > 0 ? '+' : '') + d.toFixed(0) + ' points';
-      deltaNode.setAttribute('data-dir', d > 0 ? 'up' : (flipped === true ? 'down' : 'flat'));
-    } else {
-      deltaNode.textContent = '';
-      deltaNode.removeAttribute('data-dir');
+  function refreshFactsState() {
+    var summary = document.querySelector('#facts-fold .facts-summary');
+    if (summary) {
+      if (factsText()) summary.setAttribute('data-state', 'filled');
+      else summary.removeAttribute('data-state');
     }
+    renderFlow();
+  }
 
-    /* ── which engine, which model, how long ── */
-    var eng = $('ba-engine');
-    var bits = [];
-    bits.push(h.engine === 'llm' ? 'LLM rewrite pipeline' : 'rule based engine');
-    if (h.model) bits.push('model ' + h.model);
-    else if (h.engine === 'llm') bits.push('model not reported');
-    if (h.elapsed !== null && h.elapsed !== undefined) {
-      bits.push(h.elapsed < 0.05 ? 'under 0.1s' : h.elapsed.toFixed(1) + 's');
-    }
-    bits.push(h.streamed ? 'progress streamed live' : 'progress estimated');
-    eng.hidden = false;
-    eng.textContent = bits.join('  ·  ');
-
-    var n = h.summary && loose(h.summary.n_edits) !== null
-      ? loose(h.summary.n_edits) : h.edits.length;
-    var note = '';
-    if (h.unchanged) {
-      note += 'Your draft came back exactly as you wrote it. ';
-    }
-    note += n + ' ' + plural(n, 'edit') + ' at the "' + h.level + '" setting. ';
-
-    /* The pipeline throws away candidates that scored well by drifting off
-       the source. Reporting the rejections is the difference between a
-       rewrite and a paraphraser, so they are stated rather than hidden. */
-    var rejected = h.summary ? loose(h.summary.n_candidates_rejected) : null;
-    if (rejected !== null && rejected > 0) {
-      note += rejected + ' ' + plural(rejected, 'candidate') + ' ' +
-        (rejected === 1 ? 'was' : 'were') + ' rejected for failing a gate, usually for ' +
-        'drifting away from what you actually wrote. The lowest scoring text is not ' +
-        'automatically the best one. ';
-    }
-    note += 'The number on the right comes from the same local baseline as the one above it, so it ' +
-      'inherits the same caveats. A lower score is not proof of anything.';
-    $('ba-note').textContent = note;
-
-    /* the edit list, with the diff colours finally in use */
-    section.hidden = !h.edits.length;
-    clear(host);
-    if (!h.edits.length) return;
-
-    var key = el('div', 'diff-key');
-    var kd = el('span'); kd.appendChild(el('i', 'k-del')); kd.appendChild(document.createTextNode('removed'));
-    var ki = el('span'); ki.appendChild(el('i', 'k-ins')); ki.appendChild(document.createTextNode('added'));
-    key.appendChild(kd); key.appendChild(ki);
-    host.appendChild(key);
-
-    h.edits.forEach(function (e) {
-      if (!e || typeof e !== 'object') return;
-      var card = el('article', 'edit');
-
-      var kind = el('p', 'edit-kind');
-      var si = loose(e.sentence_index);
-      kind.textContent = (typeof e.kind === 'string' && e.kind ? e.kind : 'edit') +
-        (si === null ? '' : '  ·  sentence ' + (si + 1));
-      card.appendChild(kind);
-
-      var diff = el('p', 'edit-diff');
-      if (typeof e.before === 'string' && e.before) {
-        diff.appendChild(el('span', 'edit-del', e.before));
-      }
-      if (e.before && e.after) diff.appendChild(el('span', 'edit-arrow', ' → '));
-      if (typeof e.after === 'string' && e.after) {
-        diff.appendChild(el('span', 'edit-ins', e.after));
-      }
-      card.appendChild(diff);
-
-      if (typeof e.rationale === 'string' && e.rationale) {
-        card.appendChild(el('p', 'edit-why', e.rationale));
-      }
-
-      var g = classifyGradeCost(e.grade_cost);
-      var chip = el('span', 'grade');
-      chip.setAttribute('data-kind', g.kind);
-      chip.appendChild(el('b', null, g.label));
-      if (g.raw) chip.appendChild(el('span', 'grade-raw', 'grade_cost: “' + g.raw + '”'));
-      card.appendChild(chip);
-
-      host.appendChild(card);
+  /* the three steps in the band show where you are */
+  function renderFlow() {
+    var flow = $('flow');
+    if (!flow) return;
+    var done = {
+      draft: !!(state.text && state.text.trim()),
+      facts: !!factsText(),
+      run: !!state.humanize
+    };
+    Array.prototype.forEach.call(flow.querySelectorAll('.step'), function (li) {
+      var key = li.getAttribute('data-step');
+      if (done[key]) li.setAttribute('data-done', '1');
+      else li.removeAttribute('data-done');
     });
   }
 
-  /* ── status, errors and the analyze cycle ───────────────────────────────── */
+  function goTo(where) {
+    if (where === 'editor') { editor.focus(); return; }
+    if (where === 'facts') {
+      var fold = $('facts-fold');
+      if (fold) fold.open = true;
+      var box = $('facts');
+      if (box) { box.focus(); box.scrollIntoView({ block: 'center' }); }
+      return;
+    }
+    if (where === 'humanize') {
+      var btn = $('humanize-btn');
+      if (btn.disabled) { editor.focus(); setStatus('idle', btn.title || 'Paste or type a draft first.'); return; }
+      btn.scrollIntoView({ block: 'center' });
+      if (!activeRun) humanize();
+    }
+  }
+
+  /* ── status, errors, the analyze cycle ───────────────────────────────── */
 
   function setStatus(kind, message) {
-    state.status = kind;
     statusLine.setAttribute('data-state', kind);
     statusLine.textContent = message;
   }
@@ -3128,41 +1991,15 @@
   function showError(message) {
     clear(errorBox);
     errorBox.hidden = false;
-
     errorBox.appendChild(el('h2', 'error-title', 'The service did not answer'));
     errorBox.appendChild(el('code', 'error-code', message));
-    errorBox.appendChild(el('p', 'error-help',
-      navigator.onLine
-        ? 'Analysis is a POST to /api/analyze on this origin. Start the Python service with ' +
-          '"humanizer serve --port 8000", or point this page somewhere else with ?api=http://localhost:8000. ' +
-          'Your draft is untouched. Nothing was lost.'
-        : 'Your browser reports no network connection. Your draft is untouched. Nothing was lost.'));
-
-    var actions = el('div', 'error-actions');
-    var retry = el('button', 'btn btn-primary', 'Try again');
+    errorBox.appendChild(el('p', 'error-help', navigator.onLine
+      ? 'Start the service with "humanizer serve --port 8000", or point this page elsewhere with ?api=http://host:port. Your draft is untouched.'
+      : 'Your browser reports no network connection. Your draft is untouched.'));
+    var retry = el('button', 'btn', 'Try again');
     retry.type = 'button';
-    retry.addEventListener('click', function () { checkHealth(); analyze(); });
-    actions.appendChild(retry);
-
-    if (!state.mock) {
-      var toMock = el('button', 'btn', 'Use mock data instead');
-      toMock.type = 'button';
-      toMock.addEventListener('click', function () { setMock(true); analyze(); });
-      actions.appendChild(toMock);
-    }
-    errorBox.appendChild(actions);
-  }
-
-  function setMock(on) {
-    state.mock = !!on;
-    $('mock-banner').hidden = !state.mock;
-    if (state.mock) {
-      hideError();
-      setPill('wait', 'Mock mode. The service is not being contacted.');
-    }
-    state.detectors = null;
-    if ($('engine-detail')) { refreshOverlay(); renderDetectors(); }
-    refreshHumanizeButton();
+    retry.addEventListener('click', function () { checkHealth(); analyze({ detect: false }); });
+    errorBox.appendChild(retry);
   }
 
   function setPill(kind, text) {
@@ -3172,43 +2009,56 @@
     pill.title = text;
   }
 
-  function applyAnalysis(text, a) {
+  function applyYardstick(y) {
+    state.yardstick = typeof y === 'string' && y ? y : null;
+    var vh = $('verdict-h');
+    if (vh && !(state.humanize && state.view === 'run')) vh.textContent = judgeName();
+    var note = $('verdict-note');
+    if (note) {
+      note.textContent = state.yardstick === 'gptzero'
+        ? 'Scored by GPTZero itself.'
+        : 'A free local estimate of what GPTZero would say. Check the final draft with GPTZero itself.';
+    }
+    refreshHumanizeButton();
+    setPillHealthy();
+  }
+
+  function applyAnalysis(text, a, detect, keepView) {
     state.analysis = a;
-    state.analyzedText = text;
     state.located = locateSentences(text, a.sentences);
-    if (state.selected !== null) {
-      var stillThere = state.located.some(function (s) { return s.index === state.selected; });
-      if (!stillThere) state.selected = null;
+
+    if (detect) {
+      var g = readGptzero(a);
+      state.reading = g ? { p: g.p, label: g.label, derived: g.derived, text: text } : null;
+      state.readingError = g ? null : (a.detectorError || (a.detectorRan ? 'no reading came back' : null));
+      if (!keepView) state.view = 'reading';
     }
 
-    refreshOverlay();
-
-    var current = getText();
-    var fresh = current === text;
+    var fresh = getText() === text;
     if (fresh) renderCanvas();
-
     renderCounts();
     refreshHumanizeButton();
-    var dials = renderHero();
+    renderVerdict();
     renderMeasurements();
     renderFindings();
     renderStyleSignals();
     renderFlagged();
-    renderInspector();
-    /* the engine card reads state.analysis, and /api/detect can land BEFORE
-       /api/analyze does. Without this the panel stayed on "No analysis yet."
-       whenever it won the race. */
-    renderDetectors();
 
-    var unlocated = a.sentences.length - state.located.length;
-    var parts = [];
-    if (dials.risk !== null) parts.push('detection risk ' + Math.round(dials.risk) + ' of 100');
-    if (dials.quality !== null) parts.push('writing quality ' + Math.round(dials.quality) + ' of 100');
-    parts.push(a.findings.length + ' ' + plural(a.findings.length, 'finding'));
-    if (unlocated > 0) parts.push(unlocated + ' ' + plural(unlocated, 'sentence') + ' could not be matched to your text');
-    if (state.mock) parts.push('mock data');
-    setStatus(fresh ? 'ok' : 'stale',
-      (fresh ? 'Done. ' : 'You have edited since this ran. ') + parts.join(' \u00b7 ') + '.');
+    if (detect && state.reading && !keepView) {
+      setStatus('ok', judgeName() + ' reads this as ' + (state.reading.label || 'unscored') +
+        (state.reading.p === null ? '' : ', ' + pct(state.reading.p) + ' AI') + '.');
+    } else if (detect && !state.reading && !keepView) {
+      setStatus('error', judgeName() + ' could not run' + (state.readingError ? ': ' + state.readingError : '') + '.');
+    } else if (keepView && state.humanize) {
+      var h = state.humanize;
+      setStatus('ok', h.flipped
+        ? 'Done. ' + h.judge + ' reads the rewrite as ' + h.after.label + '.'
+        : 'Done. ' + h.judge + ' still reads it as ' + (h.after.label || 'unscored') + '.');
+    } else if (!keepView) {
+      var n = a.findings.length;
+      setStatus(fresh ? 'ok' : 'stale', (fresh ? 'Measured. ' : 'Edited since this ran. ') +
+        n + ' ' + plural(n, 'finding') + ' in Details.');
+    }
     emit('humanizer:analysis', { fresh: fresh });
   }
 
@@ -3216,143 +2066,831 @@
 
   function scheduleAnalyze() {
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(function () { debounceTimer = null; analyze(); }, DEBOUNCE_MS);
+    debounceTimer = setTimeout(function () {
+      debounceTimer = null;
+      /* the judge is the free local estimate, so once there is enough text
+         (the scorer needs about 250 characters) every pause measures it */
+      analyze({ detect: getText().trim().length >= AUTO_MEASURE_CHARS });
+    }, DEBOUNCE_MS);
   }
 
-  function analyze() {
+  /* detect: true runs the judge. With the default free surrogate it costs
+     nothing, so typing pauses run it once the draft is long enough; Measure
+     and a finished Humanize run always do. With GPTZero configured for a
+     bench it would be a paid call, which is why that is opt-in. */
+  function analyze(opts) {
+    opts = opts || {};
+    var detect = opts.detect === true;
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
-    /* a rewrite owns the document while it runs; a stale debounce must not
-       re-render the canvas underneath it or overwrite the status line */
     if (activeRun) return;
     var text = getText();
     state.text = text;
 
     if (!text.trim()) {
       state.analysis = null;
-      state.detectors = null;
       state.located = [];
-      state.selected = null;
+      state.reading = null;
+      state.readingError = null;
+      state.view = 'reading';
       $('empty-state').hidden = false;
-      refreshOverlay();
+      $('legend').hidden = true;
       refreshHumanizeButton();
-      renderCounts(); renderHero(); renderMeasurements();
+      renderCounts(); renderVerdict(); renderMeasurements();
       renderFindings(); renderStyleSignals(); renderFlagged();
-      renderInspector(); renderDetectors();
-      setStatus('idle', 'Ready when you are. Paste a draft, or load one of the samples above.');
+      setStatus('idle', 'Ready.');
       return;
     }
 
     var token = ++state.requestToken;
-    var btn = $('analyze-btn');
-    btn.disabled = true;
     var wordCount = words(text).length;
-    setStatus('loading', 'Measuring ' + wordCount + ' ' + plural(wordCount, 'word') + '...');
+    var measure = $('analyze-btn');
+    measure.disabled = true;
+    setStatus('loading', detect
+      ? 'Scoring ' + wordCount + ' ' + plural(wordCount, 'word')
+      : 'Measuring ' + wordCount + ' ' + plural(wordCount, 'word'));
 
-    var work;
-    if (state.mock) {
-      work = new Promise(function (resolve) {
-        setTimeout(function () { resolve(mockAnalyze(text)); }, 60);
-      });
-    } else {
-      work = request('/api/analyze', { text: text, reference: state.reference || null });
-    }
-
-    /* the ensemble runs in parallel; it must never block the main reading */
-    fetchDetectors(text, token);
-
-    work.then(function (raw) {
+    request('/api/analyze', { text: text, detect: detect }, detect ? 90000 : 30000).then(function (raw) {
       if (token !== state.requestToken) return;
-      btn.disabled = false;
+      measure.disabled = false;
       hideError();
-      if (!state.mock) setPillHealthy();
-      applyAnalysis(text, normalizeAnalysis(raw));
+      setPillHealthy();
+      applyAnalysis(text, normalizeAnalysis(raw), detect, opts.keepView === true);
     }, function (err) {
       if (token !== state.requestToken) return;
-      btn.disabled = false;
+      measure.disabled = false;
       var msg = (err && err.message) || 'unknown error';
       setStatus('error', 'That did not work: ' + msg + '. Your draft is untouched.');
-      if (!state.mock) setPill('bad', 'Service unreachable');
+      setPill('bad', 'Service unreachable');
       showError(msg);
     });
   }
 
-  /* ── health and reference list ──────────────────────────────────────────── */
-
-  var lastHealth = null;
+  /* ── health ──────────────────────────────────────────────────────────── */
 
   function setPillHealthy() {
-    if (!lastHealth) { setPill('ok', 'Service connected'); return; }
-    var h = lastHealth;
-    var refs = h.references;
-    var refCount = Array.isArray(refs) ? refs.length : num(refs);
-    setPill('ok', [
-      'Service ' + (h.version || 'connected'),
-      h.syntax_backend ? 'syntax parser on' : 'no syntax parser',
-      refCount === null || refCount === undefined ? null : refCount + ' reference ' + plural(refCount, 'corpus', 'corpora')
-    ].filter(Boolean).join(' \u00b7 '));
+    /* the judge is named in the console row; the pill carries the service state */
+    if (state.yardstick === 'gptzero') setPill('ok', 'Connected, GPTZero live (paid)');
+    else setPill('ok', 'Connected');
   }
 
   function checkHealth() {
-    if (state.mock) { setPill('wait', 'Mock mode. The service is not being contacted.'); return; }
-    setPill('wait', 'Checking the service...');
+    setPill('wait', 'Checking the service');
     request('/api/health').then(function (h) {
-      lastHealth = h && typeof h === 'object' ? h : {};
-      setPillHealthy();
+      var obj = h && typeof h === 'object' ? h : {};
       hideError();
+      /* the contract names the judge here; an older service leaves it out
+         and the LLM health route fills it in */
+      if (typeof obj.yardstick === 'string' && obj.yardstick) applyYardstick(obj.yardstick);
+      else setPillHealthy();
+      probeLlmHealth();
     }, function (err) {
-      lastHealth = null;
       setPill('bad', 'Service unreachable');
       showError((err && err.message) || 'the health check failed');
     });
   }
 
-  /* ── theme ──────────────────────────────────────────────────────────────── */
+  /* ── billing ─────────────────────────────────────────────────────────
+     GET /api/me says whether the paywall is on, how many words are left and
+     which plan is active. The top row shows the balance, the console says
+     what a run will use, and a 402 from a charged route opens the plans
+     sheet instead of the error box. With the paywall off (paywall: false,
+     or no /api/me route at all) none of this appears and nothing is gated.
+     Every charged answer carries the new balance, in credits, in the
+     X-Longhand-Credits-Balance header; words_per_credit turns it into words. */
+  var ME_PATH = '/api/me';
+  var PLANS_PATH = '/api/billing/plans';
+  var CHECKOUT_PATH = '/api/billing/checkout';
+  var PORTAL_PATH = '/api/billing/portal';
+  var BALANCE_STORE = 'humanizer.balanceBefore';
+  var BALANCE_HEADER = 'X-Longhand-Credits-Balance';
 
-  var THEMES = ['auto', 'light', 'dark'];
-  var THEME_HINT = {
-    auto: 'follow the system setting',
-    light: 'light',
-    dark: 'dark'
+  var billing = {
+    on: false,            /* paywall true and someone signed in */
+    user: null,
+    wordsPerCredit: null,
+    wordsLeft: null,
+    plan: '',             /* "" | "monthly" | "yearly" | "lifetime" */
+    plans: null,          /* the /api/billing/plans answer, once loaded */
+    loading: null         /* the pending plans request */
   };
 
-  function applyTheme(theme) {
-    if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.setAttribute('data-theme', theme);
-    $('theme-label').textContent = theme.charAt(0).toUpperCase() + theme.slice(1);
-    var btn = $('theme-btn');
-    var next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
-    btn.setAttribute('aria-label', 'Colour scheme: ' + THEME_HINT[theme] + '. Switch to ' + next + '.');
-    btn.title = 'Colour scheme: ' + THEME_HINT[theme] + '. Click for ' + next + '.';
-    try { localStorage.setItem('humanizer.theme', theme); } catch (e) { /* private mode */ }
+  function fmtInt(n) {
+    var v = Math.max(0, Math.round(Number(n) || 0));
+    return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  function currentTheme() {
-    return document.documentElement.getAttribute('data-theme') || 'auto';
+  /* fills a node with text, every numeral (and a price) in the mono face */
+  function numify(node, text) {
+    var parts = String(text).split(/(\$?\d[\d,]*(?:\.\d+)?)/);
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      if (i % 2) node.appendChild(el('span', 'num', parts[i]));
+      else node.appendChild(document.createTextNode(parts[i]));
+    }
+    return node;
   }
 
-  /* ── an expandable explanation, shared by the three "?" buttons ─────────── */
+  function planLabel(plan) {
+    if (plan === 'monthly') return 'Monthly plan';
+    if (plan === 'yearly') return 'Yearly plan';
+    if (plan === 'lifetime') return 'Lifetime';
+    return plan ? plan.charAt(0).toUpperCase() + plan.slice(1) + ' plan' : '';
+  }
 
-  function wireExplain(buttonId, panelId) {
-    var btn = $(buttonId), panel = $(panelId);
-    if (!btn || !panel) return;
-    btn.addEventListener('click', function () {
-      var open = panel.hidden;
-      panel.hidden = !open;
-      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  function intervalName(interval, name) {
+    if (interval === 'month') return 'Monthly';
+    if (interval === 'year') return 'Yearly';
+    if (interval === 'lifetime') return 'Lifetime';
+    return name ? name.charAt(0).toUpperCase() + name.slice(1) : 'Plan';
+  }
+
+  function applyMe(me) {
+    var obj = me && typeof me === 'object' ? me : {};
+    var u = obj.user && typeof obj.user === 'object' ? obj.user : null;
+    billing.on = obj.paywall === true && !!u;
+    billing.user = u;
+    var wpc = loose(u && u.words_per_credit);
+    if (wpc === null) wpc = loose(obj.words_per_credit);
+    if (wpc !== null && wpc > 0) billing.wordsPerCredit = wpc;
+    billing.wordsLeft = u ? loose(u.words_left) : null;
+    if (billing.wordsLeft === null && u && billing.wordsPerCredit && loose(u.credits) !== null) {
+      billing.wordsLeft = Math.round(loose(u.credits) * billing.wordsPerCredit);
+    }
+    billing.plan = u && typeof u.plan === 'string' ? u.plan : '';
+    renderBalance();
+    renderCost();
+  }
+
+  function checkBilling() {
+    request(ME_PATH).then(applyMe, function () { applyMe(null); });
+  }
+
+  function refreshMe() {
+    return request(ME_PATH).then(function (me) { applyMe(me); return me; });
+  }
+
+  function noteBalance(res) {
+    if (!billing.on || !res || !res.headers) return;
+    var v = loose(res.headers.get(BALANCE_HEADER));
+    if (v === null || !billing.wordsPerCredit) return;
+    billing.wordsLeft = Math.round(v * billing.wordsPerCredit);
+    renderBalance();
+    renderCost();
+  }
+
+  function billingFrom402(body) {
+    if (!body || typeof body !== 'object') return;
+    var wl = loose(body.words_left);
+    if (wl === null && loose(body.balance) !== null && billing.wordsPerCredit) {
+      wl = Math.round(loose(body.balance) * billing.wordsPerCredit);
+    }
+    if (wl !== null) billing.wordsLeft = wl;
+    billing.on = true;
+    renderBalance();
+    renderCost();
+  }
+
+  function renderBalance() {
+    var bal = $('balance');
+    var plan = $('plan-name');
+    var btn = $('plans-btn');
+    if (!bal || !plan || !btn) return;
+    if (!billing.on) { bal.hidden = true; plan.hidden = true; btn.hidden = true; return; }
+    clear(bal);
+    if (billing.wordsLeft !== null) {
+      bal.appendChild(el('span', 'num', fmtInt(billing.wordsLeft)));
+      bal.appendChild(document.createTextNode(' ' + plural(billing.wordsLeft, 'word') + ' left'));
+      bal.hidden = false;
+    } else {
+      bal.hidden = true;
+    }
+    var name = planLabel(billing.plan);
+    plan.textContent = name;
+    plan.hidden = !name;
+    btn.hidden = false;
+    /* /api/me answered with a user, so someone is signed in: show the row
+       even if /api/auth/me has not answered yet */
+    var box = $('account');
+    var who = $('who');
+    if (who && !who.textContent && billing.user) {
+      who.textContent = billing.user.name || billing.user.email || '';
+      who.title = billing.user.email || '';
+    }
+    if (box) box.hidden = false;
+  }
+
+  function billingShort(text) {
+    if (!billing.on || billing.wordsLeft === null) return false;
+    if (billing.user && billing.user.is_admin === true) return false;
+    return words(text).length > billing.wordsLeft;
+  }
+
+  /* the hint beside Humanize: what this draft uses, out of what is left */
+  function renderCost() {
+    var node = $('cost-hint');
+    if (!node) return;
+    var n = words(state.text).length;
+    if (!billing.on || billing.wordsLeft === null || !n) {
+      node.hidden = true;
+      node.removeAttribute('data-short');
+      clear(node);
+      return;
+    }
+    clear(node);
+    node.hidden = false;
+    if (billingShort(state.text)) {
+      node.setAttribute('data-short', '1');
+      node.appendChild(document.createTextNode('Not enough words left; '));
+      var link = el('button', 'link-btn', 'choose a plan');
+      link.type = 'button';
+      link.id = 'cost-plans';
+      link.addEventListener('click', function () {
+        openPlans({ words_needed: n, words_left: billing.wordsLeft }, link);
+      });
+      node.appendChild(link);
+      node.appendChild(document.createTextNode('.'));
+      return;
+    }
+    node.removeAttribute('data-short');
+    node.appendChild(document.createTextNode('Uses about '));
+    node.appendChild(el('span', 'num', fmtInt(n)));
+    node.appendChild(document.createTextNode(' ' + plural(n, 'word') + ' of your '));
+    node.appendChild(el('span', 'num', fmtInt(billing.wordsLeft)));
+    node.appendChild(document.createTextNode(' left.'));
+  }
+
+  /* ── the plans sheet ──────────────────────────────────────────────────
+     One dialog: the free allowance, the plans, the one-time top-ups, and a
+     way to the subscription page. Opened by a 402, the cost hint and the
+     Plans button. Focus stays inside it; Escape, the Close button and a
+     click on the ground close it and return focus to what opened it. */
+  var sheet = { open: false, opener: null, busy: false };
+
+  function focusablesIn(root) {
+    var list = root.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    return Array.prototype.filter.call(list, function (n) { return !n.hidden && n.offsetParent !== null; });
+  }
+
+  function onSheetKey(e) {
+    if (e.key === 'Escape' || e.key === 'Esc') { e.preventDefault(); e.stopPropagation(); closePlans(); return; }
+    if (e.key !== 'Tab') return;
+    var box = $('plans-sheet');
+    var f = focusablesIn(box);
+    if (!f.length) { e.preventDefault(); box.focus(); return; }
+    var first = f[0];
+    var last = f[f.length - 1];
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === box)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+
+  function setPlansStatus(kind, message, retry) {
+    var node = $('plans-status');
+    if (!node) return;
+    clear(node);
+    node.setAttribute('data-state', kind || 'idle');
+    if (message) node.appendChild(document.createTextNode(message));
+    if (retry) {
+      node.appendChild(document.createTextNode(' '));
+      var b = el('button', 'link-btn', 'Try again');
+      b.type = 'button';
+      b.addEventListener('click', retry);
+      node.appendChild(b);
+    }
+  }
+
+  /* the line that says why the sheet opened: the draft is bigger than the balance */
+  function renderWhy(why) {
+    var p = $('plans-why');
+    if (!p) return;
+    clear(p);
+    var need = why ? loose(why.words_needed) : null;
+    if (need === null && why && loose(why.needed) !== null && billing.wordsPerCredit) {
+      need = Math.round(loose(why.needed) * billing.wordsPerCredit);
+    }
+    var have = why ? loose(why.words_left) : null;
+    if (have === null) have = billing.wordsLeft;
+    if (need === null) { p.hidden = true; return; }
+    numify(p, 'This draft needs ' + fmtInt(need) + ' ' + plural(need, 'word') + ' and you have ' + fmtInt(have || 0) + ' left.');
+    p.hidden = false;
+  }
+
+  function openPlans(why, opener) {
+    var back = $('plans-backdrop');
+    var box = $('plans-sheet');
+    if (!back || !box) return;
+    sheet.opener = opener || document.activeElement;
+    sheet.open = true;
+    renderWhy(why);
+    back.hidden = false;
+    document.documentElement.setAttribute('data-sheet', '1');
+    void back.offsetWidth; /* so the fade runs from the hidden state */
+    back.setAttribute('data-in', '1');
+    setTimeout(function () { try { box.focus(); } catch (e) { /* detached */ } }, 0);
+    loadPlans(false);
+  }
+
+  function closePlans() {
+    var back = $('plans-backdrop');
+    if (!back || !sheet.open) return;
+    sheet.open = false;
+    back.removeAttribute('data-in');
+    document.documentElement.removeAttribute('data-sheet');
+    var hide = function () { if (!sheet.open) back.hidden = true; };
+    if (reduceMotion.matches) hide(); else setTimeout(hide, 160);
+    var opener = sheet.opener;
+    sheet.opener = null;
+    if (opener && typeof opener.focus === 'function' && document.body.contains(opener) && !opener.hidden) {
+      try { opener.focus(); } catch (e) { /* gone */ }
+    }
+  }
+
+  function loadPlans(force) {
+    if (billing.plans && !force) { renderPlans(); return; }
+    if (billing.loading) return;
+    setPlansStatus('wait', 'Loading the plans.');
+    billing.loading = request(PLANS_PATH).then(function (p) {
+      billing.loading = null;
+      billing.plans = p && typeof p === 'object' ? p : {};
+      var wpc = loose(billing.plans.words_per_credit);
+      if (billing.wordsPerCredit === null && wpc !== null && wpc > 0) billing.wordsPerCredit = wpc;
+      setPlansStatus('idle', '');
+      renderPlans();
+    }, function (err) {
+      billing.loading = null;
+      setPlansStatus('error', 'The plans could not be loaded: ' + ((err && err.message) || 'no answer') + '.', function () { loadPlans(true); });
     });
   }
 
-  /* ── network state ──────────────────────────────────────────────────────── */
+  function planRow(item, isPack) {
+    var row = el('div', 'plan-row');
+    var main = el('div', 'plan-main');
+    var title, meta;
+    if (isPack) {
+      var credits = loose(item.credits);
+      var wordsIn = credits !== null && billing.wordsPerCredit ? Math.round(credits * billing.wordsPerCredit) : null;
+      title = wordsIn !== null ? fmtInt(wordsIn) + ' words' : (item.name || 'Top-up');
+      meta = 'One-time top-up, paid once.';
+    } else {
+      title = intervalName(item.interval, item.name);
+      var wpm = loose(item.words_per_month);
+      if (wpm === null && loose(item.allowance_credits) !== null && billing.wordsPerCredit) {
+        wpm = Math.round(loose(item.allowance_credits) * billing.wordsPerCredit);
+      }
+      meta = (wpm !== null ? fmtInt(wpm) + ' words a month, ' : '') +
+        (item.interval === 'lifetime' ? 'one payment, no renewal.'
+          : item.interval === 'year' ? 'renews every year until you cancel.'
+          : 'renews every month until you cancel.');
+    }
+    main.appendChild(numify(el('p', 'plan-h'), title));
+    main.appendChild(numify(el('p', 'plan-meta'), meta));
+    row.appendChild(main);
+    row.appendChild(numify(el('p', 'plan-price'), typeof item.label === 'string' ? item.label : ''));
+    var current = !isPack && !!billing.plan && billing.plan === item.name;
+    if (current) {
+      row.setAttribute('data-current', '1');
+      row.appendChild(el('p', 'plan-current', 'Your plan'));
+      return row;
+    }
+    var btn = el('button', 'btn btn-primary', isPack ? 'Top up' : 'Choose');
+    btn.type = 'button';
+    btn.disabled = !!(billing.plans && billing.plans.stripe === false);
+    btn.setAttribute('aria-label', (isPack ? 'Top up with ' : 'Choose ') + title);
+    btn.addEventListener('click', function () {
+      checkout(isPack ? { pack: item.name } : { plan: item.name }, btn);
+    });
+    row.appendChild(btn);
+    return row;
+  }
+
+  function renderPlans() {
+    var p = billing.plans || {};
+    var free = $('plans-free');
+    clear(free);
+    var freeWords = loose(p.free_words);
+    if (freeWords !== null) {
+      var line = fmtInt(freeWords) + ' words free when you sign up';
+      if (billing.user && !billing.plan) {
+        line += billing.wordsLeft !== null && billing.wordsLeft > 0
+          ? ', ' + fmtInt(billing.wordsLeft) + ' of them still here.'
+          : ', already used.';
+      } else {
+        line += '.';
+      }
+      numify(free, line);
+      free.hidden = false;
+    } else {
+      free.hidden = true;
+    }
+
+    var rows = $('plan-rows');
+    clear(rows);
+    var plans = Array.isArray(p.plans) ? p.plans : [];
+    plans.forEach(function (pl) { if (pl && typeof pl === 'object') rows.appendChild(planRow(pl, false)); });
+    if (!plans.length) rows.appendChild(el('p', 'muted', 'No plans are on offer on this server yet.'));
+
+    var packs = Array.isArray(p.packs) ? p.packs : [];
+    var packsH = $('packs-h');
+    var packRows = $('pack-rows');
+    clear(packRows);
+    packsH.hidden = !packs.length;
+    packs.forEach(function (pk) { if (pk && typeof pk === 'object') packRows.appendChild(planRow(pk, true)); });
+
+    $('manage-btn').hidden = !billing.plan;
+    if (p.stripe === false) setPlansStatus('error', 'Payments are not set up on this server yet, so nothing can be bought here.');
+  }
+
+  function checkout(body, btn) {
+    if (sheet.busy) return;
+    sheet.busy = true;
+    var was = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Opening checkout';
+    setPlansStatus('wait', 'Opening the checkout page.');
+    /* remembered so the return can tell a new balance from the old one */
+    try { if (billing.wordsLeft !== null) sessionStorage.setItem(BALANCE_STORE, String(billing.wordsLeft)); } catch (e) { /* private mode */ }
+    request(CHECKOUT_PATH, body).then(function (r) {
+      var url = r && typeof r.url === 'string' ? r.url : '';
+      if (!url) throw new Error('no checkout address came back');
+      location.href = url;
+    }, function (err) {
+      sheet.busy = false;
+      btn.disabled = false;
+      btn.textContent = was;
+      setPlansStatus('error', 'The checkout page did not open: ' + ((err && err.message) || 'no answer') + '. Try again.');
+    });
+  }
+
+  function openPortal(btn) {
+    if (sheet.busy) return;
+    sheet.busy = true;
+    btn.disabled = true;
+    setPlansStatus('wait', 'Opening your subscription page.');
+    request(PORTAL_PATH, {}).then(function (r) {
+      var url = r && typeof r.url === 'string' ? r.url : '';
+      if (!url) throw new Error('no address came back');
+      location.href = url;
+    }, function (err) {
+      sheet.busy = false;
+      btn.disabled = false;
+      var msg = (err && err.message) || 'no answer';
+      setPlansStatus('error', /HTTP 404/.test(msg)
+        ? 'There is no subscription on this account to manage.'
+        : 'The subscription page did not open: ' + msg + '. Try again.');
+    });
+  }
+
+  /* back from Stripe: /app?purchase=success or /app?purchase=cancelled */
+  function handleReturn() {
+    var p = PARAMS.get('purchase');
+    if (!p) return;
+    try {
+      var u = new URL(location.href);
+      u.searchParams.delete('purchase');
+      history.replaceState(null, '', u.pathname + u.search + u.hash);
+    } catch (e) { /* an old browser keeps the query */ }
+    if (p === 'cancelled') { setStatus('idle', 'Payment cancelled, nothing was charged.'); return; }
+    if (p !== 'success') return;
+    var before = null;
+    try {
+      before = loose(sessionStorage.getItem(BALANCE_STORE));
+      sessionStorage.removeItem(BALANCE_STORE);
+    } catch (e) { /* private mode */ }
+    setStatus('loading', 'Payment received. Updating your balance.');
+    var tries = 0;
+    var finish = function (rose) {
+      var n = billing.wordsLeft;
+      if (n === null) { setStatus('idle', 'Payment received. Reload in a minute to see your new balance.'); return; }
+      var line = 'Payment received: ' + fmtInt(n) + ' ' + plural(n, 'word') + ' available.';
+      setStatus('ok', rose ? line : line + ' If that does not include your purchase yet, reload in a minute.');
+    };
+    var poll = function () {
+      tries++;
+      refreshMe().then(function () {
+        var now = billing.wordsLeft;
+        if (before === null) before = now;
+        if (now !== null && before !== null && now > before) { finish(true); return; }
+        if (tries >= 10) { finish(false); return; }
+        setTimeout(poll, 1000);
+      }, function () {
+        if (tries >= 10) { finish(false); return; }
+        setTimeout(poll, 1000);
+      });
+    };
+    poll();
+  }
+
+  function wireBilling() {
+    var plansBtn = $('plans-btn');
+    if (plansBtn) plansBtn.addEventListener('click', function () { openPlans(null, plansBtn); });
+    var close = $('plans-close');
+    if (close) close.addEventListener('click', closePlans);
+    var back = $('plans-backdrop');
+    if (back) back.addEventListener('mousedown', function (e) { if (e.target === back) closePlans(); });
+    var box = $('plans-sheet');
+    if (box) box.addEventListener('keydown', onSheetKey);
+    var manage = $('manage-btn');
+    if (manage) manage.addEventListener('click', function () { openPortal(manage); });
+  }
+
+  /* ── the account ─────────────────────────────────────────────────────
+     GET /api/auth/me says who is signed in; the top row shows the name and a
+     Sign out button. If the route is missing (a development server with no
+     auth) the row stays as it is and the app runs. If it answers that nobody
+     is signed in, the page goes to the sign-in form. */
+  function checkAccount() {
+    var box = $('account');
+    if (!box) return;
+    request('/api/auth/me').then(function (me) {
+      if (!me || typeof me !== 'object') return;
+      if (me.signed_in === false) { signInRequired(); return; }
+      if (!me.signed_in) return;
+      var u = me.user || {};
+      var who = $('who');
+      who.textContent = u.name || u.email || '';
+      who.title = u.email || '';
+      box.hidden = false;
+    }, function () { /* no auth routes: nothing to show */ });
+  }
+
+  function signOut() {
+    var btn = $('signout-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing out'; }
+    var done = function () { location.href = '/'; };
+    fetch(API_BASE + '/api/auth/signout', { method: 'POST', headers: { Accept: 'application/json' } }).then(done, done);
+  }
 
   function renderOnline() {
     var offline = !navigator.onLine;
-    $('offline-banner').hidden = !offline || state.mock;
-    if (offline && !state.mock) setPill('bad', 'Offline. No connection to the service.');
+    $('offline-banner').hidden = !offline;
+    if (offline) setPill('bad', 'Offline');
   }
 
-  /* ══════════════════════════════════════════════════════════════════════
-     WIRING
-     ══════════════════════════════════════════════════════════════════════ */
+  /* ── wiring ──────────────────────────────────────────────────────────── */
+
+  /* ── the divider ─────────────────────────────────────────────────────────
+     The Before column is the CSS variable --col-before, a fraction of the
+     usable width (the instrument minus the 16px divider). Drag it, or focus
+     it and use the arrow keys (Home and End for the limits). Enter, Space or
+     a double click folds the smaller pane to a 44px rail and the same again
+     brings it back; a folded pane also opens when clicked. Dragging snaps
+     at 30, 50 and 70 percent. Under 960px the panes stack and the same
+     handle sets the height of the draft. Everything is remembered. */
+  var SPLIT_STORE = 'readshuman.split';
+  var RAIL = 44;
+  var SNAPS = [0.3, 0.5, 0.7];
+  var split = { f: 0.5, last: 0.5, h: null, collapsed: '', shown: 0.5 };
+  var narrowMQ = window.matchMedia ? window.matchMedia('(max-width: 960px)') : { matches: false };
+
+  function splitNarrow() { return !!narrowMQ.matches; }
+  function splitLoad() {
+    try {
+      var s = JSON.parse(localStorage.getItem(SPLIT_STORE) || 'null');
+      if (!s || typeof s !== 'object') return;
+      if (typeof s.f === 'number' && isFinite(s.f)) split.f = clamp(s.f, 0.2, 0.8);
+      if (typeof s.h === 'number' && isFinite(s.h)) split.h = s.h;
+      if (s.collapsed === 'before' || s.collapsed === 'after') split.collapsed = s.collapsed;
+      split.last = split.f;
+    } catch (e) { /* private mode */ }
+  }
+  function splitSave() {
+    try { localStorage.setItem(SPLIT_STORE, JSON.stringify({ f: split.f, h: split.h, collapsed: split.collapsed })); }
+    catch (e) { /* private mode */ }
+  }
+  function splitUsable() { return Math.max(1, $('verdict').getBoundingClientRect().width - 16); }
+  function splitTarget() {
+    if (split.collapsed === 'before') return RAIL / splitUsable();
+    if (split.collapsed === 'after') return 1 - RAIL / splitUsable();
+    return split.f;
+  }
+  /* paint one fraction; anim.js calls this every frame while the split glides */
+  function splitApply(f) {
+    split.shown = f;
+    $('verdict').style.setProperty('--col-before', 'calc((100% - 16px) * ' + f.toFixed(4) + ')');
+  }
+  function splitAria() {
+    var d = $('divider');
+    var inst = $('verdict');
+    var now = split.collapsed === 'before' ? 0 : split.collapsed === 'after' ? 100 : Math.round(split.f * 100);
+    d.setAttribute('aria-valuenow', String(now));
+    d.setAttribute('aria-valuetext', split.collapsed
+      ? (split.collapsed === 'before' ? 'Before is folded away' : 'After is folded away')
+      : 'Before ' + now + ' percent, After ' + (100 - now) + ' percent');
+    inst.setAttribute('data-collapsed', split.collapsed);
+  }
+  function splitGo(animate) {
+    var inst = $('verdict');
+    var from = split.shown;
+    var to = splitTarget();
+    splitAria();
+    splitSave();
+    if (splitNarrow()) { inst.classList.remove('is-gliding'); splitApply(to); return; }
+    if (!animate || reduceMotion.matches) { inst.classList.remove('is-gliding'); splitApply(to); return; }
+    if (document.documentElement.getAttribute('data-anim') === 'on') {
+      inst.classList.remove('is-gliding');
+      emit('humanizer:split', { from: from, to: to });
+    } else {
+      inst.classList.add('is-gliding');
+      splitApply(to);
+      setTimeout(function () { inst.classList.remove('is-gliding'); }, 320);
+    }
+  }
+  function splitSet(f) { split.f = clamp(f, 0.2, 0.8); split.last = split.f; split.collapsed = ''; splitGo(true); }
+  function splitToggle() {
+    if (split.collapsed) { split.collapsed = ''; split.f = split.last; }
+    else { split.last = split.f; split.collapsed = split.f <= 0.5 ? 'before' : 'after'; }
+    splitGo(true);
+  }
+  function snapF(f, ticks) {
+    var out = f;
+    for (var i = 0; i < SNAPS.length; i++) {
+      var near = Math.abs(f - SNAPS[i]) < 0.02;
+      if (ticks && ticks[i]) ticks[i].setAttribute('data-near', near ? '1' : '0');
+      if (near) out = SNAPS[i];
+    }
+    return out;
+  }
+  function snapH(h) {
+    var vh = window.innerHeight;
+    for (var i = 0; i < SNAPS.length; i++) if (Math.abs(h - SNAPS[i] * vh) < 12) return SNAPS[i] * vh;
+    return h;
+  }
+  function beforeHeight() {
+    var body = $('canvas-scroll');
+    return split.h || (body ? body.getBoundingClientRect().height : 300);
+  }
+  function setBeforeHeight(h) {
+    split.h = Math.round(clamp(h, 120, window.innerHeight * 0.8));
+    split.collapsed = '';
+    $('verdict').style.setProperty('--before-h', split.h + 'px');
+    splitAria();
+    splitSave();
+  }
+
+  function wireSplit() {
+    var d = $('divider');
+    var inst = $('verdict');
+    if (!d || !inst) return;
+    var ticks = Array.prototype.slice.call(d.querySelectorAll('.divider-snaps i'));
+    splitLoad();
+    splitApply(splitTarget());
+    splitAria();
+    if (split.h) inst.style.setProperty('--before-h', split.h + 'px');
+
+    var drag = null;
+    d.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      e.preventDefault();
+      try { d.setPointerCapture(e.pointerId); } catch (x) { /* older engines */ }
+      var r = inst.getBoundingClientRect();
+      var dr = d.getBoundingClientRect();
+      drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, rect: r, h0: beforeHeight() };
+      for (var i = 0; i < ticks.length; i++) {
+        ticks[i].style.left = Math.round(r.left + (r.width - 16) * SNAPS[i] + 8 - dr.left) + 'px';
+        ticks[i].setAttribute('data-near', '0');
+      }
+      inst.classList.add('is-dragging');
+      inst.classList.remove('is-gliding');
+    });
+    d.addEventListener('pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      if (splitNarrow()) {
+        setBeforeHeight(snapH(drag.h0 + (e.clientY - drag.y0)));
+        return;
+      }
+      var f = clamp((e.clientX - drag.rect.left - 8) / Math.max(1, drag.rect.width - 16), 0.2, 0.8);
+      f = snapF(f, ticks);
+      split.f = f; split.last = f; split.collapsed = '';
+      splitApply(f);
+      splitAria();
+    });
+    function end(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag = null;
+      inst.classList.remove('is-dragging');
+      try { d.releasePointerCapture(e.pointerId); } catch (x) { /* already released */ }
+      splitSave();
+    }
+    d.addEventListener('pointerup', end);
+    d.addEventListener('pointercancel', end);
+    d.addEventListener('dblclick', function () { splitToggle(); });
+    d.addEventListener('keydown', function (e) {
+      var k = e.key;
+      var step = e.shiftKey ? 0.1 : 0.05;
+      if (k === 'Enter' || k === ' ') { e.preventDefault(); splitToggle(); return; }
+      if (splitNarrow()) {
+        if (k === 'ArrowUp' || k === 'ArrowDown') { e.preventDefault(); setBeforeHeight(beforeHeight() + (k === 'ArrowDown' ? 40 : -40)); }
+        return;
+      }
+      if (k === 'Home') { e.preventDefault(); splitSet(0.2); return; }
+      if (k === 'End') { e.preventDefault(); splitSet(0.8); return; }
+      if (k === 'ArrowLeft' || k === 'ArrowRight') {
+        e.preventDefault();
+        var base = split.collapsed === 'before' ? 0.2 : split.collapsed === 'after' ? 0.8 : split.f;
+        splitSet(base + (k === 'ArrowRight' ? step : -step));
+      }
+    });
+    /* a folded pane opens when clicked */
+    ['before', 'after'].forEach(function (side) {
+      $('pane-' + side).addEventListener('click', function () { if (split.collapsed === side) splitToggle(); });
+    });
+    window.addEventListener('resize', function () { splitApply(splitTarget()); });
+  }
+
+  /* ── the construction layer ─────────────────────────────────────────────
+     Every region marked data-c gets a hairline box, its name, the API field
+     that fills it (data-src; data-flow="out" when the region sends instead)
+     and its size. Shown while the Construction switch is on or the backtick
+     key is held. Rebuilt on resize and whenever the interface changes. */
+  var construction = { on: false, held: false, timer: null };
+  function constructionShown() { return construction.on || construction.held; }
+
+  function buildConstruction() {
+    var layer = $('construction');
+    if (!layer) return;
+    clear(layer);
+    layer.style.height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) + 'px';
+    var sx = window.pageXOffset, sy = window.pageYOffset;
+    var shell = document.querySelector('.shell');
+    if (shell) {
+      var sr = shell.getBoundingClientRect();
+      var pad = parseFloat(getComputedStyle(shell).paddingLeft) || 0;
+      var edge = el('div', 'construction-shell');
+      edge.style.left = (sr.left + sx + pad) + 'px';
+      edge.style.width = Math.max(0, sr.width - pad * 2) + 'px';
+      layer.appendChild(edge);
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('[data-c]'), function (node) {
+      if (node.hidden) return;
+      var r = node.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return;
+      var box = el('div', 'c-box');
+      box.style.left = (r.left + sx) + 'px';
+      box.style.top = (r.top + sy) + 'px';
+      box.style.width = r.width + 'px';
+      box.style.height = r.height + 'px';
+      if (node.getAttribute('data-flow') === 'out') box.setAttribute('data-flow', 'out');
+      var tag = el('span', 'c-tag');
+      if (r.width < 160) tag.className += ' c-tag-out';
+      tag.appendChild(el('span', 'c-name', node.getAttribute('data-c')));
+      var src = node.getAttribute('data-src');
+      if (src) tag.appendChild(el('span', 'c-src', src));
+      box.appendChild(tag);
+      if (r.height >= 100) box.appendChild(el('span', 'c-dim', Math.round(r.width) + 'x' + Math.round(r.height)));
+      layer.appendChild(box);
+    });
+  }
+
+  function setConstruction(show) {
+    var layer = $('construction');
+    if (!layer) return;
+    var root = document.documentElement;
+    if (show) {
+      buildConstruction();
+      layer.hidden = false;
+      root.setAttribute('data-construction', 'on');
+      emit('humanizer:construction', { on: true });
+      return;
+    }
+    root.removeAttribute('data-construction');
+    emit('humanizer:construction', { on: false });
+    var wait = root.getAttribute('data-anim') === 'on' && !reduceMotion.matches ? 200 : 0;
+    setTimeout(function () { if (!constructionShown()) { layer.hidden = true; clear(layer); } }, wait);
+  }
+  function refreshConstruction() { if (constructionShown()) buildConstruction(); }
+  function queueConstruction(ms) {
+    if (!constructionShown()) return;
+    if (construction.timer) clearTimeout(construction.timer);
+    construction.timer = setTimeout(refreshConstruction, ms || 60);
+  }
+
+  function wireConstruction() {
+    var sw = $('construction-switch');
+    wireSwitch(sw, function (on) { construction.on = on; setConstruction(constructionShown()); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== '`' || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      var t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      construction.held = true;
+      if (!construction.on) setConstruction(true);
+    });
+    document.addEventListener('keyup', function (e) {
+      if (e.key !== '`' || !construction.held) return;
+      construction.held = false;
+      if (!construction.on) setConstruction(false);
+    });
+    window.addEventListener('blur', function () {
+      if (!construction.held) return;
+      construction.held = false;
+      if (!construction.on) setConstruction(false);
+    });
+    window.addEventListener('resize', function () { queueConstruction(80); });
+    ['humanizer:verdict', 'humanizer:canvas', 'humanizer:progress-open', 'humanizer:progress-close', 'humanizer:analysis']
+      .forEach(function (n) { document.addEventListener(n, function () { queueConstruction(60); }); });
+    Array.prototype.forEach.call(document.querySelectorAll('details.fold'), function (d) {
+      d.addEventListener('toggle', function () { queueConstruction(220); });
+    });
+  }
 
   function init() {
     editor = $('editor');
@@ -3360,26 +2898,21 @@
     statusLine = $('status-line');
     errorBox = $('error-box');
 
-    /* theme */
-    var savedTheme = 'auto';
-    try { savedTheme = localStorage.getItem('humanizer.theme') || 'auto'; } catch (e) { /* ignore */ }
-    if (THEMES.indexOf(savedTheme) < 0) savedTheme = 'auto';
-    applyTheme(savedTheme);
-    $('theme-btn').addEventListener('click', function () {
-      applyTheme(THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length]);
+    /* the whole before pane is the place to write: a click anywhere on it focuses the draft */
+    scroller.addEventListener('mousedown', function (e) {
+      if (e.target !== scroller) return;
+      e.preventDefault();
+      editor.focus();
     });
 
-    /* the three "?" explainers */
-    wireExplain('quality-why', 'quality-explain');
-    wireExplain('reference-why', 'reference-explain');
-
-    /* editing */
     editor.addEventListener('input', function () {
       state.text = getText();
       $('empty-state').hidden = !!state.text.trim();
+      editor.setAttribute('data-empty', state.text.trim() ? '0' : '1');
       refreshHumanizeButton();
       renderCounts();
-      setStatus('stale', 'Edited. Measuring again in ' + (DEBOUNCE_MS / 1000).toFixed(1) + 's.');
+      renderVerdict();
+      setStatus('stale', 'Edited.');
       scheduleAnalyze();
     });
 
@@ -3387,118 +2920,87 @@
     editor.addEventListener('paste', function (e) {
       if (!e.clipboardData) return;
       e.preventDefault();
-      var t = e.clipboardData.getData('text/plain') || '';
-      document.execCommand('insertText', false, t);
+      document.execCommand('insertText', false, e.clipboardData.getData('text/plain') || '');
     });
 
-    editor.addEventListener('click', function (e) {
-      var node = e.target;
-      while (node && node !== editor && !(node.classList && node.classList.contains('sent'))) node = node.parentNode;
-      if (node && node !== editor) selectSentence(Number(node.getAttribute('data-index')), false);
-    });
-
-    /* caret movement is the keyboard route into the inspector; putting a
-       tabindex on every sentence span would be hostile inside a contenteditable */
-    document.addEventListener('selectionchange', function () {
-      if (rendering || document.activeElement !== editor) return;
-      var sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      var node = sel.getRangeAt(0).startContainer;
-      while (node && node !== editor && !(node.classList && node.classList.contains('sent'))) node = node.parentNode;
-      if (node && node !== editor) {
-        var idx = Number(node.getAttribute('data-index'));
-        if (idx !== state.selected) selectSentence(idx, false);
-      }
-    });
-
-    /* Ctrl/Cmd+Enter analyses from anywhere on the page */
     document.addEventListener('keydown', function (e) {
-      /* Escape is the second escape hatch out of a running rewrite */
       if (e.key === 'Escape' && activeRun) { e.preventDefault(); cancelHumanize(); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
-        if (!activeRun) analyze();
+        if (!activeRun && !$('humanize-btn').disabled) humanize();
       }
     });
 
-    $('analyze-btn').addEventListener('click', function () { analyze(); });
-
-    $('heat-advisory').addEventListener('click', function () {
-      setHeatSource('advisory'); renderDetectors();
-    });
-    $('heat-perplexity').addEventListener('click', function () {
-      if (this.disabled) return;
-      setHeatSource('perplexity'); renderDetectors();
-    });
-
-    /* clicking a sentence should not lead to a dead end, so the fold opens */
-    editor.addEventListener('click', function () {
-      if (state.selected !== null) $('more').open = true;
-    });
-
-    /* the two onboarding examples in the empty state: the only sample
-       affordance left, and it disappears the moment there is any text */
-    function loadSample(key) {
-      state.humanize = null; state.preHumanize = null;
-      $('undo-btn').hidden = true;
-      renderHumanizeResult();
-      setText(SAMPLES[key] || '');
-      editor.focus();
-      analyze();
-    }
-    Array.prototype.forEach.call(document.querySelectorAll('[data-sample]'), function (b) {
-      b.addEventListener('click', function () { loadSample(b.getAttribute('data-sample')); });
-    });
-
-    /* the point of the product */
+    $('analyze-btn').addEventListener('click', function () { analyze({ detect: true }); });
     $('humanize-btn').addEventListener('click', function () { humanize(); });
     $('undo-btn').addEventListener('click', function () { undoHumanize(); });
+    $('use-btn').addEventListener('click', function () { useRewrite(); });
+    $('copy-btn').addEventListener('click', function () { copyRewrite(); });
     $('progress-cancel').addEventListener('click', function () { cancelHumanize(); });
-    $('aggressiveness').addEventListener('change', function () { refreshHumanizeButton(); });
 
-    /* mock mode */
-    $('mock-exit').addEventListener('click', function () {
-      setMock(false);
-      renderOnline();
-      checkHealth();
-      probeHumanize();
-      analyze();
-    });
-    $('offline-mock').addEventListener('click', function () {
-      setMock(true);
-      $('offline-banner').hidden = true;
-      analyze();
+    Array.prototype.forEach.call(document.querySelectorAll('[data-go]'), function (b) {
+      b.addEventListener('click', function () { goTo(b.getAttribute('data-go')); });
     });
 
-    /* network */
+    var facts = $('facts');
+    if (facts) { facts.addEventListener('input', refreshFactsState); refreshFactsState(); }
+
+    wireSplit();
+    /* on a phone the keyboard covers the lower half; bring the draft up */
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
+      $('editor').addEventListener('focus', function () {
+        setTimeout(function () {
+          if (window.visualViewport && window.visualViewport.height < window.innerHeight - 100) {
+            var pane = $('pane-before') || $('editor');
+            pane.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          }
+        }, 300);
+      });
+    }
+    wireConstruction();
+    /* anim.js drives the split's glide through this */
+    window.readshuman = { splitApply: splitApply };
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-sample]'), function (b) {
+      b.addEventListener('click', function () {
+        state.humanize = null; state.afterLocated = []; state.preHumanize = null; state.reading = null; state.view = 'reading';
+        $('undo-btn').hidden = true;
+        renderRun(); renderEdits(); renderAfter();
+        setText(SAMPLES[b.getAttribute('data-sample')] || SAMPLE);
+        editor.focus();
+        analyze({ detect: false });
+      });
+    });
+
     window.addEventListener('online', function () {
       renderOnline();
-      if (!state.mock) { checkHealth(); probeHumanize(); if (state.text.trim()) analyze(); }
+      checkHealth();
+      if (state.text.trim()) analyze({ detect: false });
     });
     window.addEventListener('offline', renderOnline);
 
-    setMock(state.mock);
     renderOnline();
     checkHealth();
-    probeHumanize();
+    checkAccount();
+    var signoutBtn = $('signout-btn');
+    if (signoutBtn) signoutBtn.addEventListener('click', signOut);
+    wireBilling();
+    checkBilling();
 
-    var wantSample = PARAMS.get('sample');
-    if (wantSample === 'ai' || wantSample === 'human') setText(SAMPLES[wantSample]);
-    else setText('');
-
-    refreshOverlay();
+    setText(PARAMS.get('sample') === 'ai' ? SAMPLE : '');
     refreshHumanizeButton();
-    renderHumanizeResult();
-    renderHero();
+    renderVerdict();
+    renderRun();
+    renderEdits();
+    renderAfter();
     renderMeasurements();
     renderFindings();
     renderStyleSignals();
     renderFlagged();
-    renderInspector();
-    renderDetectors();
 
-    if (state.text.trim()) analyze();
-    else setStatus('idle', 'Ready when you are. Paste a draft, or load one of the samples above.');
+    if (state.text.trim()) analyze({ detect: false });
+    else setStatus('idle', 'Ready.');
+    handleReturn();
 
     window.__hzReady = true;
     emit('humanizer:ready');

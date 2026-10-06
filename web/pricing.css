@@ -1,0 +1,96 @@
+/* Vervly pricing page.
+
+   Loaded after styles.css (tokens, buttons, .num), footer.css and home.css
+   (the top row and section headings). This file adds the three plan cards,
+   the top-up row and the How it works list. Rules: web/DESIGN.md. */
+
+.pricing-main { padding-top: var(--s-10); }
+.pricing-page .home-nav-link[aria-current="page"] { color: var(--fg); }
+.home-balance { font-size: var(--t-1); color: var(--fg-2); white-space: nowrap; margin-right: var(--s-2); }
+.home-balance .num { color: var(--fg); }
+
+/* the heading, one sentence, the free line */
+.plans-h {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(1.75rem, 1.2rem + 1.6vw, 2.5rem);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+.plans-lede { margin-top: var(--s-3); font-size: var(--t-4); line-height: 1.6; color: var(--fg-2); max-width: 60ch; }
+.plans-free { margin-top: var(--s-4); font-size: var(--t-3); line-height: 1.55; color: var(--fg); max-width: 60ch; }
+
+/* three cards side by side, each an opaque surface with a hairline, like a pane */
+.price-grid {
+  margin-top: var(--s-8);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-4);
+  align-items: stretch;
+}
+.price-card {
+  min-width: 0;
+  display: flex; flex-direction: column;
+  background: var(--g2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-6);
+  transition: border-color var(--fast) var(--ease);
+}
+.price-card[data-current="1"] { border-color: var(--accent-line); }
+.price-card-h { font-family: var(--serif); font-weight: 400; font-size: var(--t-5); line-height: 1.2; color: var(--fg); }
+.price-card-amount { margin-top: var(--s-3); font-size: var(--t-3); color: var(--fg); }
+.price-card-amount .num { font-size: var(--t-5); }
+.price-card-words { margin-top: var(--s-4); font-size: var(--t-2); color: var(--fg-2); }
+.price-card-p { margin-top: var(--s-1); font-size: var(--t-1); line-height: 1.5; color: var(--fg-3); max-width: 36ch; }
+.price-card-act { margin-top: auto; padding-top: var(--s-6); display: flex; flex-direction: column; align-items: flex-start; gap: var(--s-2); }
+.price-card-act .btn { width: 100%; min-height: 40px; }
+.price-current { font-size: var(--t-2); font-weight: 500; color: var(--accent-deep); line-height: 1.4; }
+.price-until { font-size: var(--t-1); color: var(--fg-3); line-height: 1.5; }
+
+/* the quiet manage button and the status line under the cards */
+.plans-foot { margin-top: var(--s-4); display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; min-height: var(--s-6); }
+.plans-status { font-size: var(--t-1); color: var(--fg-2); line-height: 1.5; margin-left: auto; text-align: right; max-width: 72ch; }
+.plans-status:empty { display: none; }
+.plans-status[data-state="wait"]  { color: var(--accent); }
+.plans-status[data-state="error"] { color: var(--ai); text-align: left; margin-left: 0; flex: 1 1 100%; }
+.plans-status[data-state="note"]  { color: var(--fg-3); text-align: left; margin-left: 0; flex: 1 1 100%; }
+
+/* the one-time top-up rows, on hairlines like the app's plan rows */
+.topups { padding-top: var(--s-12); }
+.topup-rows { display: grid; }
+.topup-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center; column-gap: var(--s-5);
+  padding: var(--s-3) 0;
+  border-top: 1px solid var(--line);
+}
+.topup-row:last-child { border-bottom: 1px solid var(--line); }
+.topup-h { font-weight: 500; font-size: var(--t-3); color: var(--fg); line-height: 1.3; }
+.topup-meta { margin-top: 2px; font-size: var(--t-1); color: var(--fg-2); line-height: 1.5; }
+.topup-price { font-size: var(--t-3); color: var(--fg); white-space: nowrap; text-align: right; }
+
+/* how it works: a plain list and the two legal links */
+.how { padding-top: var(--s-12); }
+.how-list { padding-left: var(--s-5); max-width: 66ch; color: var(--fg-2); font-size: var(--t-3); line-height: 1.6; }
+.how-list li { margin: var(--s-2) 0; }
+.how-list li::marker { color: var(--fg-3); }
+.how-legal { margin-top: var(--s-5); font-size: var(--t-1); line-height: 1.5; color: var(--fg-3); }
+.how-legal a { color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; }
+.how-legal a:hover { color: var(--accent); }
+.how-legal a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+@media (max-width: 960px) {
+  .price-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .pricing-main { padding-top: var(--s-8); }
+  .home-balance { display: none; }
+  .price-card { padding: var(--s-5) var(--s-4); }
+  .topup-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--s-2); }
+  .topup-main { grid-column: 1 / -1; }
+  .topup-price { text-align: left; }
+  .plans-status { text-align: left; margin-left: 0; }
+}

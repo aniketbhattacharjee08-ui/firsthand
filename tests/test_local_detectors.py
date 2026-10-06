@@ -328,8 +328,12 @@ class TestPublishedRegistry:
     def test_every_shipped_engine_has_a_measurement(self):
         for name, spec in PUBLISHED_DETECTORS.items():
             assert 0.0 <= spec["pairwise"] <= 1.0, name
-            assert 0 <= spec["fpr"] <= 14, name
-            assert 0 <= spec["tpr"] <= 14, name
+            # The surrogate is measured against GPTZero's labels on its own
+            # held-out set; every other row is on the repo's 14 + 14 paragraphs.
+            n_human = spec.get("n_human", 14)
+            n_ai = spec.get("n_ai", 14)
+            assert 0 <= spec["fpr"] <= n_human, name
+            assert 0 <= spec["tpr"] <= n_ai, name
             assert spec["note"], name
 
     def test_the_default_is_the_best_measured_shipped_engine(self):
@@ -338,6 +342,8 @@ class TestPublishedRegistry:
         assert DEFAULT_MODERN_MODEL == default["model"]
         for name, spec in SHIPPED_DETECTORS.items():
             spec = PUBLISHED_DETECTORS[name]
+            if spec.get("measured_on"):
+                continue  # a different measurement set; not comparable
             better = (
                 spec["pairwise"] > default["pairwise"]
                 and spec["fpr"] < default["fpr"]
@@ -948,7 +954,7 @@ from humanizer.api.server import create_app  # noqa: E402
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(create_app(web_dir=Path("/nonexistent"))) as c:
+    with TestClient(create_app(web_dir=Path("/nonexistent"), auth=False)) as c:
         yield c
 
 
@@ -987,16 +993,21 @@ class TestDetectEndpoint:
             assert key in row, key
 
     def test_null_detectors_runs_the_single_default_engine(self, client):
-        """One engine by default, and it is the modern one.
+        """One engine by default, and since 2026-09-08 it is the free GPTZero surrogate.
 
         The UI shows a single score. Returning three disagreeing percentages,
         two of them from methods measured at or below chance on academic
-        prose, invited callers to average them.
+        prose, invited callers to average them; and research/24 §6 measured
+        the local engines rating GPTZero-human rewrites as AI, so the product
+        shows GPTZero's verdict and nothing else. Without a key the row is
+        unavailable and says so rather than substituting a local number.
         """
         r = client.post("/api/detect", json={"text": HUMAN_NARRATIVE})
         assert r.status_code == 200
-        names = [row["name"] for row in r.json()["detectors"]]
-        assert names == ["modern"]
+        body = r.json()
+        names = [row["name"] for row in body["detectors"]]
+        assert names == ["surrogate"]
+        assert body["is_gptzero"] is False
 
     def test_the_legacy_engines_are_still_reachable_by_name(self, client):
         """Kept, not deleted. The measured finding about them is the point."""

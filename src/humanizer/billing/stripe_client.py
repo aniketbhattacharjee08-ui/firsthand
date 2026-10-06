@@ -1,8 +1,8 @@
 """Stripe Checkout and webhook verification over plain HTTPS.
 
-No Stripe SDK: `requests` is already a core dependency and the two calls this
-product needs (create a Checkout Session, verify a webhook signature) are a
-form-encoded POST and an HMAC. Keeping the dependency list unchanged is the
+No Stripe SDK: `requests` is already a core dependency and the three calls
+this product needs (create a Checkout Session, open a billing portal
+session, verify a webhook signature) are form-encoded POSTs and an HMAC. Keeping the dependency list unchanged is the
 point of this package's "no edits to existing code" constraint.
 
 Webhook signatures follow Stripe's documented scheme: the `Stripe-Signature`
@@ -29,30 +29,9 @@ class StripeError(RuntimeError):
     pass
 
 
-def create_checkout_session(
-    secret_key: str,
-    price_id: str,
-    quantity: int,
-    success_url: str,
-    cancel_url: str,
-    customer_email: str,
-    metadata: Dict[str, str],
-    timeout: float = 20.0,
-) -> Dict[str, Any]:
-    """Create a one-time-payment Checkout Session. Returns Stripe's JSON."""
-    form: Dict[str, str] = {
-        "mode": "payment",
-        "line_items[0][price]": price_id,
-        "line_items[0][quantity]": str(int(quantity)),
-        "success_url": success_url,
-        "cancel_url": cancel_url,
-        "customer_email": customer_email,
-        "client_reference_id": metadata.get("user_id", ""),
-    }
-    for k, v in metadata.items():
-        form["metadata[%s]" % k] = str(v)
+def _post(secret_key: str, path: str, form: Dict[str, str], timeout: float) -> Dict[str, Any]:
     resp = requests.post(
-        API + "/checkout/sessions",
+        API + path,
         data=form,
         auth=(secret_key, ""),
         headers={"Idempotency-Key": uuid.uuid4().hex},
@@ -66,6 +45,57 @@ def create_checkout_session(
         msg = (payload.get("error") or {}).get("message") or resp.text[:200]
         raise StripeError("Stripe %s: %s" % (resp.status_code, msg))
     return payload
+
+
+def create_checkout_session(
+    secret_key: str,
+    price_id: str,
+    quantity: int,
+    success_url: str,
+    cancel_url: str,
+    customer_email: str,
+    metadata: Dict[str, str],
+    timeout: float = 20.0,
+    mode: str = "payment",
+    customer: Optional[str] = None,
+    subscription_metadata: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Create a Checkout Session. Returns Stripe's JSON.
+
+    `mode` is `payment` for packs and lifetime plans, `subscription` for
+    monthly and yearly ones. A stored Stripe customer id is passed as
+    `customer` so repeat purchases and the billing portal share one
+    customer; otherwise `customer_email` prefills the form.
+    `subscription_metadata` lands on the Subscription object itself, which
+    is what `customer.subscription.*` events carry, so a renewal can be
+    matched to a user without a second lookup.
+    """
+    form: Dict[str, str] = {
+        "mode": mode,
+        "line_items[0][price]": price_id,
+        "line_items[0][quantity]": str(int(quantity)),
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "client_reference_id": metadata.get("user_id", ""),
+    }
+    if customer:
+        form["customer"] = customer
+    else:
+        form["customer_email"] = customer_email
+    for k, v in metadata.items():
+        form["metadata[%s]" % k] = str(v)
+    for k, v in (subscription_metadata or {}).items():
+        form["subscription_data[metadata][%s]" % k] = str(v)
+    return _post(secret_key, "/checkout/sessions", form, timeout)
+
+
+def create_portal_session(
+    secret_key: str, customer: str, return_url: str, timeout: float = 20.0
+) -> Dict[str, Any]:
+    """Open a Stripe billing portal session (cancel, change card, invoices)."""
+    return _post(
+        secret_key, "/billing_portal/sessions", {"customer": customer, "return_url": return_url}, timeout
+    )
 
 
 def verify_webhook(

@@ -478,6 +478,13 @@ def guide_context(
 _GUIDE_CACHE: Dict[Tuple[str, str], Any] = {}
 
 
+def clear_guide_cache() -> None:
+    """Forget the guide wrappers. Their weights live in `detectors.local`'s
+    cache and are freed by `local.clear_model_cache()`; this drops the last
+    references to them so that release actually takes effect."""
+    _GUIDE_CACHE.clear()
+
+
 def _guide_detector(model_name: str = GUIDE_MODEL) -> Any:
     """The process-wide guide, built on first use.
 
@@ -807,6 +814,11 @@ class GuidedConfig:
     #: objective: 0.30 under `evade`, 0.45 under `faithful`.
     min_sentence_overlap: Optional[float] = None
     #: --- names below are `PipelineConfig`'s and are read by its gate ---
+    #: Author-vouched names, dates and figures; see `PipelineConfig.facts`.
+    #: The guided prompts do not use it (a sentence-level continuation adds
+    #: no particulars), but the paragraph gate honours it, so a run with the
+    #: same facts as an LLM run judges candidates by the same rule.
+    facts: str = ""
     min_content_overlap: Optional[float] = None
     max_length_ratio_delta: Optional[float] = None
     min_length_ratio: Optional[float] = None
@@ -959,7 +971,7 @@ class GuidedResult:
 
 def guided_available() -> bool:
     """Whether guided decoding can run at all right now."""
-    return llm_mod.mlx_available()
+    return llm_mod.generation_available()
 
 
 def guided_unavailable_reason() -> Optional[str]:
@@ -971,7 +983,7 @@ def guided_unavailable_reason() -> Optional[str]:
     means no *guide* -- which is a different, weaker failure handled inside
     `stream()`, not here, because a guideless run still produces text.
     """
-    return llm_mod.mlx_unavailable_reason()
+    return llm_mod.generation_unavailable_reason()
 
 
 def guide_unavailable_reason(model_name: str = GUIDE_MODEL) -> Optional[str]:
@@ -1863,6 +1875,11 @@ def stream(
             _plural(len(outcomes), "paragraph"),
         ),
     )
+
+    # -- repair -----------------------------------------------------------
+    # The stage exists in `pipeline.STAGES` so both pipelines feed one
+    # checklist; the guided search's per-sentence fallback is its repair.
+    yield event("repair", "skip", 1.0, "no repair stage in the guided search")
 
     # -- finalize ---------------------------------------------------------
     yield event("finalize", "start", 0.0, "reassembling and re-measuring")

@@ -9,17 +9,32 @@ transaction, so the ledger always reconciles to the balance.
 `charge()` is atomic: it is one `UPDATE ... WHERE credits >= ?` and reports
 failure by rowcount, so two concurrent requests cannot both spend the last
 credit.
+
+Plans sit on top of the ledger rather than beside it. A user on a plan has an
+`allowance` (credits per UTC calendar month); `topup_if_due()` raises the
+balance *up to* that number once per month and writes an `allowance` ledger
+row, so purchased credits above the allowance are never clipped and a
+renewal can never be applied twice (the guard is the `plan_period` column,
+checked inside the same `BEGIN IMMEDIATE`).
+
+Transactions nest: `_txn()` opens `BEGIN IMMEDIATE` only at depth zero, so a
+webhook handler can record the event id and apply several plan changes as
+one unit (`apply_once`). An exception anywhere inside rolls the whole unit
+back.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import secrets
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
+
+T = TypeVar("T")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -78,6 +93,33 @@ CREATE TABLE IF NOT EXISTS signups (
 CREATE INDEX IF NOT EXISTS signups_ip ON signups(ip, created);
 """
 
+#: Columns added after the first release. Applied with `ALTER TABLE ADD
+#: COLUMN` when `PRAGMA table_info` does not list them, so a database from
+#: before plans existed keeps working without a migration step.
+_USER_COLUMNS = (
+    ("plan", "TEXT NOT NULL DEFAULT ''"),
+    ("plan_allowance", "INTEGER NOT NULL DEFAULT 0"),
+    ("plan_until", "REAL"),
+    ("plan_period", "TEXT"),
+    ("stripe_customer_id", "TEXT"),
+    ("stripe_subscription_id", "TEXT"),
+    ("auth_user_id", "TEXT"),
+)
+
+#: Days past a subscription's period end during which the plan still counts
+#: as active: Stripe retries a failed card for a while and the renewal
+#: webhook can lag the period boundary.
+GRACE_DAYS = 3
+
+
+def month_key(t: float) -> str:
+    """The UTC calendar month `t` falls in, as `YYYY-MM`."""
+    return time.strftime("%Y-%m", time.gmtime(t))
+
+
+class _Abort(Exception):
+    """Raised inside `_txn` to roll back and return without an error."""
+
 
 def _row(cur: sqlite3.Cursor) -> Optional[Dict[str, Any]]:
     r = cur.fetchone()
@@ -101,20 +143,19 @@ class Store:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(users)")}
+            for name, decl in _USER_COLUMNS:
+                if name not in cols:
+                    self._conn.execute("ALTER TABLE users ADD COLUMN %s %s" % (name, decl))
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS users_customer ON users(stripe_customer_id)"
+            )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS users_auth ON users(auth_user_id)")
+        self._depth = 0
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
-
-    def _begin(self) -> None:
-        # A previous transaction that died mid-way must not wedge the
-        # connection for every later write.
-        if self._conn.in_transaction:
-            try:
-                self._conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-        self._conn.execute("BEGIN IMMEDIATE")
 
     def _rollback(self) -> None:
         try:
@@ -122,6 +163,35 @@ class Store:
                 self._conn.execute("ROLLBACK")
         except sqlite3.Error:
             pass
+
+    @contextlib.contextmanager
+    def _txn(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction, nestable.
+
+        The outermost entry takes the lock and `BEGIN IMMEDIATE`; inner
+        entries just join it. An exception rolls everything back at the
+        outermost level, so a nested helper that fails cannot leave half of
+        its caller's work committed. `_Abort` is the quiet way out: roll back
+        and let the caller return a value.
+        """
+        with self._lock:
+            if self._depth == 0:
+                # A previous transaction that died mid-way must not wedge the
+                # connection for every later write.
+                self._rollback()
+                self._conn.execute("BEGIN IMMEDIATE")
+            self._depth += 1
+            try:
+                yield self._conn
+            except BaseException:
+                self._depth -= 1
+                if self._depth == 0:
+                    self._rollback()
+                raise
+            else:
+                self._depth -= 1
+                if self._depth == 0:
+                    self._conn.execute("COMMIT")
 
     # -- users -----------------------------------------------------------
 
@@ -139,32 +209,27 @@ class Store:
                 return row, False
             uid = secrets.token_hex(12)
             now = time.time()
-            self._begin()
             try:
-                self._conn.execute(
-                    "INSERT INTO users (id, email, credits, created) VALUES (?, ?, ?, ?)",
-                    (uid, email, int(free_credits), now),
-                )
-                if free_credits > 0:
-                    self._conn.execute(
-                        "INSERT INTO ledger (user_id, delta, balance_after, kind, ref, created)"
-                        " VALUES (?, ?, ?, 'signup', '', ?)",
-                        (uid, int(free_credits), int(free_credits), now),
+                with self._txn() as c:
+                    c.execute(
+                        "INSERT INTO users (id, email, credits, created) VALUES (?, ?, ?, ?)",
+                        (uid, email, int(free_credits), now),
                     )
-                if ip:
-                    self._conn.execute(
-                        "INSERT INTO signups (ip, user_id, created) VALUES (?, ?, ?)", (ip, uid, now)
-                    )
-                self._conn.execute("COMMIT")
+                    if free_credits > 0:
+                        c.execute(
+                            "INSERT INTO ledger (user_id, delta, balance_after, kind, ref, created)"
+                            " VALUES (?, ?, ?, 'signup', '', ?)",
+                            (uid, int(free_credits), int(free_credits), now),
+                        )
+                    if ip:
+                        c.execute(
+                            "INSERT INTO signups (ip, user_id, created) VALUES (?, ?, ?)", (ip, uid, now)
+                        )
             except sqlite3.IntegrityError:
                 # Lost a race with a concurrent sign-up of the same email.
-                self._rollback()
                 row = _row(self._conn.execute("SELECT * FROM users WHERE email = ?", (email,)))
                 if row is not None:
                     return row, False
-                raise
-            except Exception:
-                self._rollback()
                 raise
             return _row(self._conn.execute("SELECT * FROM users WHERE id = ?", (uid,))), True  # type: ignore[return-value]
 
@@ -188,23 +253,22 @@ class Store:
             if row is None:
                 return False
             now = time.time()
-            self._begin()
-            try:
-                self._conn.execute("UPDATE sessions SET revoked = 1 WHERE user_id = ?", (user_id,))
-                self._conn.execute("UPDATE api_keys SET revoked = 1 WHERE user_id = ?", (user_id,))
-                self._conn.execute(
+            with self._txn() as c:
+                c.execute("UPDATE sessions SET revoked = 1 WHERE user_id = ?", (user_id,))
+                c.execute("UPDATE api_keys SET revoked = 1 WHERE user_id = ?", (user_id,))
+                c.execute(
                     "INSERT INTO ledger (user_id, delta, balance_after, kind, ref, created)"
                     " VALUES (?, ?, 0, 'deleted', '', ?)",
                     (user_id, -int(row["credits"]), now),
                 )
-                self._conn.execute(
-                    "UPDATE users SET email = ?, credits = 0, is_admin = 0 WHERE id = ?",
+                # The plan and the Stripe link go too; the site account that
+                # was bridged to this row gets a fresh row next time it signs in.
+                c.execute(
+                    "UPDATE users SET email = ?, credits = 0, is_admin = 0, plan = '', plan_allowance = 0,"
+                    " plan_until = NULL, plan_period = NULL, stripe_subscription_id = NULL, auth_user_id = NULL"
+                    " WHERE id = ?",
                     ("deleted:%s" % user_id, user_id),
                 )
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._rollback()
-                raise
             return True
 
     def stats(self, days: int = 14) -> Dict[str, Any]:
@@ -224,11 +288,13 @@ class Store:
                 "SELECT kind, delta, created FROM ledger WHERE created > ? ORDER BY created", (since,)
             ):
                 day = time.strftime("%Y-%m-%d", time.gmtime(created))
-                d = per_day.setdefault(day, {"signups": 0, "purchased": 0, "spent": 0, "refunded": 0})
+                d = per_day.setdefault(day, {"signups": 0, "purchased": 0, "allowance": 0, "spent": 0, "refunded": 0})
                 if kind == "signup":
                     d["signups"] += 1
                 elif kind == "purchase":
                     d["purchased"] += int(delta)
+                elif kind == "allowance":
+                    d["allowance"] += int(delta)
                 elif kind == "charge":
                     d["spent"] += -int(delta)
                 elif kind == "refund":
@@ -238,6 +304,13 @@ class Store:
                 "deleted_users": int(deleted),
                 "credits_outstanding": int(balance),
                 "credits_purchased": total("purchase"),
+                "credits_allowance": total("allowance"),
+                "subscribers": int(
+                    c.execute(
+                        "SELECT COUNT(*) FROM users WHERE plan != '' AND (plan_until IS NULL OR plan_until > ?)",
+                        (time.time(),),
+                    ).fetchone()[0]
+                ),
                 "credits_granted": total("signup") + total("manual"),
                 "credits_spent": -total("charge"),
                 "credits_refunded": total("refund"),
@@ -374,29 +447,23 @@ class Store:
         amount = int(amount)
         if amount <= 0:
             return self.balance(user_id)
-        with self._lock:
-            self._begin()
-            try:
-                cur = self._conn.execute(
+        try:
+            with self._txn() as c:
+                cur = c.execute(
                     "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
                     (amount, user_id, amount),
                 )
                 if cur.rowcount != 1:
-                    self._conn.execute("ROLLBACK")
-                    return None
-                bal = self._conn.execute(
-                    "SELECT credits FROM users WHERE id = ?", (user_id,)
-                ).fetchone()[0]
-                self._conn.execute(
+                    raise _Abort()
+                bal = c.execute("SELECT credits FROM users WHERE id = ?", (user_id,)).fetchone()[0]
+                c.execute(
                     "INSERT INTO ledger (user_id, delta, balance_after, kind, ref, created)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
                     (user_id, -amount, bal, kind, ref, time.time()),
                 )
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._rollback()
-                raise
-            return int(bal)
+        except _Abort:
+            return None
+        return int(bal)
 
     def _credit_in_txn(self, user_id: str, amount: int, kind: str, ref: str) -> int:
         """Body of a credit; the caller owns the transaction and the lock."""
@@ -417,42 +484,176 @@ class Store:
 
     def credit(self, user_id: str, amount: int, kind: str, ref: str = "") -> int:
         amount = int(amount)
-        with self._lock:
-            self._begin()
-            try:
-                bal = self._credit_in_txn(user_id, amount, kind, ref)
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._rollback()
-                raise
-            return bal
+        with self._txn():
+            return self._credit_in_txn(user_id, amount, kind, ref)
 
-    def credit_once(
-        self, event_id: str, event_type: str, user_id: str, amount: int, kind: str, ref: str = ""
-    ) -> Optional[int]:
-        """Record a webhook event and apply its credit in one transaction.
+    def apply_once(self, event_id: str, event_type: str, fn: Callable[[], T]) -> Optional[T]:
+        """Record a webhook event and run `fn` in the same transaction.
 
-        Returns the new balance, or None when `event_id` was already
-        processed. Either both rows land or neither does, so a crash between
-        "seen" and "credited" cannot lose a purchase.
+        Returns what `fn` returned, or None when `event_id` was already
+        processed. Either the event row and every write `fn` makes land, or
+        none of them do, so a crash between "seen" and "applied" cannot lose
+        a purchase or a renewal, and Stripe's retries are harmless.
         """
-        with self._lock:
-            self._begin()
-            try:
+        try:
+            with self._txn() as c:
                 try:
-                    self._conn.execute(
+                    c.execute(
                         "INSERT INTO webhook_events (id, type, received) VALUES (?, ?, ?)",
                         (event_id, event_type, time.time()),
                     )
                 except sqlite3.IntegrityError:
-                    self._conn.execute("ROLLBACK")
-                    return None
-                bal = self._credit_in_txn(user_id, int(amount), kind, ref)
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._rollback()
-                raise
-            return bal
+                    raise _Abort()
+                return fn()
+        except _Abort:
+            return None
+
+    def credit_once(
+        self, event_id: str, event_type: str, user_id: str, amount: int, kind: str, ref: str = ""
+    ) -> Optional[int]:
+        """`apply_once` for a one-off purchase: the new balance, or None if seen."""
+        return self.apply_once(
+            event_id, event_type, lambda: self._credit_in_txn(user_id, int(amount), kind, ref)
+        )
+
+    # -- plans -----------------------------------------------------------
+
+    @staticmethod
+    def plan_active(user: Dict[str, Any], now: Optional[float] = None) -> bool:
+        """Whether `user` is on a plan whose allowance still renews."""
+        now = time.time() if now is None else now
+        if not user.get("plan"):
+            return False
+        until = user.get("plan_until")
+        return until is None or float(until) > now
+
+    def topup_if_due(self, user_id: str, now: Optional[float] = None) -> Optional[int]:
+        """Raise the balance up to the plan allowance, once per UTC month.
+
+        Returns the credits added (0 when the balance was already at or
+        above the allowance; the ledger row is written either way so the
+        month shows as renewed), or None when nothing was due: no plan, an
+        expired plan, or this month already applied. Called from the gate
+        before every charge, so a renewal is never missed and never doubled.
+        """
+        now = time.time() if now is None else now
+        period = month_key(now)
+        try:
+            with self._txn() as c:
+                row = _row(c.execute("SELECT * FROM users WHERE id = ?", (user_id,)))
+                if row is None or not self.plan_active(row, now) or row.get("plan_period") == period:
+                    raise _Abort()
+                delta = max(0, int(row["plan_allowance"]) - int(row["credits"]))
+                cur = c.execute(
+                    "UPDATE users SET credits = credits + ?, plan_period = ?"
+                    " WHERE id = ? AND (plan_period IS NULL OR plan_period != ?)",
+                    (delta, period, user_id, period),
+                )
+                if cur.rowcount != 1:
+                    raise _Abort()
+                bal = c.execute("SELECT credits FROM users WHERE id = ?", (user_id,)).fetchone()[0]
+                c.execute(
+                    "INSERT INTO ledger (user_id, delta, balance_after, kind, ref, created)"
+                    " VALUES (?, ?, ?, 'allowance', ?, ?)",
+                    (user_id, delta, bal, "plan:%s %s" % (row["plan"], period), now),
+                )
+        except _Abort:
+            return None
+        return delta
+
+    def set_plan(
+        self,
+        user_id: str,
+        plan: str,
+        allowance: int,
+        until: Optional[float],
+        customer_id: Optional[str] = None,
+        subscription_id: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Put a user on `plan` and top them up at once.
+
+        `until` None means lifetime. `plan_period` is reset so the first
+        month's allowance lands immediately even if an earlier plan already
+        renewed this month. Stripe ids are stored when given and kept
+        otherwise. Returns the fresh user row.
+        """
+        with self._txn() as c:
+            cur = c.execute(
+                "UPDATE users SET plan = ?, plan_allowance = ?, plan_until = ?, plan_period = NULL,"
+                " stripe_customer_id = COALESCE(?, stripe_customer_id),"
+                " stripe_subscription_id = COALESCE(?, stripe_subscription_id) WHERE id = ?",
+                (plan, int(allowance), until, customer_id or None, subscription_id or None, user_id),
+            )
+            if cur.rowcount != 1:
+                raise KeyError("no such user %r" % user_id)
+            self.topup_if_due(user_id, now)
+            return _row(c.execute("SELECT * FROM users WHERE id = ?", (user_id,)))  # type: ignore[return-value]
+
+    def set_plan_until(self, user_id: str, until: Optional[float]) -> None:
+        """Move the plan's end. The name and allowance stay for display."""
+        with self._txn() as c:
+            c.execute("UPDATE users SET plan_until = ? WHERE id = ?", (until, user_id))
+
+    def expire_plan(self, user_id: str, now: Optional[float] = None) -> None:
+        """Stop the allowance now; the plan name is kept so the UI can say so."""
+        self.set_plan_until(user_id, time.time() if now is None else now)
+
+    def clear_plan(self, user_id: str) -> None:
+        """Remove the plan entirely (operator `--off`). The customer id stays
+        so the billing portal still opens."""
+        with self._txn() as c:
+            c.execute(
+                "UPDATE users SET plan = '', plan_allowance = 0, plan_until = NULL, plan_period = NULL,"
+                " stripe_subscription_id = NULL WHERE id = ?",
+                (user_id,),
+            )
+
+    def set_stripe_ids(
+        self, user_id: str, customer_id: Optional[str] = None, subscription_id: Optional[str] = None
+    ) -> None:
+        with self._txn() as c:
+            c.execute(
+                "UPDATE users SET stripe_customer_id = COALESCE(?, stripe_customer_id),"
+                " stripe_subscription_id = COALESCE(?, stripe_subscription_id) WHERE id = ?",
+                (customer_id or None, subscription_id or None, user_id),
+            )
+
+    def user_by_customer(self, customer_id: str) -> Optional[Dict[str, Any]]:
+        if not customer_id:
+            return None
+        with self._lock:
+            return _row(
+                self._conn.execute("SELECT * FROM users WHERE stripe_customer_id = ?", (customer_id,))
+            )
+
+    def user_by_subscription(self, subscription_id: str) -> Optional[Dict[str, Any]]:
+        if not subscription_id:
+            return None
+        with self._lock:
+            return _row(
+                self._conn.execute(
+                    "SELECT * FROM users WHERE stripe_subscription_id = ?", (subscription_id,)
+                )
+            )
+
+    # -- site accounts ---------------------------------------------------
+
+    def user_by_auth_id(self, auth_user_id: str) -> Optional[Dict[str, Any]]:
+        """The billing row linked to a `humanizer.api.auth` account id."""
+        with self._lock:
+            return _row(
+                self._conn.execute(
+                    "SELECT * FROM users WHERE auth_user_id = ? AND email NOT LIKE 'deleted:%'",
+                    (str(auth_user_id),),
+                )
+            )
+
+    def link_auth_user(self, user_id: str, auth_user_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE users SET auth_user_id = ? WHERE id = ?", (str(auth_user_id), user_id)
+            )
 
     def count_refunds(self, user_id: str, marker: str, since_seconds: float) -> int:
         """Refund rows for `user_id` whose ref contains `marker` in the window."""

@@ -24,7 +24,19 @@ Kill AI vocabulary                  High             0/positive
 Break the paragraph template        High             0/positive
 Sentence-length variance into band  High             0/positive
 Break tricolons / "not X but Y"     Medium-High      0
+Hedge absolute claims               Unmeasured*      0 (academic norm)
+Relocate contrastive openers        Low-Medium*      0
+Front a trailing clause             Low-Medium*      0
 ==================================  ===============  ==========
+
+\* The last three implement the manual method transcribed in research/24
+(hedging as "intellectual hesitation"; moving "Conversely," to after the
+subject and moving a trailing "because ..." clause to the front as
+"reversing the order", applied only where consecutive sentences open the
+same way). research/24 §2 measured that method at 0 of 5 verdict flips on
+the local bench, so they are shipped as quality and de-templating edits with
+an honest "no pass-rate claim" label, exactly as research/22 §7.2 labels
+every stance and punctuation edit.
 
 REFUSED. These are not unimplemented; they are refused on the evidence, and
 they must stay refused. Each line is the matrix verdict and the reason.
@@ -46,6 +58,8 @@ they must stay refused. Each line is the matrix verdict and the reason.
 * **Adding subordination to sound scholarly** - low benefit, *medium* cost.
   research/15: academic complexity is phrasal, not clausal. Adding dependent
   clauses moves the text toward conversation, away from the target register.
+  (`front_trailing_clauses` is not this: it moves a clause the writer already
+  wrote to the front of its own sentence and adds none.)
 * **Unpacking phrasal syntax into finite clauses** - low-medium benefit,
   *high* cost, for the same reason in reverse.
 * **"I think" / "I feel" / "in my opinion"** - medium benefit, *high* cost.
@@ -64,7 +78,7 @@ they must stay refused. Each line is the matrix verdict and the reason.
 Offsets
 -------
 `Edit.start` and `Edit.end` are character offsets into the `Document.text` that
-the transform was handed. The engine runs three passes (see `PASSES`), each
+the transform was handed. The engine runs four passes (see `PASSES`), each
 over the text the previous one produced, so offsets from different passes index
 different strings and are not comparable. Only `before`/`after` are stable
 across passes, which is why they are what the API puts on the wire.
@@ -87,6 +101,16 @@ from ..features.shape import (
     lag_autocorrelation,
 )
 from ..text import Document, words
+from .kriukow import (
+    ABSOLUTE_ADJECTIVE_HEDGES,
+    ABSOLUTE_VERB_HEDGES,
+    CONTRASTIVE_RELOCATIONS,
+    HEDGE_WORDS,
+    HUMAN_HEDGES_PER_1K,
+    OPENER_BARE,
+    OPENER_PRONOUN,
+    opener_class,
+)
 
 __all__ = [
     "Edit",
@@ -94,6 +118,7 @@ __all__ = [
     "CONFIGS",
     "TRANSFORMS",
     "PASSES",
+    "CLOSED_VOCABULARY",
     "config_for",
     "sentence_spans",
     "apply_edits",
@@ -102,6 +127,10 @@ __all__ = [
     "break_paragraph_template",
     "break_parallelism",
     "vary_sentence_length",
+    "hedge_absolutes",
+    "relocate_contrastive_openers",
+    "front_trailing_clauses",
+    "FRONTABLE_SUBORDINATORS",
 ]
 
 
@@ -159,8 +188,9 @@ class HumanizeConfig:
 
     ``light``     lexicon and connectives only. Word-for-word substitutions and
                   deletions of discourse glue; no sentence is restructured.
-    ``balanced``  adds parallelism breaking and paragraph-template breaking.
-                  Sentence boundaries still never move.
+    ``balanced``  adds parallelism breaking, paragraph-template breaking and
+                  the research/24 method (hedging, opener relocation, clause
+                  fronting). Sentence boundaries still never move.
     ``strong``    adds sentence-length restructuring, which splits and merges
                   sentences. The only tier that changes the segmentation.
     """
@@ -184,16 +214,27 @@ CONFIGS: Dict[str, HumanizeConfig] = {
     ),
     "balanced": HumanizeConfig(
         name="balanced",
-        transforms=("paragraph_template", "connective", "vocabulary", "parallelism"),
+        transforms=(
+            "paragraph_template",
+            "connective",
+            "opener",
+            "vocabulary",
+            "parallelism",
+            "hedge",
+            "fronting",
+        ),
     ),
     "strong": HumanizeConfig(
         name="strong",
         transforms=(
             "paragraph_template",
             "connective",
+            "opener",
             "vocabulary",
             "parallelism",
+            "hedge",
             "shape",
+            "fronting",
         ),
     ),
 }
@@ -1282,12 +1323,469 @@ def vary_sentence_length(doc: Document, config: HumanizeConfig) -> List[Edit]:
 Transform = Callable[[Document, HumanizeConfig], List[Edit]]
 
 #: Every transform by name, for direct use and for tests.
+# ------------------------------------------- 6. stance and openers (research/24)
+
+
+#: Modals and hedges that, within a few tokens before a claim verb, already
+#: soften it. A second hedge would stack ("may can play"), which research/22
+#: lists under "hedge stacking: no human/LLM gap, do not add".
+_PRE_HEDGE_WINDOW = 3
+_MODALS = frozenset(
+    {"can", "could", "may", "might", "would", "should", "will", "shall", "must",
+     "to", "not", "never", "often", "usually", "always"}
+)
+_ADJECTIVE_HEDGE_RE = re.compile(
+    r"\b(?P<cop>is|are)\s+(?P<adj>" + "|".join(ABSOLUTE_ADJECTIVE_HEDGES) + r")\b",
+    re.IGNORECASE,
+)
+_HAS_DIGIT_OR_QUOTE_RE = re.compile(r"\d|[\"“”]")
+
+#: The closed set of tokens every transform in this module is allowed to
+#: introduce. `tests.test_humanize.test_engine_never_injects_surface_errors`
+#: asserts that no output token falls outside the source plus this set, which
+#: is the mechanical form of the refusal to inject anything unplanned.
+def _base_form(verb: str) -> str:
+    """Third-person -s form to bare infinitive, for the closed set below."""
+    if verb.endswith("es") and not verb.endswith(("ses", "zes", "ches", "shes")):
+        return verb[:-2]
+    return verb[:-1] if verb.endswith("s") else verb
+
+
+CLOSED_VOCABULARY: FrozenSet[str] = frozenset(
+    {"and", "as", "well", "a", "an"}
+    | {w for v in ABSOLUTE_VERB_HEDGES.values() for w in v.lower().split()}
+    | {"appears", "appear"}
+    | {w for v in CONTRASTIVE_RELOCATIONS.values() for w in v.lower().split()}
+    # Hedged forms of lexicon-mapped verbs ("can encourage").
+    | {_base_form(WORD_REPLACEMENTS[k].lower()) for k in ABSOLUTE_VERB_HEDGES if k in WORD_REPLACEMENTS}
+)
+
+
+def hedge_absolutes(doc: Document, config: HumanizeConfig) -> List[Edit]:
+    """Turn unhedged evaluative claims into hedged ones.
+
+    research/24 §1.2, the presenter's first principle ("intellectual
+    hesitation"): AI "writes in absolutes", scholars "hedge, suggest, suspect";
+    "plays a critical role" becomes "can play a critical role". research/18 §5
+    measures hedges as genuinely depleted in instruct-model text (GPT-4 at 0.00
+    per sentence) and research/15 gives Hyland's band of 8-20 per 1,000 words,
+    which is the ceiling this transform will not push past.
+
+    Conservative by construction:
+
+    * only third-person -s claim verbs from `ABSOLUTE_VERB_HEDGES` and the
+      "is/are + evaluative adjective" frame are touched, so no infinitive,
+      past tense or reportive verb changes;
+    * a sentence that already contains a hedge or modal, a digit or a
+      quotation is skipped (numbers and quoted claims are facts, not claims);
+    * at most one hedge per sentence, at most one sentence in three, and never
+      once the document's hedge density reaches the top of Hyland's band;
+    * protected spans (quotations, citations, first and last sentence) are
+      never edited.
+
+    Detector evidence: none at the verdict level. research/19 §4 measured
+    hedge *insertion* as noise at 6 of 30 flips on boundary text and 0 of 40 on
+    saturated text. This is a quality-realism edit.
+    """
+    text = doc.text
+    protected = doc.protected_spans()
+    spans = sentence_spans(doc)
+    n_sent = len(doc.sentences)
+    if n_sent == 0:
+        return []
+    n_words = max(1, doc.n_words)
+    existing = sum(1 for w in doc.lower_words if w in HEDGE_WORDS)
+    ceiling = HUMAN_HEDGES_PER_1K[1] * n_words / 1000.0
+    budget = max(1, math.ceil(n_sent / 3))
+    edits: List[Edit] = []
+
+    for sent, (s0, s1) in zip(doc.sentences, spans):
+        if len(edits) >= budget or existing + len(edits) >= ceiling:
+            break
+        if _HAS_DIGIT_OR_QUOTE_RE.search(sent.text):
+            continue
+        toks = [w.lower() for w in sent.words]
+        if any(t in HEDGE_WORDS for t in toks):
+            continue
+        made = False
+        for match in _WORD_TOKEN_RE.finditer(sent.text):
+            word = match.group(0)
+            low = word.lower()
+            replacement = ABSOLUTE_VERB_HEDGES.get(low)
+            if replacement is None:
+                continue
+            # No stacking: skip if a modal or hedge sits just before the verb.
+            before_toks = [w.lower() for w in words(sent.text[: match.start()])]
+            if any(t in _MODALS or t in HEDGE_WORDS for t in before_toks[-_PRE_HEDGE_WINDOW:]):
+                continue
+            # The verb must have a subject before it: not sentence-initial.
+            if not before_toks:
+                continue
+            start, end = s0 + match.start(), s0 + match.end()
+            if _overlaps((start, end), protected):
+                continue
+            # If the verb is also on the AI-vocabulary map ("fosters" ->
+            # "encourages"), hedge the *mapped* verb so one edit does both
+            # jobs: "fosters" -> "can encourage". The hedge pass runs before
+            # the lexicon pass and wins the overlap, so without this the
+            # lexicon edit would be lost.
+            mapped = WORD_REPLACEMENTS.get(low)
+            if mapped is not None and " " in replacement:
+                modal, _, _verb = replacement.partition(" ")
+                replacement = f"{modal} {_base_form(mapped.lower())}"
+            edits.append(
+                Edit(
+                    kind="hedge",
+                    start=start,
+                    end=end,
+                    before=word,
+                    after=_match_case(word, replacement),
+                    sentence_index=sent.index,
+                    rationale=(
+                        f"research/24 §1.2 (intellectual hesitation): '{word}' "
+                        "states a causal or evaluative claim as fact; "
+                        f"'{replacement}' hedges it. Hedges are depleted in "
+                        "instruct-model prose (research/18 §5) and are the "
+                        "academic norm (Hyland, research/15). No pass-rate claim."
+                    ),
+                    grade_cost=GRADE_COST_NONE,
+                )
+            )
+            made = True
+            break
+        if made:
+            continue
+        match = _ADJECTIVE_HEDGE_RE.search(sent.text)
+        if match is None:
+            continue
+        before_toks = [w.lower() for w in words(sent.text[: match.start()])]
+        if not before_toks or any(
+            t in _MODALS or t in HEDGE_WORDS for t in before_toks[-_PRE_HEDGE_WINDOW:]
+        ):
+            continue
+        start, end = s0 + match.start("cop"), s0 + match.end("cop")
+        if _overlaps((start, end), protected):
+            continue
+        cop = match.group("cop")
+        replacement = "appears" if cop.lower() == "is" else "appear"
+        edits.append(
+            Edit(
+                kind="hedge",
+                start=start,
+                end=end,
+                before=cop,
+                after=_match_case(cop, replacement),
+                sentence_index=sent.index,
+                rationale=(
+                    f"research/24 §1.2: '{cop} {match.group('adj')}' asserts an "
+                    f"evaluation as fact; '{replacement} {match.group('adj')}' "
+                    "hedges it while keeping the copula's agreement. No pass-rate claim."
+                ),
+                grade_cost=GRADE_COST_NONE,
+            )
+        )
+    return edits
+
+
+_CONTRASTIVE_RE = re.compile(
+    r"^(" + "|".join(sorted((re.escape(c) for c in CONTRASTIVE_RELOCATIONS),
+                            key=len, reverse=True)) + r")\s*,\s+",
+    re.IGNORECASE,
+)
+_MAX_SUBJECT_WORDS = 8
+_MIN_WORDS_FOR_RELOCATION = 8
+
+
+def relocate_contrastive_openers(doc: Document, config: HumanizeConfig) -> List[Edit]:
+    """Move a sentence-initial contrastive connective to after the subject.
+
+    "Conversely, low self-esteem may hinder communication" becomes "Low
+    self-esteem, on the other hand, may hinder communication". This is the
+    presenter's "reverse the order" move (research/24 §1.2 principle 3, §1.3
+    sentence 3), and it addresses the opener-class monotony research/21 §10.1
+    checks 6-9 measure: skilled prose opens 1.3 sentences per 1,000 words on a
+    connective, instruct-model prose about 1 per 200 words.
+
+    Unlike `strip_formal_connectives`, nothing is deleted: However, Conversely,
+    In contrast, Nevertheless and Similarly carry a logical relation the
+    argument needs (research/23 §7 warns against removing connectives that a
+    rubric scorer reads), so they are moved, not cut.
+
+    Guards: the subject must be one to eight words with no comma and must be
+    followed by a finite verb or modal from the closed `_FINITE_VERBS` list
+    (so the insertion point is certain to be the subject/verb boundary); the
+    sentence must have at least eight words; protected spans are never edited.
+
+    Detector evidence: research/19 §4 measured connective *removal* at 2 of 30
+    flips; relocation is unmeasured. Quality and de-templating edit.
+    """
+    text = doc.text
+    protected = doc.protected_spans()
+    spans = sentence_spans(doc)
+    edits: List[Edit] = []
+
+    for sent, (s0, s1) in zip(doc.sentences, spans):
+        match = _CONTRASTIVE_RE.match(sent.text)
+        if match is None:
+            continue
+        if len(sent.words) < _MIN_WORDS_FOR_RELOCATION:
+            continue
+        rest = sent.text[match.end() :]
+        # Find the subject/verb boundary: the first finite verb or modal.
+        verb_pos: Optional[int] = None
+        subject_words = 0
+        for tok in _WORD_TOKEN_RE.finditer(rest):
+            low = tok.group(0).lower()
+            if subject_words >= 1 and low in _FINITE_VERBS:
+                verb_pos = tok.start()
+                break
+            subject_words += 1
+            if subject_words > _MAX_SUBJECT_WORDS:
+                break
+        if verb_pos is None or subject_words == 0:
+            continue
+        subject = rest[:verb_pos].rstrip()
+        if "," in subject or not subject or not subject[0].isalpha():
+            continue
+        start, end = s0, s0 + match.end() + verb_pos
+        if _overlaps((start, end), protected):
+            continue
+        relocated = CONTRASTIVE_RELOCATIONS[match.group(1).lower()]
+        after = subject[0].upper() + subject[1:] + ", " + relocated + ", "
+        edits.append(
+            Edit(
+                kind="opener",
+                start=start,
+                end=end,
+                before=text[start:end],
+                after=after,
+                sentence_index=sent.index,
+                rationale=(
+                    f"research/24 §1.2 (vary sentence openings): '{match.group(1)},' "
+                    "opens the sentence on a connective, the opener class AI "
+                    "over-uses (research/21 §10.1 check 6). Moved after the "
+                    f"subject as ', {relocated},'. Nothing deleted. No pass-rate claim."
+                ),
+                grade_cost=GRADE_COST_NONE,
+            )
+        )
+    return edits
+
+
+
+
+# ------------------------------------ 7. fronting trailing clauses (research/24)
+
+
+#: Subordinators whose trailing clause can move to the front of its sentence
+#: without changing what the sentence asserts ("X rose because Y" and "Because
+#: Y, X rose" make the same claim). "as" is absent because it is ambiguous
+#: (causal, temporal, comparative, "as well as"); "so that", "whether" and
+#: "that" are absent because they introduce complements, not adjuncts.
+FRONTABLE_SUBORDINATORS: Tuple[str, ...] = (
+    "even though", "even if", "although", "though", "because", "whereas",
+    "while", "whenever", "when", "unless", "until", "after", "before",
+    "once", "since", "if",
+)
+
+#: Greedy `pre` so the match lands on the *last* subordinator, which is the
+#: one that heads the final clause. The clause may not contain a comma,
+#: semicolon, colon, bracket or quotation mark: a trailing clause with
+#: internal structure is left alone rather than risk fronting half of it.
+_FRONTABLE_RE = re.compile(
+    r"^(?P<pre>\S.*[^\s,])(?P<sep>,?\s+)(?P<sub>"
+    + "|".join(re.escape(s) for s in sorted(FRONTABLE_SUBORDINATORS, key=len, reverse=True))
+    + r")\s+(?P<clause>[^,;:()\[\]\"“”]+?)(?P<end>[.!?]+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: If the word before the subordinator is one of these, the "clause" is a
+#: complement or a relative ("is unclear if ...", "the year when ..."), and
+#: fronting it would change the meaning or leave a fragment.
+_COMPLEMENT_HEADS = frozenset(
+    """
+    is are was were be been being am unclear uncertain unknown clear obvious
+    know knows knew known ask asks asked wonder wonders wondered determine
+    determines determined see sees saw seen decide decides decided question
+    questions doubt doubts doubted matter matters mattered whether
+    time times period periods era eras day days year years decade decades
+    century centuries moment moments point points stage stages phase phases
+    age ages a an the this that these those
+    """.split()
+)
+
+#: A clause that opens on a pronoun refers back to the main clause; fronting
+#: it makes the pronoun point forward ("Because it arrived late, the funding
+#: ..."), which reads as a slip. Such clauses are left where they are.
+_CATAPHORA_HEADS = frozenset(
+    {"it", "its", "they", "their", "them", "this", "these", "those", "that",
+     "he", "she", "his", "her", "we", "our", "such", "there", "so"}
+)
+
+_MIN_FRONT_CLAUSE = 3
+_MAX_FRONT_CLAUSE = 18
+_MIN_FRONT_MAIN = 5
+
+
+def _same_opener_run(
+    i: int, classes: Sequence[str], firsts: Sequence[str], lengths: Sequence[int]
+) -> bool:
+    """Whether sentence `i` repeats the opener pattern of its neighbours.
+
+    The presenter's rule (research/24 §1.3): a sentence may keep its shape "as
+    long as the following sentence does not follow the exact same pattern".
+    Repetition here is either the same first word as the sentence before, or
+    the same opener class across three consecutive sentences, or the same
+    class as the sentence before at the same "beat" (within three words).
+    Only bare-subject and pronoun openers count: those are the two classes
+    research/21 §10.1 checks 8-9 measure as over-represented.
+    """
+    if i == 0 or classes[i] not in (OPENER_BARE, OPENER_PRONOUN):
+        return False
+    if firsts[i] and firsts[i] == firsts[i - 1]:
+        return True
+    if classes[i - 1] != classes[i]:
+        return False
+    if i + 1 < len(classes) and classes[i + 1] == classes[i]:
+        return True
+    if i >= 2 and classes[i - 2] == classes[i]:
+        return True
+    return abs(lengths[i] - lengths[i - 1]) <= 3
+
+
+def front_trailing_clauses(doc: Document, config: HumanizeConfig) -> List[Edit]:
+    """Move a sentence's trailing subordinate clause to its front, where the
+    sentence repeats the opener pattern of the one before it.
+
+    research/24 §1.2, the presenter's third principle and the one he calls
+    "very important": AI text "will often start sentences in the exact same
+    way" and the fix is "introductory clauses, dependent clauses, inverted
+    structures rather than just repeating that same exact structure". His own
+    example is a fronted clause ("Although widely cited, this study ...") and
+    in the demonstration he fronts a causal clause ("As low self-assessed
+    English skills are believed to ..., it is crucial ...").
+
+    This transform performs exactly that move and nothing more: a clause the
+    writer already wrote, headed by one of `FRONTABLE_SUBORDINATORS`, moves
+    from the end of its sentence to the beginning. No word is added or
+    removed, so the closed-vocabulary guarantee holds trivially and the
+    module docstring's refusal of *added* subordination is untouched.
+
+    Fires only on a sentence that repeats the opener pattern of its
+    neighbours (`_same_opener_run`), because the aim is to break a run, not
+    to front every clause: research/21 §10.1 puts human bare-subject openers
+    at 45-60%, so most sentences should keep the subject first.
+
+    Guards: the clause is 3-18 words with no internal punctuation; the main
+    clause has at least five words and no semicolon, colon or dash; the word
+    before the subordinator is not a complement or time-noun head
+    (`_COMPLEMENT_HEADS`); the clause does not open on a pronoun
+    (`_CATAPHORA_HEADS`); the main clause's first word can be lowercased
+    safely (a determiner, pronoun or quantifier, or a word the document also
+    uses in lowercase); protected spans are never touched; at most one
+    sentence in four per document and never two in a row.
+
+    Detector evidence: none at the verdict level (research/24 §2, research/19
+    §4). Quality and de-templating edit; no pass-rate claim.
+    """
+    sents = doc.sentences
+    if len(sents) < 3:
+        return []
+    text = doc.text
+    protected = doc.protected_spans()
+    spans = sentence_spans(doc)
+    lower_elsewhere = {w for w in doc.words if w[:1].islower()}
+
+    budget = max(1, len(sents) // 4)
+    edits: List[Edit] = []
+    last_fronted = -2
+
+    # Opener runs are a within-paragraph notion.
+    by_para: Dict[int, List[int]] = {}
+    for idx, sent in enumerate(sents):
+        by_para.setdefault(sent.paragraph_index, []).append(idx)
+
+    for indices in by_para.values():
+        classes = [opener_class(sents[i].text) for i in indices]
+        firsts = []
+        for i in indices:
+            m = _WORD_TOKEN_RE.search(sents[i].text)
+            firsts.append(m.group(0).lower() if m else "")
+        lengths = [sents[i].length for i in indices]
+        for local_i, idx in enumerate(indices):
+            if len(edits) >= budget:
+                return edits
+            if idx - last_fronted < 2:
+                continue
+            if not _same_opener_run(local_i, classes, firsts, lengths):
+                continue
+            sent = sents[idx]
+            match = _FRONTABLE_RE.match(sent.text.strip())
+            if match is None:
+                continue
+            pre, sub, clause, end = (
+                match.group("pre"), match.group("sub").lower(),
+                match.group("clause").strip(), match.group("end"),
+            )
+            if any(ch in pre for ch in ";:—–") or " -- " in pre or " - " in pre:
+                continue
+            pre_words = words(pre)
+            clause_words = words(clause)
+            if len(pre_words) < _MIN_FRONT_MAIN:
+                continue
+            if not _MIN_FRONT_CLAUSE <= len(clause_words) <= _MAX_FRONT_CLAUSE:
+                continue
+            if pre_words[-1].lower() in _COMPLEMENT_HEADS:
+                continue
+            if clause_words[0].lower() in _CATAPHORA_HEADS:
+                continue
+            # "because of", "since then": a prepositional tail is fine to
+            # front, but "if so" / "if any" are elliptical and are not.
+            if sub == "if" and clause_words[0].lower() in {"so", "any", "not", "necessary", "possible"}:
+                continue
+            first = pre_words[0]
+            if not pre[0].isalpha() or (first.isupper() and len(first) > 1):
+                continue
+            low_first = first.lower()
+            if low_first not in _SAFE_CLAUSE_HEADS and first not in lower_elsewhere and low_first not in lower_elsewhere:
+                continue
+            s0, s1 = spans[idx]
+            if _overlaps((s0, s1), protected):
+                continue
+            main = pre[0].lower() + pre[1:] if first[0].isupper() else pre
+            after = sub[0].upper() + sub[1:] + " " + clause + ", " + main + end
+            edits.append(
+                Edit(
+                    kind="fronting",
+                    start=s0,
+                    end=s1,
+                    before=text[s0:s1],
+                    after=after,
+                    sentence_index=sent.index,
+                    rationale=(
+                        "research/24 §1.2 (vary sentence openings): this sentence "
+                        "opens the way the one before it does, the repeated "
+                        "opener structure the presenter calls the single most "
+                        f"important tell. Its trailing '{sub} ...' clause is moved "
+                        "to the front, which is his own move ('Although widely "
+                        "cited, this study ...'). No word is added or removed. "
+                        "No pass-rate claim."
+                    ),
+                    grade_cost=GRADE_COST_NONE,
+                )
+            )
+            last_fronted = idx
+    return edits
+
 TRANSFORMS: Dict[str, Transform] = {
     "paragraph_template": break_paragraph_template,
     "vocabulary": replace_ai_vocabulary,
     "parallelism": break_parallelism,
+    "hedge": hedge_absolutes,
     "connective": strip_formal_connectives,
+    "opener": relocate_contrastive_openers,
     "shape": vary_sentence_length,
+    "fronting": front_trailing_clauses,
 }
 
 #: The pipeline, as an ordered sequence of passes. The engine applies each pass
@@ -1306,12 +1804,29 @@ TRANSFORMS: Dict[str, Transform] = {
 #:   lexicon first and the strip second fixes both.
 #: * Shape is pass 3 because sentence lengths only mean something once the
 #:   deletions have landed.
+#: * Hedging leads pass 1 (ahead of the lexicon) because both may target the
+#:   same claim verb ("fosters"), and the hedge edit folds the lexicon's
+#:   replacement into its own output ("can encourage"), so it must win the
+#:   overlap. It also has to read the original word order for its
+#:   "subject before verb" check, which pass 2's opener move would change.
+#: * Opener relocation joins pass 2 next to connective stripping: the two act
+#:   on disjoint connective sets (formal vs contrastive), and both need the
+#:   pass-1 lexicon edits to have landed first.
+#: * Clause fronting is pass 4, alone. Which sentences repeat an opener is
+#:   only known once the connective strips (pass 2) and the boundary moves
+#:   (pass 3) have landed: a stripped "Furthermore," exposes a bare subject,
+#:   and a merge removes a sentence from the run.
 PASSES: Tuple[Tuple[Tuple[str, Transform], ...], ...] = (
     (
         ("paragraph_template", break_paragraph_template),
+        ("hedge", hedge_absolutes),
         ("vocabulary", replace_ai_vocabulary),
         ("parallelism", break_parallelism),
     ),
-    (("connective", strip_formal_connectives),),
+    (
+        ("connective", strip_formal_connectives),
+        ("opener", relocate_contrastive_openers),
+    ),
     (("shape", vary_sentence_length),),
+    (("fronting", front_trailing_clauses),),
 )

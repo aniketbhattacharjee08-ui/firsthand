@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" role="img" aria-label="Vervly">
+  <!-- Vervly mark. Above: the draft, chopped into even cells. Below: one line that reads, with the cursor at its end. -->
+  <g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g>
+  <rect x="2" y="10" width="9" height="2"/>
+  <rect x="12" y="9" width="2" height="4" fill="#a8e6b0"/>
+</svg>
