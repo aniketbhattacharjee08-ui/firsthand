@@ -2,7 +2,9 @@
 
    Loaded after styles.css, which carries the tokens, the shell, the buttons,
    the wordmark, the pane classes and the facts row. Everything here is what
-   the landing adds: its own top row, the two-column hero, and the specimen. Plain dark ground, no field. Rules: web/DESIGN.md. */
+   the landing adds: its own top row, the two-column hero with its Berkeley
+   eyebrow, the specimen and the Made in Berkeley section. Plain Berkeley
+   Blue ground, no field. Rules: web/DESIGN.md. */
 
 /* the top row: wordmark left, the account links right, the horizon under it */
 .home-top {
@@ -64,6 +66,19 @@ html { scroll-behavior: smooth; }
   gap: var(--s-8) var(--s-12);
   align-items: center;
 }
+/* the eyebrow: the campus's condensed face in California Gold, one short
+   line across the whole grid with a gold rule before it */
+.hero-eyebrow {
+  grid-column: 1 / -1;
+  display: inline-flex; align-items: center; gap: var(--s-3);
+  margin: 0 0 calc(-1 * var(--s-4));
+  font-family: var(--cond);
+  font-weight: 600;
+  font-size: var(--t-4);
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+.hero-eyebrow::before { content: ""; width: 24px; height: 2px; background: var(--accent); flex: none; }
 .hero-h {
   font-family: var(--serif);
   font-weight: 400;
@@ -163,6 +178,17 @@ html { scroll-behavior: smooth; }
 @media (hover: none) {
   .btn-quiet:hover { color: var(--fg-2); background: transparent; }
 }
+
+/* Made in Berkeley: two short paragraphs on the facts row's hairline */
+.berkeley { padding-top: var(--s-12); scroll-margin-top: var(--s-8); }
+.berkeley-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-5) var(--s-8);
+  padding-top: var(--s-5); border-top: 1px solid var(--line);
+}
+.berkeley-p { margin: 0; font-size: var(--t-3); line-height: 1.6; color: var(--fg-2); max-width: 56ch; }
+.berkeley-grid .berkeley-p:nth-child(2)[data-reveal] { transition-delay: 80ms; }
+@media (max-width: 960px) { .berkeley-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* pricing: three plans as columns on the facts row's hairlines, the free
    allowance above them. Static copy; the app's plans sheet says the same. */

@@ -34,7 +34,7 @@ const reduce = window.matchMedia
   : { matches: false, addEventListener() {} };
 
 /* the accent from styles.css, as rgb */
-const ACCENT = '168, 230, 176';
+const ACCENT = '253, 181, 21';
 const RAMP = ' .:-=+*#%@';
 
 /* a phone or a tablet gets fewer points and a lower frame cap: the field is

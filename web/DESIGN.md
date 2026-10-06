@@ -24,14 +24,17 @@ of those paths. Bump `?v=` on everything you touch.
 
 The landing (`home.html`): the same shell, field and horizon as the app. A
 top row with the wordmark and two links (Sign in, Create account; on a phone
-only Sign in, since the hero carries both). A hero of one Literata headline,
+only Sign in, since the hero carries both). A hero of one Source Serif headline under a short Barlow Condensed eyebrow in gold,
 one plain sentence and two actions (Create account primary, Sign in
 secondary). A specimen: the app's own `.pane` classes, Before and After,
 each with one paragraph written by hand for the page and a reading word
 followed by an `.example-tag` (the construction layer's mono label, brought
 onto the page as information). The tag and the note under the panes say the
 readings are examples, not measurements; the landing shows no numbers. Then
-How it works: the three facts from the app's fold in the `.facts-grid` row,
+Made in Berkeley (`#berkeley`): the heading and two short paragraphs on a
+hairline, saying who built it, that it began as research, and that the
+look is the campus palette; no seal, no mascot, no claim on the university.
+Then How it works: the three facts from the app's fold in the `.facts-grid` row,
 and one sentence on Use this and Undo. The site footer from
 `brand/footer.html`, verbatim. `home.js` calls `GET /api/auth/me`; signed in,
 the primary action becomes "Open the humanizer" (`/app`), the nav shows the
@@ -75,7 +78,7 @@ holds the field to about half behind it, with the wordmark on the ground,
 an opaque `--g2` card, and a "Back to the front page" link. In the card:
 two mode links (Sign in, Create account) that are real links to `/signin`
 and `/signup` and switch in place with `pushState` (on a server without
-those routes the mode is `?mode=signup`); a Literata heading that names the
+those routes the mode is `?mode=signup`); a Source Serif heading that names the
 mode; an alert line (`role=alert`); Name (create account only, optional),
 Email, Password with a Show/Hide button (`aria-pressed`) and, when creating
 an account, the hint "At least 8 characters."; a full-width primary button
@@ -122,7 +125,7 @@ as it was, with no balance, no hint, no sheet and no gating.
   hairline, no shadow; the ground fades and the card rises 8px in the fast
   duration. Focus moves to the card, Tab stays inside it, Escape, Close and
   a click on the ground close it and return focus to what opened it. Inside:
-  the Literata title "Plans"; `#plans-why` ("This draft needs X words and
+  the Source Serif title "Plans"; `#plans-why` ("This draft needs X words and
   you have Y left.") when a 402 or the hint opened it; `#plans-free`, the
   free allowance line; `.plan-row`s from `GET /api/billing/plans` (interval
   name, words a month and whether it renews, the price label, a
@@ -178,7 +181,7 @@ Six references the owner pointed at, and what each one became here.
    layer").
 
 Earlier rules still hold: never pure black; surfaces step lighter as they
-come forward; one accent, one hue; off-white text in three AA tiers;
+come forward; one accent, one hue; near-white text in three AA tiers;
 hairlines at low alpha; two faces from one superfamily; every element
 carries information; motion answers an action and stays under 300 ms;
 every state is designed; text never sits on the canvas without an opaque
@@ -187,24 +190,39 @@ is held to a quarter of its brightness.
 
 ## Colour
 
-Every pair below passes WCAG AA on `--g2`; check any new pair before adding.
+Since 2026-10-06 the palette is UC Berkeley's (brand.berkeley.edu): the
+ground is the brand's Blue Dark stepping toward Berkeley Blue, the one
+accent is California Gold, and the verdict tones are the brand's light
+green, light gold and rose. Vervly is a student's project and borrows the
+palette as a tribute; it uses no seal, no mascot and no university mark,
+and every footer says it is not affiliated with or endorsed by the
+University of California. Every pair below passes WCAG AA on `--g2`; check
+any new pair before adding.
 
-- Ground and surfaces, a ladder: `--g0 #0a0b0d` (labels on the construction
-  layer), `--g1 #0e1013` (page and recessed inputs), `--g2 #15181d` (panes),
-  `--g3 #1c2026` (hover), `--g4 #252a32` (pressed, tooltips).
-- Hairlines: `--line rgba(160,190,230,.13)`, `--line-2 .24`.
-- Text: `--fg #ece8df`, `--fg-2 #b5b0a5`, `--fg-3 #8e897e`.
-- The accent, one hue in four strengths: `--accent #a8e6b0`,
-  `--accent-deep #7ccb8a`, `--accent-line rgba(95,224,208,.38)`,
-  `--accent-wash .12`, text on it `--on-accent #06131a`. Used on: the
-  primary button, focus rings, switches when on, the pill dot when
+- Ground and surfaces, a ladder: `--g0 #010133` (Blue Dark; labels on the
+  construction layer), `--g1 #031540` (page and recessed inputs), `--g2
+  #071d4f` (panes), `--g3 #0d2860` (hover), `--g4 #163472` (pressed,
+  tooltips). Berkeley Blue itself, `#002676`, is the ink of the light
+  lockup and the end the ladder points at; it is never a page surface.
+- Hairlines: Blue Light at low alpha, `--line rgba(159,209,255,.14)`,
+  `--line-2 .26`.
+- Text: `--fg #f3f4f8`, `--fg-2 #c3cae0`, `--fg-3 #96a0c2`.
+- The accent, California Gold in four strengths: `--accent #FDB515`,
+  `--accent-deep #FC9313` (Gold Dark, pressed), `--accent-line
+  rgba(253,181,21,.42)`, `--accent-wash .12`, text on it `--on-accent
+  #010133`. The primary button's hover is Gold Medium `#FFC31B`. Used on:
+  the primary button, focus rings, switches when on, the pill dot when
   connected, the horizon hairline, the divider when hovered or dragged, the
   caret, the "in use" word on the Facts fold, the field and the tiles, the
-  construction layer.
-- The verdict family, one lightness: `--human #9ad46a`, `--mixed #e8c25a`,
-  `--ai #f08466`, as text and as the After pane's border after a run. Never
-  a fill. Their washes at .14 mark inserted and deleted text.
-- Sentence risk: `--risk-1` to `--risk-5`, the ai tone at .07 to .34 alpha.
+  construction layer, the landing eyebrow and its rule, the cursor in the
+  mark.
+- The verdict family, one lightness: `--human #B3E59A` (Green Light),
+  `--mixed #FFE88D` (Gold Light), `--ai #FF7FAE` (the brand's rose, lifted
+  from `#E7115E` so it reads at 13px on the blue), as text and as the After
+  pane's border after a run. Never a fill. Their washes mark inserted and
+  deleted text; the ai wash and the risk ramp are Rose Medium
+  `rgba(231,17,94,…)`.
+- Sentence risk: `--risk-1` to `--risk-5`, the rose at .09 to .40 alpha.
 
 No gradients except the risk legend swatch and the horizon hairline. No
 glow, no shadow (the switch track has one inset hairline shadow so it reads
@@ -212,16 +230,24 @@ as a recess), no purple, no glass, no blobs. Dark only.
 
 ## Type
 
-- Literata for what people read: the draft and rewrite at 17.5px / 1.7,
-  66ch; the wordmark, the lede, pane titles, the verdict line, the landing
-  headline and the section and form headings. Weight 400 (500 for the
-  wordmark).
-- Source Sans 3 for controls, labels and hints: 14px controls, 13px hints,
-  the progress title at 18px. Weights 400 and 500 only.
+Berkeley's own web typefaces, all on Google Fonts: Inter, Source Serif 4
+and, in a secondary role only, Barlow Condensed.
+
+- Source Serif 4 for what people read: the draft and rewrite at 17.5px /
+  1.7, 66ch; the wordmark, the lede, pane titles, the verdict line, the
+  landing headline and the section and form headings. Weight 400 (500 for
+  the wordmark). Optical size 8..60 is loaded so the headline and the body
+  come from the right masters.
+- Inter for controls, labels and hints: 14px controls, 13px hints, the
+  progress title at 18px. Weights 400, 500 and 600.
+- Barlow Condensed, `--cond`, for the landing eyebrow ("Built at UC
+  Berkeley") only: 600, 18px, sentence case, 0.02em. Nowhere else yet; if
+  it spreads, it stays secondary and never sets a headline or body text.
 - Fira Mono, class `.num`, for every numeral and for the field, the tiles,
   the shortcut hint, the example tag and the construction labels.
 - Scale: 12 / 13 / 14 / 16 / 18 / 22 px (`--t-0` to `--t-5`).
-- No all caps, no letterspaced labels, no accented word in a headline.
+- No all caps, no letterspaced labels beyond the eyebrow's 0.02em, no
+  accented word in a headline.
 
 ## Spacing and shape
 
