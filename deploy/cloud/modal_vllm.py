@@ -25,7 +25,14 @@ import subprocess
 
 import modal
 
-APP_NAME = "vervly-llm"
+#: VERVLY_APP_NAME lets a trial server be deployed beside production
+#: (`VERVLY_APP_NAME=vervly-llm-trial VERVLY_VLLM_VERSION=0.31.0 modal deploy ...`)
+#: so a vLLM upgrade is proven on its own URL before the default below moves.
+APP_NAME = os.environ.get("VERVLY_APP_NAME", "vervly-llm")
+#: The vLLM release. 0.11.0 shipped 2026-10-05; the 2026-10-07 audit found 25
+#: advisories against it, 14 fixed only in 0.30.0, so the upgrade trial
+#: targets the current release. Bump deliberately and re-bench.
+VLLM_VERSION = os.environ.get("VERVLY_VLLM_VERSION", "0.11.0")
 BASE_MODEL = os.environ.get("VERVLY_BASE_MODEL", "Qwen/Qwen2.5-7B")
 #: Served LoRA name -> directory inside the image. The name is what the API
 #: sends as `model` (HUMANIZER_BASE_ADAPTER on the API host).
@@ -44,12 +51,18 @@ _repo = os.path.abspath(os.path.join(_here, "..", ".."))
 #: vllm 0.31 on debian_slim died with "Could not find nvcc"). The vLLM
 #: version is pinned so a `modal deploy` months from now builds the same
 #: server; bump it deliberately and re-bench.
+# vLLM 0.11 needs transformers held below 5 (an unpinned resolve on 2026-10-05
+# took 5.x, which drops `all_special_tokens_extended` and breaks its tokenizer
+# wrapper at startup); 0.30+ ships against transformers 5 and pins its own
+# torch, so it gets no extra constraints.
+if VLLM_VERSION.startswith("0.11"):
+    _PINS = ["vllm==" + VLLM_VERSION, "transformers>=4.56,<5", "tokenizers<0.23", "huggingface_hub>=0.30,<1"]
+else:
+    _PINS = ["vllm==" + VLLM_VERSION]
+
 image = (
     modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
-    # transformers is pinned below 5: an unpinned resolve on 2026-10-05 took
-    # 5.x, which drops `all_special_tokens_extended` and breaks vLLM 0.11's
-    # tokenizer wrapper at startup.
-    .pip_install("vllm==0.11.0", "transformers>=4.56,<5", "tokenizers<0.23", "huggingface_hub>=0.30,<1")
+    .pip_install(*_PINS)
     .env({"HF_HOME": "/hf", "VLLM_NO_USAGE_STATS": "1", "CUDA_HOME": "/usr/local/cuda"})
     .add_local_dir(os.path.join(_repo, "data", "adapters-peft"), remote_path="/adapters")
 )
