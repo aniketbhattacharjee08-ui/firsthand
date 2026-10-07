@@ -176,6 +176,15 @@ class BillingConfig:
     db_path: Path = _DEFAULT_DB
     public_url: str = "http://127.0.0.1:8000"
     free_credits: int = 3
+    #: Anonymous use. With `guests` on, a visitor who has not signed in is a
+    #: billing user keyed by client address (`guest:<ip>`) with
+    #: `guest_credits` to spend; when they run out the gate answers 402 with
+    #: `guest: true` and the site sends them to create an account. An account
+    #: created from an address that already has a guest row inherits what the
+    #: guest had left instead of a fresh grant, so one address gets one free
+    #: allowance however it is used.
+    guests: bool = True
+    guest_credits: int = 3
     session_days: int = 30
     magic_link_minutes: int = 15
     words_per_credit: int = 300
@@ -275,6 +284,8 @@ class BillingConfig:
             db_path=Path(db_raw).expanduser() if db_raw else _DEFAULT_DB,
             public_url=public_url,
             free_credits=get_int("LONGHAND_FREE_CREDITS", 3),
+            guests=get_bool("LONGHAND_GUESTS", True),
+            guest_credits=max(0, get_int("LONGHAND_GUEST_CREDITS", get_int("LONGHAND_FREE_CREDITS", 3))),
             session_days=get_int("LONGHAND_SESSION_DAYS", 30),
             magic_link_minutes=get_int("LONGHAND_MAGIC_LINK_MINUTES", 15),
             words_per_credit=max(1, get_int("LONGHAND_WORDS_PER_CREDIT", 300)),
@@ -347,6 +358,8 @@ class BillingConfig:
             "refund_unchanged": self.refund_unchanged,
             "max_inflight": self.max_inflight,
             "free_words": self.free_credits * self.words_per_credit,
+            "guests": self.guests,
+            "guest_words": self.guest_credits * self.words_per_credit if self.guests else 0,
             "stripe": self.stripe_configured,
             "packs": self.public_packs(),
             "plans": self.public_plans(),

@@ -1730,9 +1730,11 @@
       progClose();
       refreshHumanizeButton();
       var msg = (err && err.message) || 'unknown error';
-      /* the service said the balance is short: the plans, not the error box */
+      /* the service said the balance is short: the plans, not the error box.
+         A guest has no plans to choose from yet: the sign-up page instead. */
       if (err && err.paywall) {
         billingFrom402(err.paywall);
+        if (err.paywall.guest === true || billing.guest) { guestOut(err.paywall); return; }
         setStatus('idle', 'Not enough words left for this draft. Choose a plan to continue.');
         openPlans(err.paywall, $('humanize-btn'));
         return;
@@ -2165,7 +2167,8 @@
   var BALANCE_HEADER = 'X-Longhand-Credits-Balance';
 
   var billing = {
-    on: false,            /* paywall true and someone signed in */
+    on: false,            /* paywall true and someone to charge: a user or a guest */
+    guest: false,         /* nobody signed in; the free words belong to this address */
     user: null,
     wordsPerCredit: null,
     wordsLeft: null,
@@ -2208,6 +2211,7 @@
     var obj = me && typeof me === 'object' ? me : {};
     var u = obj.user && typeof obj.user === 'object' ? obj.user : null;
     billing.on = obj.paywall === true && !!u;
+    billing.guest = !!(u && u.guest === true);
     billing.user = u;
     var wpc = loose(u && u.words_per_credit);
     if (wpc === null) wpc = loose(obj.words_per_credit);
@@ -2250,6 +2254,19 @@
     renderCost();
   }
 
+  /* the account row for a visitor who has not signed in: the free words for
+     this address and a way to sign in; no name, no plan, no Sign out */
+  function guestRow() {
+    var box = $('account');
+    var signin = $('signin-link');
+    var signout = $('signout-btn');
+    var who = $('who');
+    if (who) { who.textContent = ''; who.title = ''; }
+    if (signin) signin.hidden = false;
+    if (signout) signout.hidden = true;
+    if (box) box.hidden = false;
+  }
+
   function renderBalance() {
     var bal = $('balance');
     var plan = $('plan-name');
@@ -2259,10 +2276,18 @@
     clear(bal);
     if (billing.wordsLeft !== null) {
       bal.appendChild(el('span', 'num', fmtInt(billing.wordsLeft)));
-      bal.appendChild(document.createTextNode(' ' + plural(billing.wordsLeft, 'word') + ' left'));
+      bal.appendChild(document.createTextNode(billing.guest
+        ? ' free ' + plural(billing.wordsLeft, 'word') + ' left'
+        : ' ' + plural(billing.wordsLeft, 'word') + ' left'));
       bal.hidden = false;
     } else {
       bal.hidden = true;
+    }
+    if (billing.guest) {
+      plan.hidden = true;
+      btn.hidden = true;
+      guestRow();
+      return;
     }
     var name = planLabel(billing.plan);
     plan.textContent = name;
@@ -2272,11 +2297,22 @@
        even if /api/auth/me has not answered yet */
     var box = $('account');
     var who = $('who');
+    var signin = $('signin-link');
+    if (signin) signin.hidden = true;
     if (who && !who.textContent && billing.user) {
       who.textContent = billing.user.name || billing.user.email || '';
       who.title = billing.user.email || '';
     }
     if (box) box.hidden = false;
+  }
+
+  /* where a guest goes when the free words run out: the sign-up page, then
+     the plans. The server names the URL on its 402; this is the fallback. */
+  var SIGNUP_URL = '/signup?next=' + encodeURIComponent('/pricing') + '&error=free_used';
+  function guestOut(body) {
+    var url = body && typeof body.signup_url === 'string' && body.signup_url.charAt(0) === '/' ? body.signup_url : SIGNUP_URL;
+    try { setStatus('idle', 'Your free words are used up. Create an account to continue.'); } catch (e) { /* before the DOM */ }
+    location.assign(url);
   }
 
   function billingShort(text) {
@@ -2300,11 +2336,12 @@
     node.hidden = false;
     if (billingShort(state.text)) {
       node.setAttribute('data-short', '1');
-      node.appendChild(document.createTextNode('Not enough words left; '));
-      var link = el('button', 'link-btn', 'choose a plan');
+      node.appendChild(document.createTextNode(billing.guest ? 'Not enough free words left; ' : 'Not enough words left; '));
+      var link = el('button', 'link-btn', billing.guest ? 'create an account' : 'choose a plan');
       link.type = 'button';
       link.id = 'cost-plans';
       link.addEventListener('click', function () {
+        if (billing.guest) { guestOut(null); return; }
         openPlans({ words_needed: n, words_left: billing.wordsLeft }, link);
       });
       node.appendChild(link);
@@ -2596,18 +2633,24 @@
      GET /api/auth/me says who is signed in; the top row shows the name and a
      Sign out button. If the route is missing (a development server with no
      auth) the row stays as it is and the app runs. If it answers that nobody
-     is signed in, the page goes to the sign-in form. */
+     is signed in, the visitor is a guest: the row shows a Sign in link and
+     GET /api/me (billing) fills in the free words for this address. The
+     page only leaves for the sign-in form when a product route answers 401. */
   function checkAccount() {
     var box = $('account');
     if (!box) return;
     request('/api/auth/me').then(function (me) {
       if (!me || typeof me !== 'object') return;
-      if (me.signed_in === false) { signInRequired(); return; }
+      if (me.signed_in === false) { guestRow(); return; }
       if (!me.signed_in) return;
       var u = me.user || {};
       var who = $('who');
       who.textContent = u.name || u.email || '';
       who.title = u.email || '';
+      var signin = $('signin-link');
+      var signout = $('signout-btn');
+      if (signin) signin.hidden = true;
+      if (signout) signout.hidden = false;
       box.hidden = false;
     }, function () { /* no auth routes: nothing to show */ });
   }

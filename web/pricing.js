@@ -234,9 +234,9 @@
     if (!line) return;
     var free = state.plans ? loose(state.plans.free_words) : null;
     if (free === null) free = FALLBACK.free_words;
-    var text = fmtInt(free) + ' words free when you create an account.';
+    var text = fmtInt(free) + ' words free before you need an account.';
     if (state.user && state.paywall === true && !state.plan && state.wordsLeft !== null) {
-      text = fmtInt(free) + ' words free when you create an account; you have ' + fmtInt(state.wordsLeft) + ' left.';
+      text = fmtInt(free) + ' words free before you need an account; you have ' + fmtInt(state.wordsLeft) + ' left.';
     }
     numify(line, text);
   }

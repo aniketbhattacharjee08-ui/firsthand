@@ -17,16 +17,24 @@ field. The two ASCII tiles in the After pane and the progress card still animate
 ## Pages
 
 The server serves `GET /` as `web/home.html`, `GET /signin` and
-`GET /signup` as `web/auth.html`, and `GET /app` as `web/index.html` only
-when someone is signed in (otherwise a 303 to `/signin?next=/app`). Every
+`GET /signup` as `web/auth.html`, and `GET /app` as `web/index.html` to
+anyone (since 2026-10-06; `HUMANIZER_PUBLIC_APP=0` restores the 303 to
+`/signin?next=/app`). A visitor who has not signed in is a guest: the
+paywall gives each client address one free allowance (`LONGHAND_GUEST_CREDITS`,
+1,000 words), `GET /api/me` reports it with `guest: true`, the top row shows
+"N free words left" and a Sign in link instead of a name and Sign out, and
+when the allowance is gone a charged route answers 402 with `guest: true`
+and `signup_url`, which sends the page to `/signup?next=/pricing&error=free_used`.
+An account created from that address inherits what the guest had left, so
+one address gets one free allowance however it is used. Every
 asset URL is absolute (`/styles.css?v=...`) so the same file works from any
 of those paths. Bump `?v=` on everything you touch.
 
 The landing (`home.html`): the same shell, field and horizon as the app. A
 top row with the wordmark and two links (Sign in, Create account; on a phone
 only Sign in, since the hero carries both). A hero of one Source Serif headline under a short Barlow Condensed eyebrow in gold,
-one plain sentence and two actions (Create account primary, Sign in
-secondary). A specimen: the app's own `.pane` classes, Before and After,
+one plain sentence and two actions (Try it free primary, straight to `/app`
+with no account; Sign in secondary). A specimen: the app's own `.pane` classes, Before and After,
 each with one paragraph written by hand for the page and a reading word
 followed by an `.example-tag` (the construction layer's mono label, brought
 onto the page as information). The tag and the note under the panes say the
@@ -199,11 +207,17 @@ and no university mark, and every footer says it is not affiliated with or
 endorsed by the University of California. Every pair below passes WCAG AA
 on `--g2`; check any new pair before adding.
 
-- Ground and surfaces, a ladder: `--g0 #0a0b0d` (labels on the construction
-  layer), `--g1 #0e1013` (page and recessed inputs), `--g2 #15181d` (panes),
-  `--g3 #1c2026` (hover), `--g4 #252a32` (pressed, tooltips).
+- Ground and surfaces, a ladder with Berkeley Blue in it, dark enough to
+  read as black at a glance: `--g0 #06081a` (labels on the construction
+  layer), `--g1 #0a0e20` (page and recessed inputs), `--g2 #10172f` (panes),
+  `--g3 #171f3e` (hover), `--g4 #1f2a4f` (pressed, tooltips). Pane heads
+  carry `--blue-wash` (.06) so the panes read as cards on the ground.
 - Hairlines: Berkeley's Blue Light at low alpha, `--line
-  rgba(159,209,255,.12)`, `--line-2 .22`.
+  rgba(159,209,255,.14)`, `--line-2 .24`.
+- The quiet gold, `--gold-line rgba(253,181,21,.22)`: the example tag's
+  border and a price column's hairline on hover. The landing's section
+  headings each carry a 24px gold rule above, the eyebrow's mark repeated;
+  the footer's hairline runs gold to blue like the horizon.
 - Text: `--fg #ece8df`, `--fg-2 #b5b0a5`, `--fg-3 #8e897e`.
 - The accent, California Gold in four strengths: `--accent #FDB515`,
   `--accent-deep #FC9313` (Gold Dark, pressed), `--accent-line

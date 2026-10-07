@@ -11,7 +11,7 @@ The mark is the product's own before and after, drawn in the cells the page alre
 - `wordmark-text.svg`: the same lockup with the name as live text. It needs Fira Sans loaded, so it is only an editable source; ship `wordmark.svg`.
 - `logo-dark.svg`: the lockup with fixed off-white ink (`#ece8df`) for graphite and other dark grounds, transparent background.
 - `logo-light.svg`: the lockup with fixed Berkeley Blue ink (`#002676`) for white and pale grounds, transparent background.
-- `favicon.svg`: the mark at 32 units on a `#15181d` tile with a 4 unit radius. Link it with `<link rel="icon" type="image/svg+xml" href="brand/favicon.svg">`; export 32 and 180 pixel PNGs from it if `.ico` or Apple touch icons are needed.
+- `favicon.svg`: the mark at 32 units on a `#10172f` tile with a 4 unit radius. Link it with `<link rel="icon" type="image/svg+xml" href="brand/favicon.svg">`; export 32 and 180 pixel PNGs from it if `.ico` or Apple touch icons are needed.
 - `footer.html` and `footer.css`: the site footer snippet and its styles, on the tokens in `styles.css`.
 - `preview.png`: the mark at 16, 32 and 64, the lockups on dark and light, and the footer wide and narrow.
 

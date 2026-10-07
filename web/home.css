@@ -105,7 +105,8 @@ html { scroll-behavior: smooth; }
   color: var(--fg-3);
 }
 
-/* section headings, in the serif like the pane titles */
+/* section headings, in the serif like the pane titles, each with a short
+   gold rule above: the one place the landing repeats the eyebrow's mark */
 .section-h {
   font-family: var(--serif);
   font-weight: 400;
@@ -113,7 +114,10 @@ html { scroll-behavior: smooth; }
   line-height: 1.3;
   color: var(--fg);
   margin-bottom: var(--s-5);
+  padding-top: var(--s-3);
+  position: relative;
 }
+.section-h::before { content: ""; position: absolute; top: 0; left: 0; width: 24px; height: 2px; background: var(--accent); opacity: 0.85; }
 
 /* the specimen: the app's two panes, side by side, with hand-written text */
 .specimen { padding-top: var(--s-12); scroll-margin-top: var(--s-8); }
@@ -143,7 +147,7 @@ html { scroll-behavior: smooth; }
 .example-tag {
   display: inline-block;
   padding: 1px var(--s-2);
-  border: 1px solid var(--accent-line);
+  border: 1px solid var(--gold-line);
   border-radius: var(--r);
   background: var(--g0);
   color: var(--accent);
@@ -195,7 +199,8 @@ html { scroll-behavior: smooth; }
 .pricing { padding-top: var(--s-12); scroll-margin-top: var(--s-8); }
 .pricing-free { font-size: var(--t-3); line-height: 1.55; color: var(--fg-2); max-width: 60ch; margin-bottom: var(--s-6); }
 .pricing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: var(--s-8); row-gap: var(--s-5); }
-.price-plan { padding-top: var(--s-4); border-top: 1px solid var(--line); }
+.price-plan { padding-top: var(--s-4); border-top: 1px solid var(--line); transition: border-color var(--fast) var(--ease); }
+.price-plan:hover { border-top-color: var(--gold-line); }
 .price-h { font-family: var(--serif); font-weight: 400; font-size: var(--t-5); line-height: 1.2; color: var(--fg); }
 .price-amount { margin-top: var(--s-2); font-size: var(--t-3); color: var(--fg); }
 .price-amount .num { font-size: var(--t-5); }

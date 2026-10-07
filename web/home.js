@@ -3,7 +3,8 @@
    One job: ask GET /api/auth/me who is here. Signed in, the primary action
    becomes "Open the humanizer" and the top row shows the name. Anything
    else (not signed in, no such route yet, no network) leaves the page as
-   written: Create account and Sign in. ES5, no build step. */
+   written: Try it free (the app, no account needed) and Sign in. ES5, no
+   build step. */
 (function () {
   'use strict';
 

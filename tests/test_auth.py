@@ -230,7 +230,9 @@ class TestCookie:
         db.execute("UPDATE sessions SET expires_at = ?", (time.time() - 1,))
         db.commit()
         assert client.get("/api/auth/me").json() == {"signed_in": False}
-        assert client.get("/app", follow_redirects=False).status_code == 303
+        # /app is public by default, so the expired session shows as a guest
+        # visit rather than a redirect; the row itself is gone.
+        assert client.get("/app", follow_redirects=False).status_code == 200
         assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
@@ -261,15 +263,30 @@ class TestPages:
             r = client.get(path)
             assert r.status_code == 200 and "<h1>auth</h1>" in r.text, path
 
-    def test_app_redirects_without_a_session(self, client):
-        r = client.get("/app", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/signin?next=/app"
+    def test_app_is_public_by_default(self, client):
+        """October rule: the free words need no account, so /app is served to
+        anyone and the paywall (by address) is what limits a visitor."""
+        for path in ("/app", "/index.html"):
+            r = client.get(path, follow_redirects=False)
+            assert r.status_code == 200 and "<h1>humanizer</h1>" in r.text, path
 
-    def test_index_html_by_name_also_redirects(self, client):
-        r = client.get("/index.html", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/signin?next=/app"
+    def test_app_redirects_without_a_session_when_not_public(self, tmp_path):
+        with TestClient(_app(tmp_path, _web(tmp_path), public_app=False)) as c:
+            for path in ("/app", "/index.html"):
+                r = c.get(path, follow_redirects=False)
+                assert r.status_code == 303, path
+                assert r.headers["location"] == "/signin?next=/app"
+            c.post("/api/auth/signup", json=GOOD)
+            assert "<h1>humanizer</h1>" in c.get("/app").text
+
+    def test_public_app_switch_reads_the_environment(self, tmp_path, monkeypatch):
+        web = _web(tmp_path)
+        monkeypatch.setenv(auth_mod.PUBLIC_APP_ENV, "0")
+        with TestClient(_app(tmp_path, web)) as c:
+            assert c.get("/app", follow_redirects=False).status_code == 303
+        monkeypatch.setenv(auth_mod.PUBLIC_APP_ENV, "1")
+        with TestClient(_app(tmp_path, web)) as c:
+            assert c.get("/app", follow_redirects=False).status_code == 200
 
     def test_app_is_served_with_a_session(self, client):
         client.post("/api/auth/signup", json=GOOD)
@@ -295,7 +312,7 @@ class TestPages:
         with TestClient(_app(tmp_path, web)) as c:
             r = c.get("/", follow_redirects=False)
             assert r.status_code == 303 and r.headers["location"] == "/app"
-            assert c.get("/", follow_redirects=True).url.path == "/signin"
+            assert c.get("/", follow_redirects=True).url.path == "/app"
 
     def test_no_web_dir_keeps_the_api_placeholder(self, tmp_path):
         with TestClient(_app(tmp_path)) as c:
@@ -306,8 +323,24 @@ class TestPages:
 # ------------------------------------------------------------------- gate
 
 
+@pytest.fixture()
+def walled(tmp_path):
+    """The September configuration: HUMANIZER_PUBLIC_APP off, so the product
+    API and /app need a session."""
+    with TestClient(_app(tmp_path, _web(tmp_path), public_app=False)) as c:
+        yield c
+
+
 class TestGate:
-    def test_product_routes_are_401_without_a_session(self, client):
+    def test_product_routes_are_open_to_guests_by_default(self, client):
+        """Public app: the product routes answer without a session here; the
+        paywall in humanizer.billing is what limits a visitor by address."""
+        r = client.post("/api/humanize", json={"text": SHORT, "aggressiveness": "light"})
+        assert r.status_code == 200
+        assert client.post("/api/analyze", json={"text": SHORT, "detect": False}).status_code == 200
+
+    def test_product_routes_are_401_without_a_session(self, walled):
+        client = walled
         cases = [
             ("post", "/api/analyze", {"text": SHORT}),
             ("post", "/api/features", {"text": SHORT}),
@@ -350,7 +383,8 @@ class TestGate:
         client.post("/api/auth/signup", json=GOOD)
         assert client.post("/api/analyze", json={"text": ""}).status_code == 400
 
-    def test_signing_out_closes_the_gate(self, client):
+    def test_signing_out_closes_the_gate(self, walled):
+        client = walled
         client.post("/api/auth/signup", json=GOOD)
         assert client.post("/api/features", json={"text": SHORT}).status_code == 200
         client.post("/api/auth/signout")

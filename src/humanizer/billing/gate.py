@@ -45,6 +45,17 @@ The last is bridged to a billing user by email on first sight, with the
 same free-credit grant and the same per-IP and disposable-domain limits the
 magic-link path applies, and the link is cached in `users.auth_user_id`.
 
+Nobody signed in is still somebody, when `LONGHAND_GUESTS` is on (the
+default): a guest, one billing row per client address (`guest:<ip>`),
+created on the first charged request with `LONGHAND_GUEST_CREDITS` to
+spend. The owner's instruction: people get the free words without signing
+in, the address is what is limited, and after that they pay. So a guest's
+402 carries `guest: true` and a `signup_url`, and when an account is later
+created from that address it inherits what the guest had left rather than
+a fresh grant (`bridge_site_user`). `GET /api/me` reports the guest's
+balance without creating a row, so the page can show the words left.
+With guests off the charged routes answer 401 as before.
+
 With `LONGHAND_PAYWALL` off, only step 1 runs.
 """
 
@@ -76,6 +87,8 @@ SESSION_COOKIE = "longhand_session"
 #: here rather than imported so this module keeps no dependency on the
 #: server package.
 SITE_COOKIE = "rh_session"
+#: Billing rows for visitors who have not signed in are keyed by address.
+GUEST_PREFIX = "guest:"
 
 #: Largest response body kept for the unchanged check. A result payload with
 #: 16 candidates per paragraph is a few hundred KB; anything past this is
@@ -162,6 +175,34 @@ def authenticate(store: Store, headers: Dict[str, str]) -> Optional[Dict[str, An
     return None
 
 
+def guest_email(ip: str) -> str:
+    """The `users.email` key of the guest row for a client address."""
+    return GUEST_PREFIX + (ip or "unknown")
+
+
+def is_guest(user: Optional[Dict[str, Any]]) -> bool:
+    return bool(user) and str(user.get("email") or "").startswith(GUEST_PREFIX)
+
+
+def guest_user(store: Store, config: BillingConfig, ip: str, create: bool) -> Optional[Dict[str, Any]]:
+    """The guest row for `ip`, created with the guest grant when `create`.
+
+    Without `create` (the `/api/me` lookup) a visitor who has never been
+    charged gets a virtual row with the full grant, so the page can say how
+    many free words there are before anything is spent.
+    """
+    if not (config.enabled and config.guests):
+        return None
+    email = guest_email(ip)
+    row = store.user_by_email(email)
+    if row is None:
+        if not create:
+            return {"id": "", "email": email, "credits": int(config.guest_credits), "plan": "", "guest": True, "virtual": True}
+        # `ip=""` so a guest row never counts toward the per-address sign-up cap.
+        row, _created = store.create_or_get(email, int(config.guest_credits), ip="")
+    return dict(row, guest=True)
+
+
 def bridge_site_user(
     store: Store, config: BillingConfig, auth_store: Any, headers: Dict[str, str], ip: str
 ) -> Optional[Dict[str, Any]]:
@@ -199,6 +240,15 @@ def bridge_site_user(
         elif config.signups_per_ip_per_day > 0 and store.user_by_email(email) is None:
             if store.signups_from(ip, 86400.0) >= config.signups_per_ip_per_day:
                 free = 0
+        # One free allowance per address: an account created where a guest
+        # already spent words inherits what the guest had left, and the
+        # guest row is emptied so the same words cannot be used twice.
+        guest = store.user_by_email(guest_email(ip)) if config.guests and store.user_by_email(email) is None else None
+        if guest is not None:
+            left = max(0, int(guest.get("credits") or 0))
+            free = min(free, left)
+            if left:
+                store.charge(guest["id"], left, kind="transfer", ref="to account %s" % auth_id)
         user, _created = store.create_or_get(email, free, ip=ip)
         store.link_auth_user(user["id"], auth_id)
         user = dict(user, auth_user_id=auth_id)
@@ -410,6 +460,8 @@ class PaywallMiddleware:
         scope["state"]["billing_user"] = user
         scope["state"]["billing_config"] = self.config
         scope["state"]["client_ip"] = ip
+        # The guest's balance for `/api/me`, looked up, never created here.
+        scope["state"]["guest_user"] = guest_user(self.store, self.config, ip, create=False) if user is None else None
 
         if not self.config.enabled:
             await self.app(scope, receive, send)
@@ -471,6 +523,8 @@ class PaywallMiddleware:
             # A GPTZero call on the operator's key is charged; no GPU involved.
 
         if user is None:
+            user = guest_user(self.store, self.config, ip, create=True)
+        if user is None:
             await _json_response(send, 401, self._sign_in_body(auth_store))
             return
 
@@ -489,15 +543,21 @@ class PaywallMiddleware:
         if balance is None:
             have = self.store.balance(user["id"])
             have = int(user.get("credits") or 0) if have is None else int(have)
+            guest = is_guest(user)
+            detail = "This request costs %d credit%s (%d words at %d words per credit%s); you have %d." % (
+                cost, "" if cost == 1 else "s", n_words, wpc,
+                "" if effort == 1 else ", x%d for extra candidates or rounds" % effort, have
+            )
+            if guest:
+                detail = "The free words for this address are used up (%d left, this draft needs %d). Create an account and choose a plan to continue." % (have * wpc, cost * wpc)
             await _json_response(
                 send,
                 402,
                 {
                     "error": "insufficient_credits",
-                    "detail": "This request costs %d credit%s (%d words at %d words per credit%s); you have %d." % (
-                        cost, "" if cost == 1 else "s", n_words, wpc,
-                        "" if effort == 1 else ", x%d for extra candidates or rounds" % effort, have
-                    ),
+                    "detail": detail,
+                    "guest": guest,
+                    "signup_url": "/signup?next=/pricing&error=free_used" if guest else None,
                     "needed": cost,
                     "effort": effort,
                     "balance": have,

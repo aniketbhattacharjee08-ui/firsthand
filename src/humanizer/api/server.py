@@ -2037,9 +2037,10 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
 #     auth: bool | None   None reads HUMANIZER_AUTH (default "1", on).
 #
 # With auth on, the page routes here shadow the StaticFiles `html=True`
-# behaviour for "/" and "/index.html", so the humanizer cannot be reached
-# without a session. With auth off nothing is registered and the app serves
-# exactly as before.
+# behaviour for "/" and "/index.html". Whether /app and the product API
+# need a session is `HUMANIZER_PUBLIC_APP` (default on: public, and the
+# paywall limits visitors by address); see `humanizer.api.auth`. With auth
+# off nothing is registered and the app serves exactly as before.
 # ===========================================================================
 
 from . import auth as _auth_mod  # noqa: E402
@@ -2052,10 +2053,10 @@ def auth_enabled_from_env() -> bool:
     return os.environ.get(AUTH_ENV, "1").strip().lower() not in ("0", "false", "no", "off", "")
 
 
-def _register_auth(app: FastAPI, auth_db: Optional[Path]) -> FastAPI:
+def _register_auth(app: FastAPI, auth_db: Optional[Path], public_app: Optional[bool] = None) -> FastAPI:
     """Install accounts on an app built by `create_app`, then re-order mounts."""
     store = _auth_mod.AuthStore(auth_db or _auth_mod.default_auth_db_path())
-    _auth_mod.register_auth(app, store, getattr(app.state, "web_dir", None))
+    _auth_mod.register_auth(app, store, getattr(app.state, "web_dir", None), public_app=public_app)
     # Google and Apple sign-in, configured by environment; unconfigured
     # providers report false at /api/auth/providers and redirect with an error.
     from . import oauth as _oauth_mod
@@ -2080,12 +2081,15 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
     default_reference: Optional[str] = None,
     auth: Optional[bool] = None,
     auth_db: Optional[Path] = None,
+    public_app: Optional[bool] = None,
 ) -> FastAPI:
     """Build the ASGI application, with accounts and sign-in gating.
 
     `auth=None` reads `HUMANIZER_AUTH` (default on). `auth_db` overrides the
-    SQLite path (`HUMANIZER_AUTH_DB`, else `data/auth.sqlite`). Everything
-    else is identical to the definition above.
+    SQLite path (`HUMANIZER_AUTH_DB`, else `data/auth.sqlite`). `public_app`
+    (None reads `HUMANIZER_PUBLIC_APP`, default on) serves /app and the
+    product API without a session. Everything else is identical to the
+    definition above.
     """
     app = _create_app_without_auth(
         reference_dir=reference_dir,
@@ -2095,5 +2099,5 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
     enabled = auth_enabled_from_env() if auth is None else bool(auth)
     app.state.auth_enabled = enabled
     if enabled:
-        _register_auth(app, auth_db)
+        _register_auth(app, auth_db, public_app=public_app)
     return app

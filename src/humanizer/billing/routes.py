@@ -266,10 +266,22 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
 
     @app.get("/api/me")
     def me(request: Request) -> JSONResponse:
+        """Who is paying: the signed-in user, or the guest row for this
+        address (never created here; a visitor who has spent nothing sees the
+        full guest grant), or nobody when guests are off."""
         user = _current_user(request)
         if user is None:
-            return JSONResponse({"user": None, "paywall": cfg.enabled})
-        return JSONResponse({"user": _user_payload(_fresh(user), cfg.words_per_credit), "paywall": cfg.enabled})
+            guest = getattr(request.state, "guest_user", None)
+            if guest is None:
+                return JSONResponse({"user": None, "paywall": cfg.enabled})
+            if guest.get("virtual"):
+                payload = _user_payload(dict(guest, id="guest"), cfg.words_per_credit)
+            else:
+                payload = _user_payload(_fresh(guest), cfg.words_per_credit)
+            # The address is the key; it is not the visitor's business to see it echoed.
+            payload.update({"guest": True, "email": "", "id": "guest"})
+            return JSONResponse({"user": payload, "paywall": cfg.enabled, "guest": True})
+        return JSONResponse({"user": dict(_user_payload(_fresh(user), cfg.words_per_credit), guest=False), "paywall": cfg.enabled})
 
     @app.delete("/api/me")
     def delete_me(request: Request) -> JSONResponse:

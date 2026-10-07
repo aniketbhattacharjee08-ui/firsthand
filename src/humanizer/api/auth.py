@@ -1,22 +1,30 @@
 """Accounts and sign-in gating for the web app.
 
-The owner's instruction, verbatim: "you shouldn't be able to just go to
-humanizer right away there should be like a sign-in / create account page and
-then you should have to move into this humanizer page".
+The owner's first instruction (September): "you shouldn't be able to just
+go to humanizer right away there should be like a sign-in / create account
+page and then you should have to move into this humanizer page". The
+October revision: "people get the 1000 words for free, don't have to sign
+in, make it public and then block IPs; after a couple tries charge people".
 
-So the site has three pages and a gate:
+So the site has three pages, and the gate is a switch:
 
     GET /            web/home.html        public landing page
     GET /signin      web/auth.html        one page; it reads the path for mode
     GET /signup      web/auth.html
-    GET /app         web/index.html       the humanizer; signed-in users only,
+    GET /app         web/index.html       the humanizer. Public by default
+                                          (HUMANIZER_PUBLIC_APP=1); with the
+                                          switch off, signed-in users only,
                                           otherwise 303 to /signin?next=/app
-    GET /index.html  same rule as /app, so the app cannot be reached by name
+    GET /index.html  same rule as /app
 
-and a JSON API under /api/auth/ (signup, signin, signout, me). Every product
-route (/api/humanize*, /api/analyze, /api/detect, /api/plan, /api/features,
-/api/models*) answers 401 `{"error": "sign_in_required"}` without a valid
-session cookie; /api/health, /api/auth/* and /api/references stay public.
+and a JSON API under /api/auth/ (signup, signin, signout, me). With the
+switch off, every product route (/api/humanize*, /api/analyze, /api/detect,
+/api/plan, /api/features, /api/models*) answers 401
+`{"error": "sign_in_required"}` without a valid session cookie. With it on
+(the default) the product routes are open here and the paywall in
+`humanizer.billing.gate` is what limits a visitor: one free allowance per
+client address, then 402 and the sign-up page. /api/health, /api/auth/*
+and /api/references are always public.
 
 Storage is one SQLite file (`data/auth.sqlite`, or `HUMANIZER_AUTH_DB`) with
 `users` and `sessions`. Passwords are hashed with `hashlib.scrypt` (n=2**14,
@@ -58,6 +66,9 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 SESSION_COOKIE = "rh_session"
+#: `HUMANIZER_PUBLIC_APP`: unset or anything but 0/false/no/off serves /app
+#: and the product API to visitors who have not signed in.
+PUBLIC_APP_ENV = "HUMANIZER_PUBLIC_APP"
 SESSION_TTL_S = 30 * 24 * 3600
 MIN_PASSWORD_LENGTH = 8
 
@@ -403,17 +414,29 @@ class SigninBody(BaseModel):
 # -------------------------------------------------------------------- install
 
 
-def register_auth(app: FastAPI, store: AuthStore, web_root: Optional[Path]) -> FastAPI:
+def public_app_from_env() -> bool:
+    """`HUMANIZER_PUBLIC_APP` as a bool; unset is on."""
+    return os.environ.get(PUBLIC_APP_ENV, "1").strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def register_auth(
+    app: FastAPI, store: AuthStore, web_root: Optional[Path], public_app: Optional[bool] = None
+) -> FastAPI:
     """Add the pages, the /api/auth routes and the gate to a built app.
 
+    `public_app=None` reads `HUMANIZER_PUBLIC_APP` (default on): the app page
+    and the product API are served to visitors who have not signed in, and
+    the paywall is what limits them. False restores the September gate.
     Idempotent per app instance. The caller is responsible for moving any
     Mount back to the end of the router afterwards (server.py does).
     """
     if getattr(app.state, "auth_installed", False):
         return app
+    public = public_app_from_env() if public_app is None else bool(public_app)
     app.state.auth_store = store
     app.state.auth_enabled = True
     app.state.auth_installed = True
+    app.state.public_app = public
 
     web = Path(web_root) if web_root else None
 
@@ -454,7 +477,7 @@ def register_auth(app: FastAPI, store: AuthStore, web_root: Optional[Path]) -> F
         @app.get("/app", include_in_schema=False)
         @app.get("/index.html", include_in_schema=False)
         def app_page(request: Request) -> Any:
-            if current_user(request) is None:
+            if not public and current_user(request) is None:
                 return RedirectResponse("/signin?next=" + quote("/app", safe="/"), status_code=303)
             index = page_path("index.html")
             if index is None:
@@ -512,7 +535,7 @@ def register_auth(app: FastAPI, store: AuthStore, web_root: Optional[Path]) -> F
     @app.middleware("http")
     async def _require_sign_in(request: Request, call_next):  # type: ignore[no-untyped-def]
         path = request.url.path
-        if path.startswith(GATED_PREFIXES) and request.method != "OPTIONS":
+        if not public and path.startswith(GATED_PREFIXES) and request.method != "OPTIONS":
             if store.user_for_session(request.cookies.get(SESSION_COOKIE)) is None:
                 return JSONResponse(
                     status_code=401,

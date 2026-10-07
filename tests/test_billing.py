@@ -185,12 +185,27 @@ def test_free_routes_stay_free(real_client):
     assert h["paywall"] is True and [p["name"] for p in h["packs"]] == ["starter", "pro"]
 
 
-def test_llm_route_requires_login(real_client):
-    """The real app carries the site's accounts, so the 401 is the code the
-    site's app.js redirects on; a bare paywall (stub) keeps the magic-link code."""
+def test_llm_route_charges_a_guest_by_address(real_client):
+    """Nobody signed in is a guest keyed by client address: the request is
+    charged against the address's free allowance instead of refused."""
+    me = real_client.get("/api/me").json()
+    assert me["user"]["guest"] is True and me["user"]["words_left"] == 900 and me["user"]["email"] == ""
     r = real_client.post("/api/humanize/llm", json={"text": TEXT_300})
-    assert r.status_code == 401
-    assert r.json()["error"] == "sign_in_required" and r.json()["signin_url"] == "/signin"
+    # The route itself may refuse (no model on this machine) but the gate let
+    # it through and charged, then refunded on a refusal; either way, not 401.
+    assert r.status_code != 401
+    assert "x-longhand-credits-charged" in r.headers or r.status_code >= 400
+
+
+def test_llm_route_requires_login_when_guests_are_off(tmp_path):
+    """With LONGHAND_GUESTS=0 the real app keeps the September wall: the 401
+    carries the code the site's app.js redirects on."""
+    cfg = _env(tmp_path, LONGHAND_GUESTS="0")
+    with TestClient(_real_app(tmp_path, cfg)) as c:
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 401
+        assert r.json()["error"] == "sign_in_required" and r.json()["signin_url"] == "/signin"
+        assert c.get("/api/me").json() == {"user": None, "paywall": True}
 
 
 def test_refused_request_is_refunded(real_client):
@@ -238,7 +253,9 @@ def test_logout_revokes_session(real_client):
     _login(real_client)
     assert real_client.get("/api/me").json()["user"] is not None
     real_client.post("/api/auth/logout")
-    assert real_client.get("/api/me").json()["user"] is None
+    # Signed out, the caller is the address's guest, not the account.
+    me = real_client.get("/api/me").json()["user"]
+    assert me["guest"] is True and me["email"] == ""
 
 
 # -------------------------------------------------------------- stub app
@@ -277,8 +294,9 @@ def test_server_error_refunds(stub_client):
 def test_detect_free_unless_operator_gptzero(stub_client):
     r = stub_client.post("/api/detect", json={"text": TEXT_300, "detectors": ["surrogate"]})
     assert r.status_code == 200
+    # The operator's GPTZero key costs a credit; a guest spends the address's free words on it.
     r = stub_client.post("/api/detect", json={"text": TEXT_300, "detectors": ["gptzero"]})
-    assert r.status_code == 401
+    assert r.status_code == 200 and r.headers["x-longhand-credits-charged"] == "1"
     _login(stub_client)
     r = stub_client.post("/api/detect", json={"text": TEXT_300, "detectors": ["gptzero"]})
     assert r.status_code == 200 and r.headers["x-longhand-credits-charged"] == "1"
@@ -290,8 +308,9 @@ def test_api_key_bearer_auth(stub_client):
     assert r.status_code == 201
     key = r.json()["key"]
     stub_client.post("/api/auth/logout")
+    # Signed out, the same address is a guest and still gets through on its free words.
     anon = stub_client.post("/api/humanize/llm", json={"text": "hi"})
-    assert anon.status_code == 401
+    assert anon.status_code == 200 and stub_client.get("/api/me").json()["user"]["guest"] is True
     r = stub_client.post("/api/humanize/llm", json={"text": "hi"}, headers={"Authorization": "Bearer " + key})
     assert r.status_code == 200
     r = stub_client.get("/api/auth/keys", headers={"Authorization": "Bearer " + key})
@@ -573,7 +592,8 @@ def test_delete_account(tmp_path):
         c.post("/api/auth/keys", json={"label": "k"})
         r = c.delete("/api/me")
         assert r.status_code == 200 and r.json()["deleted"] is True
-        assert c.get("/api/me").json()["user"] is None
+        after = c.get("/api/me").json()["user"]
+        assert after is None or after["guest"] is True
     store = Store(cfg.db_path)
     assert store.user_by_email("a@example.com") is None
     st = store.stats()
@@ -613,12 +633,12 @@ def test_real_app_with_static_mount_keeps_routes_reachable(tmp_path):
     app = _real_app(tmp_path, cfg, web_dir=web)
     with TestClient(app) as c:
         assert c.get("/").status_code == 200 and "ok" in c.get("/").text
-        # The site's gate on the app page is intact; the paywall replaces
-        # only its API-level 401 middleware.
+        # /app is public (the paywall limits visitors by address); the site's
+        # pages still win over the static mount.
         r = c.get("/app", follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"].startswith("/signin")
+        assert r.status_code == 200 and "app" in r.text
         assert c.get("/api/billing/health").json()["paywall"] is True
-        assert c.get("/api/me").json()["user"] is None
+        assert c.get("/api/me").json()["user"]["guest"] is True
         assert c.post("/api/auth/request-link", json={"email": "s@example.com"}).status_code == 200
         assert c.get("/api/humanize/llm/health").status_code == 200
 
@@ -1094,7 +1114,7 @@ def _site_app(cfg, tmp_path):
 
 
 def test_site_signup_is_bridged_and_charged(tmp_path):
-    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="2")
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="2", LONGHAND_GUESTS="0")
     app = _site_app(cfg, tmp_path)
     with TestClient(app) as c:
         r = c.post("/api/humanize/llm", json={"text": TEXT_300})
@@ -1122,6 +1142,84 @@ def test_site_signup_is_bridged_and_charged(tmp_path):
     u = store.user_by_email("site@example.com")
     assert u["auth_user_id"] and store.user_by_auth_id(u["auth_user_id"])["id"] == u["id"]
     assert [e["kind"] for e in store.ledger(u["id"])] == ["charge", "charge", "signup"]
+
+
+def test_guest_spends_the_address_allowance_then_is_sent_to_sign_up(tmp_path):
+    """The October rule: free words without an account, limited by address,
+    then 402 with `guest: true` and the sign-up URL."""
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="2")
+    app = _site_app(cfg, tmp_path)
+    with TestClient(app) as c:
+        # Before anything is spent, /api/me shows the full grant without creating a row.
+        me = c.get("/api/me").json()
+        assert me["guest"] is True and me["user"]["guest"] is True and me["user"]["words_left"] == 600
+        assert Store(cfg.db_path).user_by_email("guest:testclient") is None
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 200 and r.headers["x-longhand-credits-charged"] == "1"
+        assert c.get("/api/me").json()["user"]["words_left"] == 300
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}).status_code == 200
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 402
+        b = r.json()
+        assert b["error"] == "insufficient_credits" and b["guest"] is True
+        assert b["signup_url"] == "/signup?next=/pricing&error=free_used" and b["words_left"] == 0
+        assert "Create an account" in b["detail"]
+        # Free routes never needed anyone.
+        assert c.post("/api/humanize", json={"text": "x"}).status_code == 200
+    store = Store(cfg.db_path)
+    g = store.user_by_email("guest:testclient")
+    assert g is not None and g["credits"] == 0
+    assert [e["kind"] for e in store.ledger(g["id"])] == ["charge", "charge", "signup"]
+
+
+def test_account_created_from_a_used_address_inherits_what_the_guest_had_left(tmp_path):
+    """One free allowance per address: the guest's remainder moves to the new
+    account and the guest row is emptied, so nothing is spent twice."""
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="3")
+    app = _site_app(cfg, tmp_path)
+    with TestClient(app) as c:
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}).status_code == 200  # guest: 3 -> 2
+        r = c.post("/api/auth/signup", json={"email": "new@example.com", "password": "longenough"})
+        assert r.status_code == 201
+        me = c.get("/api/me").json()["user"]
+        assert me["guest"] is False and me["email"] == "new@example.com" and me["credits"] == 2
+    store = Store(cfg.db_path)
+    g = store.user_by_email("guest:testclient")
+    assert g["credits"] == 0
+    assert [e["kind"] for e in store.ledger(g["id"])] == ["transfer", "charge", "signup"]
+    u = store.user_by_email("new@example.com")
+    assert [e["kind"] for e in store.ledger(u["id"])] == ["signup"] and store.ledger(u["id"])[0]["delta"] == 2
+
+
+def test_account_from_an_exhausted_address_starts_at_zero(tmp_path):
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="1")
+    app = _site_app(cfg, tmp_path)
+    with TestClient(app) as c:
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}).status_code == 200
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}).status_code == 402
+        c.post("/api/auth/signup", json={"email": "late@example.com", "password": "longenough"})
+        assert c.get("/api/me").json()["user"]["credits"] == 0
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300})
+        assert r.status_code == 402 and r.json()["guest"] is False and r.json()["signup_url"] is None
+
+
+def test_guests_are_separate_by_address(tmp_path):
+    """Behind the proxy the address is X-Real-IP; each one has its own allowance."""
+    cfg = _env(tmp_path, LONGHAND_FREE_CREDITS="1", LONGHAND_TRUST_PROXY="1")
+    app = _site_app(cfg, tmp_path)
+    with TestClient(app) as c:
+        a = {"X-Real-IP": "203.0.113.5"}
+        b = {"X-Real-IP": "198.51.100.9"}
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}, headers=a).status_code == 200
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}, headers=a).status_code == 402
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}, headers=b).status_code == 200
+        assert c.get("/api/me", headers=a).json()["user"]["words_left"] == 0
+        assert c.get("/api/me", headers=b).json()["user"]["words_left"] == 0
+    store = Store(cfg.db_path)
+    assert store.user_by_email("guest:203.0.113.5")["credits"] == 0
+    assert store.user_by_email("guest:198.51.100.9")["credits"] == 0
+    # Guest rows never count toward the per-address sign-up cap.
+    assert store.signups_from("203.0.113.5", 86400.0) == 0
 
 
 def test_site_bridge_mirrors_master_and_keeps_magic_link_credits(tmp_path):

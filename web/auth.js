@@ -253,6 +253,7 @@
     var oerr = new URLSearchParams(location.search).get('error');
     if (oerr) {
       var OERR = {
+        free_used: 'Your free words are used up. Create an account and choose a plan to keep going.',
         google_unavailable: 'Google sign-in is not set up on this server yet. Use your email and password.',
         apple_unavailable: 'Apple sign-in is not set up on this server yet. Use your email and password.',
         oauth_denied: 'The sign-in was cancelled before it finished.',

@@ -25,16 +25,18 @@
 :root {
   color-scheme: dark;
 
-  /* ground and surfaces, blue-black, one step lighter as they come forward */
-  --g0: #0a0b0d;
-  --g1: #0e1013;
-  --g2: #15181d;
-  --g3: #1c2026;
-  --g4: #252a32;
+  /* ground and surfaces: near-black with Berkeley Blue in it, one step
+     lighter as they come forward. Dark enough to read as black at a glance,
+     blue enough that the gold sits on a Berkeley ground. */
+  --g0: #06081a;
+  --g1: #0a0e20;
+  --g2: #10172f;
+  --g3: #171f3e;
+  --g4: #1f2a4f;
 
   /* hairlines: Berkeley's Blue Light at low alpha, never opaque grey */
-  --line:   rgba(159, 209, 255, 0.12);
-  --line-2: rgba(159, 209, 255, 0.22);
+  --line:   rgba(159, 209, 255, 0.14);
+  --line-2: rgba(159, 209, 255, 0.24);
 
   /* text: off-white, two steps down, all AA on --g2 */
   --fg:   #ece8df;
@@ -52,7 +54,9 @@
      as Blue Light at low alpha for the horizon and the secondary hover */
   --blue:      #002676;
   --blue-line: rgba(159, 209, 255, 0.36);
-  --blue-wash: rgba(159, 209, 255, 0.07);
+  --blue-wash: rgba(159, 209, 255, 0.06);
+  /* the quiet gold: a hairline's worth, for rules and borders at rest */
+  --gold-line: rgba(253, 181, 21, 0.22);
 
   /* the verdict family: three tones, one lightness, used as text and hairline */
   --human: #9ad46a;
@@ -364,6 +368,7 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; bo
   min-height: 48px;
   padding: var(--s-3) var(--s-6);
   border-bottom: 1px solid var(--line);
+  background: var(--blue-wash);
 }
 .pane-title { font-size: var(--t-2); font-weight: 500; color: var(--fg-2); line-height: 1.2; white-space: nowrap; }
 
