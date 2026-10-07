@@ -1,16 +1,18 @@
 /* Vervly
 
-   An instrument on a Berkeley Blue ground. Two panes, before and after,
+   An instrument on a deep blue-black ground. Two panes, before and after,
    with a divider you can drag; California Gold for the primary action,
-   active states and hairlines; three restrained tones for the verdict;
-   every numeral in mono. Behind it an ASCII field (field.js) the panes
-   sit in front of.
+   active states and the horizon; Berkeley Blue, pale and at low alpha, for
+   the second hairline tone; three restrained tones for the verdict; every
+   numeral in mono. Behind it an ASCII field (field.js) the panes sit in
+   front of.
 
-   Colour: UC Berkeley's palette (brand.berkeley.edu). Ground steps from
-   Blue Dark #010133 toward Berkeley Blue #002676; the accent is California
-   Gold #FDB515 with Gold Dark #FC9313 pressed; verdict tones are the
-   palette's Green Light, Gold Light and Rose, the rose lifted for AA on
-   the blue.
+   Colour: the two UC Berkeley colours (brand.berkeley.edu) used sparingly
+   on the same near-black ground as before. California Gold #FDB515 is the
+   one accent (Gold Dark #FC9313 pressed, Gold Medium #FFC31B hover).
+   Berkeley Blue appears as --blue for ink on light grounds and, as Blue
+   Light #9FD1FF at low alpha, for hairlines and quiet hovers. Never a
+   page surface.
 
    Type: the campus's own web pair, both on Google Fonts
      Inter             text, controls
@@ -23,21 +25,21 @@
 :root {
   color-scheme: dark;
 
-  /* ground and surfaces: Blue Dark, one step toward Berkeley Blue as they come forward */
-  --g0: #010133;
-  --g1: #031540;
-  --g2: #071d4f;
-  --g3: #0d2860;
-  --g4: #163472;
+  /* ground and surfaces, blue-black, one step lighter as they come forward */
+  --g0: #0a0b0d;
+  --g1: #0e1013;
+  --g2: #15181d;
+  --g3: #1c2026;
+  --g4: #252a32;
 
-  /* hairlines: Blue Light at low alpha, never opaque grey */
-  --line:   rgba(159, 209, 255, 0.14);
-  --line-2: rgba(159, 209, 255, 0.26);
+  /* hairlines: Berkeley's Blue Light at low alpha, never opaque grey */
+  --line:   rgba(159, 209, 255, 0.12);
+  --line-2: rgba(159, 209, 255, 0.22);
 
-  /* text: white, two steps down through the blue, all AA on --g2 */
-  --fg:   #f3f4f8;
-  --fg-2: #c3cae0;
-  --fg-3: #96a0c2;
+  /* text: off-white, two steps down, all AA on --g2 */
+  --fg:   #ece8df;
+  --fg-2: #b5b0a5;
+  --fg-3: #8e897e;
 
   /* the one accent, California Gold, in four strengths */
   --accent:      #FDB515;
@@ -46,21 +48,27 @@
   --accent-wash: rgba(253, 181, 21, 0.12);
   --on-accent:   #010133;
 
+  /* Berkeley Blue, the second colour, kept quiet: ink on light grounds, and
+     as Blue Light at low alpha for the horizon and the secondary hover */
+  --blue:      #002676;
+  --blue-line: rgba(159, 209, 255, 0.36);
+  --blue-wash: rgba(159, 209, 255, 0.07);
+
   /* the verdict family: three tones, one lightness, used as text and hairline */
-  --human: #B3E59A;
-  --mixed: #FFE88D;
-  --ai:    #FF7FAE;
-  --human-wash: rgba(179, 229, 154, 0.14);
-  --mixed-wash: rgba(255, 232, 141, 0.14);
-  --ai-wash:    rgba(231, 17, 94, 0.18);
+  --human: #9ad46a;
+  --mixed: #e8c25a;
+  --ai:    #f08466;
+  --human-wash: rgba(154, 212, 106, 0.14);
+  --mixed-wash: rgba(232, 194, 90, 0.14);
+  --ai-wash:    rgba(240, 132, 102, 0.14);
 
   /* sentence shading, faint to strong, all translucent so text stays --fg */
   --risk-0: transparent;
-  --risk-1: rgba(231, 17, 94, 0.09);
-  --risk-2: rgba(231, 17, 94, 0.16);
-  --risk-3: rgba(231, 17, 94, 0.23);
-  --risk-4: rgba(231, 17, 94, 0.31);
-  --risk-5: rgba(231, 17, 94, 0.40);
+  --risk-1: rgba(240, 132, 102, 0.07);
+  --risk-2: rgba(240, 132, 102, 0.13);
+  --risk-3: rgba(240, 132, 102, 0.19);
+  --risk-4: rgba(240, 132, 102, 0.26);
+  --risk-5: rgba(240, 132, 102, 0.34);
 
   --sans: "Inter", ui-sans-serif, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   /* the writing surfaces and the headline: Berkeley's serif, so the text a person
@@ -248,7 +256,7 @@ summary::-webkit-details-marker { display: none; }
   transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
               color var(--fast) var(--ease), transform var(--fast) var(--ease);
 }
-.btn:hover { border-color: var(--accent-line); background: var(--g3); }
+.btn:hover { border-color: var(--blue-line); background: var(--g3); }
 .btn:active { background: var(--g4); transform: translateY(1px); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent-line); }
 .btn[disabled] { color: var(--fg-3); border-color: var(--line); background: transparent; cursor: not-allowed; transform: none; }
@@ -471,7 +479,7 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; bo
 .instrument[data-outcome="held"]    .verdict-line { color: var(--ai); }
 .instrument[data-outcome="mixed"]   .verdict-line { color: var(--mixed); }
 .instrument[data-outcome="flipped"] .pane-after { border-color: rgba(154, 212, 106, 0.4); }
-.instrument[data-outcome="held"]    .pane-after { border-color: rgba(231, 17, 94, 0.5); }
+.instrument[data-outcome="held"]    .pane-after { border-color: rgba(240, 132, 102, 0.4); }
 .instrument[data-outcome="mixed"]   .pane-after { border-color: rgba(232, 194, 90, 0.4); }
 .verdict-kept { font-size: var(--t-2); line-height: 1.55; color: var(--fg); max-width: 60ch; }
 .verdict-refused { font-size: var(--t-1); line-height: 1.55; color: var(--fg-2); max-width: 60ch; }
@@ -651,7 +659,7 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; bo
   margin-bottom: var(--s-4);
   padding: var(--s-4) var(--s-5);
   background: var(--ai-wash);
-  border: 1px solid rgba(231, 17, 94, 0.45);
+  border: 1px solid rgba(240, 132, 102, 0.35);
   border-radius: var(--r);
   display: grid; gap: var(--s-2); justify-items: start;
 }

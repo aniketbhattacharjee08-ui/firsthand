@@ -3,8 +3,8 @@
    Loaded after styles.css, which carries the tokens, the shell, the buttons,
    the wordmark, the pane classes and the facts row. Everything here is what
    the landing adds: its own top row, the two-column hero with its Berkeley
-   eyebrow, the specimen and the Made in Berkeley section. Plain Berkeley
-   Blue ground, no field. Rules: web/DESIGN.md. */
+   eyebrow, the specimen and the Made in Berkeley section. Plain dark
+   ground, no field. Rules: web/DESIGN.md. */
 
 /* the top row: wordmark left, the account links right, the horizon under it */
 .home-top {
@@ -14,7 +14,7 @@
 }
 .home-top::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
-  background: linear-gradient(to right, var(--accent-line), var(--line) 30%, var(--line) 70%, transparent);
+  background: linear-gradient(to right, var(--accent-line), var(--blue-line) 30%, var(--line) 70%, transparent);
 }
 .home-nav { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; justify-content: flex-end; }
 .home-who { font-size: var(--t-1); color: var(--fg-2); margin-right: var(--s-2); max-width: 20ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -184,7 +184,7 @@ html { scroll-behavior: smooth; }
 .berkeley-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--s-5) var(--s-8);
-  padding-top: var(--s-5); border-top: 1px solid var(--line);
+  padding-top: var(--s-5); border-top: 1px solid var(--blue-line);
 }
 .berkeley-p { margin: 0; font-size: var(--t-3); line-height: 1.6; color: var(--fg-2); max-width: 56ch; }
 .berkeley-grid .berkeley-p:nth-child(2)[data-reveal] { transition-delay: 80ms; }

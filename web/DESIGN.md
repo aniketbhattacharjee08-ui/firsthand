@@ -33,7 +33,7 @@ onto the page as information). The tag and the note under the panes say the
 readings are examples, not measurements; the landing shows no numbers. Then
 Made in Berkeley (`#berkeley`): the heading and two short paragraphs on a
 hairline, saying who built it, that it began as research, and that the
-look is the campus palette; no seal, no mascot, no claim on the university.
+look borrows the campus colours; no seal, no mascot, no claim on the university.
 Then How it works: the three facts from the app's fold in the `.facts-grid` row,
 and one sentence on Use this and Undo. The site footer from
 `brand/footer.html`, verbatim. `home.js` calls `GET /api/auth/me`; signed in,
@@ -190,39 +190,39 @@ is held to a quarter of its brightness.
 
 ## Colour
 
-Since 2026-10-06 the palette is UC Berkeley's (brand.berkeley.edu): the
-ground is the brand's Blue Dark stepping toward Berkeley Blue, the one
-accent is California Gold, and the verdict tones are the brand's light
-green, light gold and rose. Vervly is a student's project and borrows the
-palette as a tribute; it uses no seal, no mascot and no university mark,
-and every footer says it is not affiliated with or endorsed by the
-University of California. Every pair below passes WCAG AA on `--g2`; check
-any new pair before adding.
+Since 2026-10-06 the two UC Berkeley colours (brand.berkeley.edu) sit on
+the same near-black ground as before, used sparingly: California Gold is
+the one accent and Berkeley Blue is a quiet second tone for hairlines and
+the secondary hover. The ground is never blue. Vervly is a student's
+project and borrows the colours as a tribute; it uses no seal, no mascot
+and no university mark, and every footer says it is not affiliated with or
+endorsed by the University of California. Every pair below passes WCAG AA
+on `--g2`; check any new pair before adding.
 
-- Ground and surfaces, a ladder: `--g0 #010133` (Blue Dark; labels on the
-  construction layer), `--g1 #031540` (page and recessed inputs), `--g2
-  #071d4f` (panes), `--g3 #0d2860` (hover), `--g4 #163472` (pressed,
-  tooltips). Berkeley Blue itself, `#002676`, is the ink of the light
-  lockup and the end the ladder points at; it is never a page surface.
-- Hairlines: Blue Light at low alpha, `--line rgba(159,209,255,.14)`,
-  `--line-2 .26`.
-- Text: `--fg #f3f4f8`, `--fg-2 #c3cae0`, `--fg-3 #96a0c2`.
+- Ground and surfaces, a ladder: `--g0 #0a0b0d` (labels on the construction
+  layer), `--g1 #0e1013` (page and recessed inputs), `--g2 #15181d` (panes),
+  `--g3 #1c2026` (hover), `--g4 #252a32` (pressed, tooltips).
+- Hairlines: Berkeley's Blue Light at low alpha, `--line
+  rgba(159,209,255,.12)`, `--line-2 .22`.
+- Text: `--fg #ece8df`, `--fg-2 #b5b0a5`, `--fg-3 #8e897e`.
 - The accent, California Gold in four strengths: `--accent #FDB515`,
   `--accent-deep #FC9313` (Gold Dark, pressed), `--accent-line
   rgba(253,181,21,.42)`, `--accent-wash .12`, text on it `--on-accent
   #010133`. The primary button's hover is Gold Medium `#FFC31B`. Used on:
   the primary button, focus rings, switches when on, the pill dot when
-  connected, the horizon hairline, the divider when hovered or dragged, the
-  caret, the "in use" word on the Facts fold, the field and the tiles, the
-  construction layer, the landing eyebrow and its rule, the cursor in the
-  mark.
-- The verdict family, one lightness: `--human #B3E59A` (Green Light),
-  `--mixed #FFE88D` (Gold Light), `--ai #FF7FAE` (the brand's rose, lifted
-  from `#E7115E` so it reads at 13px on the blue), as text and as the After
-  pane's border after a run. Never a fill. Their washes mark inserted and
-  deleted text; the ai wash and the risk ramp are Rose Medium
-  `rgba(231,17,94,…)`.
-- Sentence risk: `--risk-1` to `--risk-5`, the rose at .09 to .40 alpha.
+  connected, the start of the horizon hairline, the divider when hovered or
+  dragged, the caret, the "in use" word on the Facts fold, the field and the
+  tiles, the construction layer, the landing eyebrow and its rule, the
+  cursor in the mark.
+- Berkeley Blue, kept quiet: `--blue #002676` is ink on light grounds (the
+  light lockup) only; `--blue-line rgba(159,209,255,.36)` is the middle of
+  the horizon gradient, the secondary button's hover border and the Made in
+  Berkeley hairline; `--blue-wash .07` is reserved for a selected row.
+  Nothing else is blue.
+- The verdict family, one lightness: `--human #9ad46a`, `--mixed #e8c25a`,
+  `--ai #f08466`, as text and as the After pane's border after a run. Never
+  a fill. Their washes at .14 mark inserted and deleted text.
+- Sentence risk: `--risk-1` to `--risk-5`, the ai tone at .07 to .34 alpha.
 
 No gradients except the risk legend swatch and the horizon hairline. No
 glow, no shadow (the switch track has one inset hairline shadow so it reads

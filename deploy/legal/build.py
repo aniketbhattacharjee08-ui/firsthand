@@ -5,7 +5,7 @@
 
 Stdlib only: the markdown here uses headings, paragraphs, bold, italics,
 links and lists, nothing else. The CSS is self-contained and copies the
-values from web/styles.css (Berkeley Blue surfaces, Inter, California Gold) so the pages
+values from web/styles.css (dark surfaces, Inter, California Gold) so the pages
 match without depending on the app's stylesheet or class names.
 """
 
@@ -19,8 +19,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 CSS = """
-:root{--g0:#010133;--g1:#031540;--g2:#071d4f;--line:rgba(159,209,255,.14);--line-2:rgba(159,209,255,.26);
---fg:#f3f4f8;--fg-2:#c3cae0;--fg-3:#96a0c2;--accent:#FDB515;--accent-deep:#FC9313;
+:root{--g0:#0a0b0d;--g1:#0e1013;--g2:#15181d;--line:rgba(159,209,255,.12);--line-2:rgba(159,209,255,.22);
+--fg:#ece8df;--fg-2:#b5b0a5;--fg-3:#8e897e;--accent:#FDB515;--accent-deep:#FC9313;
 --sans:"Inter",ui-sans-serif,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;--r:4px}
 html{background:var(--g0);color:var(--fg);font:16px/1.6 var(--sans);-webkit-text-size-adjust:100%}
 body{margin:0;padding:48px 20px 80px}
