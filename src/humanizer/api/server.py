@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
@@ -183,6 +183,14 @@ def default_reference_dir() -> Path:
         if candidate.is_dir():
             return candidate
     return candidates[0]
+
+
+MAINTENANCE_ENV = "HUMANIZER_MAINTENANCE"
+
+
+def maintenance_from_env() -> bool:
+    """`HUMANIZER_MAINTENANCE` as a bool; unset is off."""
+    return os.environ.get(MAINTENANCE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def default_web_dir() -> Optional[Path]:
@@ -822,6 +830,21 @@ def create_app(
             if path == "/" or path.endswith((".html", ".js", ".css")):
                 response.headers["Cache-Control"] = "no-cache, must-revalidate"
             return response
+
+        # Maintenance: with HUMANIZER_MAINTENANCE on, every page answers the
+        # holding page (web/maintenance.html, 503 with Retry-After) while the
+        # API keeps working for the operator. Set in the environment and
+        # deployed like any other setting; unset to come back.
+        holding = web_root / "maintenance.html"
+
+        @app.middleware("http")
+        async def _maintenance(request, call_next):  # type: ignore[no-untyped-def]
+            if maintenance_from_env() and not request.url.path.startswith("/api/") and holding.is_file():
+                return FileResponse(
+                    str(holding), status_code=503, media_type="text/html",
+                    headers={"Retry-After": "3600", "Cache-Control": "no-store"},
+                )
+            return await call_next(request)
     else:
         app.state.web_dir = None
 

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vervly</title>
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0e20">
+<link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400&display=swap">
+<style>
+  /* self-contained on purpose: this page must render while everything else is being rebuilt */
+  :root { --g1: #0a0e20; --fg: #ece8df; --fg-2: #b5b0a5; --fg-3: #8e897e; --accent: #FDB515; --line: rgba(159,209,255,.14); }
+  html, body { height: 100%; margin: 0; background: var(--g1); color: var(--fg); }
+  body { font: 15px/1.55 "Inter", ui-sans-serif, -apple-system, "Segoe UI", Arial, sans-serif; display: grid; grid-template-rows: auto 1fr auto; min-height: 100%; }
+  header, footer { padding: 24px 32px; }
+  header { border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; font-family: "Source Serif 4", Georgia, serif; font-size: 22px; font-weight: 500; letter-spacing: -0.01em; }
+  header svg { display: block; }
+  main { display: grid; place-items: center; padding: 48px 32px; }
+  .card { max-width: 46ch; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 12px; color: var(--accent); font-weight: 500; font-size: 13px; letter-spacing: 0.02em; margin-bottom: 20px; }
+  .eyebrow::before { content: ""; width: 24px; height: 2px; background: var(--accent); }
+  h1 { font-family: "Source Serif 4", Georgia, serif; font-weight: 400; font-size: clamp(1.75rem, 1.2rem + 2vw, 2.5rem); line-height: 1.15; margin: 0 0 16px; letter-spacing: -0.012em; }
+  p { margin: 0 0 12px; color: var(--fg-2); }
+  a { color: var(--fg-2); }
+  footer { border-top: 1px solid var(--line); color: var(--fg-3); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#FDB515"/></svg>
+  Vervly
+</header>
+<main>
+  <div class="card">
+    <p class="eyebrow">Back soon</p>
+    <h1>Vervly is closed for a short while.</h1>
+    <p>The site is being rebuilt. Accounts, words and plans are all kept exactly as they were, and nothing is charged while this page is up.</p>
+    <p>Questions: <a href="mailto:aniket_b@berkeley.edu">aniket_b@berkeley.edu</a></p>
+  </div>
+</main>
+<footer>An independent student project. Not affiliated with or endorsed by the University of California.</footer>
+</body>
+</html>
