@@ -174,12 +174,6 @@
 .pricing-more a { color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; }
 .pricing-more a:hover { color: var(--accent); }
 
-.berkeley { padding-top: var(--s-12); scroll-margin-top: var(--s-8); }
-.berkeley-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-5) var(--s-8);
-  padding-top: var(--s-5); border-top: 1px solid var(--blue-line);
-}
-.berkeley-p { margin: 0; font-size: var(--t-3); line-height: 1.6; color: var(--fg-2); max-width: 56ch; }
 
 /* the construction switch lives in the footer now */
 .site-foot-switch { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--fg-3); font-size: var(--t-1); }
@@ -213,4 +207,82 @@
   .tool .fold-summary { padding: var(--s-3) var(--s-4); }
   .tool .fold-body { padding: 0 var(--s-4) var(--s-5); }
   .tool .more-body { padding-left: var(--s-4); }
+}
+
+/* ── tiny animations ────────────────────────────────────────────────────────
+   Each one answers a load or an action and is over inside 300 ms (the hero
+   sequence as a whole inside 600). Nothing loops. Reduced motion turns every
+   one of them off. anim.js still runs the page's own entrance for the top
+   row, the console, the panes and the folds; these fill in around it. */
+@keyframes rise-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes draw-x  { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes dot-in  { 0% { transform: scale(0); } 70% { transform: scale(1.35); } 100% { transform: scale(1); } }
+@keyframes arm     { 0% { transform: scale(1); } 45% { transform: scale(1.03); } 100% { transform: scale(1); } }
+
+/* the horizon under the top row draws from the left */
+.top::after { transform-origin: left center; animation: draw-x 420ms var(--ease) both; }
+
+/* the hero arrives top to bottom; the two eyebrow rules draw outward */
+.hero-app > * , .doc-head > * { animation: rise-in 280ms var(--ease) both; }
+.hero-app > :nth-child(2), .doc-head > :nth-child(2) { animation-delay: 60ms; }
+.hero-app > :nth-child(3), .doc-head > :nth-child(3) { animation-delay: 120ms; }
+.hero-app > :nth-child(4) { animation-delay: 180ms; }
+.hero-eyebrow::before { transform-origin: right center; animation: draw-x 300ms var(--ease) 120ms both; }
+.hero-eyebrow::after  { transform-origin: left center;  animation: draw-x 300ms var(--ease) 120ms both; }
+.trust li::before { animation: dot-in 260ms var(--ease) both; }
+.trust li:nth-child(1)::before { animation-delay: 220ms; }
+.trust li:nth-child(2)::before { animation-delay: 280ms; }
+.trust li:nth-child(3)::before { animation-delay: 340ms; }
+
+/* the card rises after the hero; the sections on the other pages in turn */
+.tool { animation: rise-in 300ms var(--ease) 180ms both; }
+.page-doc .steps, .page-doc .doc-cta { animation: rise-in 280ms var(--ease) both; }
+.page-doc .steps:nth-of-type(1) { animation-delay: 160ms; }
+.page-doc .steps:nth-of-type(2) { animation-delay: 220ms; }
+.page-doc .doc-cta { animation-delay: 340ms; }
+.step { animation: rise-in 260ms var(--ease) both; }
+.steps-grid .step:nth-child(1) { animation-delay: 240ms; }
+.steps-grid .step:nth-child(2) { animation-delay: 300ms; }
+.steps-grid .step:nth-child(3) { animation-delay: 360ms; }
+.section-h::before { transform-origin: left center; animation: draw-x 320ms var(--ease) 200ms both; }
+
+/* the tabs: the current mark is a line that slides in from the left on hover */
+.top-link { position: relative; }
+.top-link::after {
+  content: ""; position: absolute; left: var(--s-3); right: var(--s-3); bottom: 4px; height: 2px;
+  background: var(--accent); transform: scaleX(0); transform-origin: left center;
+  transition: transform var(--fast) var(--ease);
+}
+.top-link:hover::after { transform: scaleX(1); }
+.top-link[aria-current="page"] { box-shadow: none; }
+.top-link[aria-current="page"]::after { transform: scaleX(1); }
+
+/* buttons lift a pixel on hover and settle on press; the primary arms itself
+   the moment it becomes usable */
+.btn, .chip { transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease), transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
+.btn:not([disabled]):hover, .chip:hover { transform: translateY(-1px); }
+.btn:not([disabled]):active, .chip:active { transform: translateY(0); }
+.btn-go:not([disabled]) { animation: arm 320ms var(--ease) both; }
+.btn-primary:not([disabled]):hover { box-shadow: 0 6px 18px -10px rgba(253, 181, 21, 0.55); }
+
+/* the free-words pill breathes in when it appears */
+.top .balance { animation: fade-in 240ms var(--ease) both; }
+
+/* the sample chips come in one after another when the draft is empty */
+.samples .chip { animation: rise-in 220ms var(--ease) both; }
+.samples .chip:nth-child(1) { animation-delay: 360ms; }
+.samples .chip:nth-child(2) { animation-delay: 410ms; }
+.samples .chip:nth-child(3) { animation-delay: 460ms; }
+.samples .chip:nth-child(4) { animation-delay: 510ms; }
+
+/* the pane heads tint a shade on hover so the two halves read as live surfaces */
+.tool .pane-head { transition: background var(--fast) var(--ease); }
+.tool .pane:hover .pane-head { background: rgba(159, 209, 255, 0.09); }
+
+@media (prefers-reduced-motion: reduce) {
+  .top::after, .hero-app > *, .doc-head > *, .hero-eyebrow::before, .hero-eyebrow::after, .trust li::before,
+  .tool, .page-doc .steps, .page-doc .doc-cta, .step, .section-h::before,
+  .btn-go:not([disabled]), .top .balance, .samples .chip { animation: none; }
+  .btn:not([disabled]):hover, .chip:hover { transform: none; }
 }

@@ -19,8 +19,7 @@ field. The two ASCII tiles in the After pane and the progress card still animate
 Since 2026-10-07 the tool is the landing page. The server serves `GET /`
 and `GET /app` as `web/index.html` (the sign-in wall, `HUMANIZER_PUBLIC_APP=0`,
 restores the old `web/home.html` landing and the 303 to `/signin?next=/app`),
-`GET /how` as `web/how.html` (the three steps, what stays and what goes,
-Made in Berkeley), `GET /pricing` as `web/pricing.html`, and `GET /signin`
+`GET /how` as `web/how.html` (the three steps, what stays and what goes), `GET /pricing` as `web/pricing.html`, and `GET /signin`
 and `GET /signup` as `web/auth.html`. How it works and Pricing are tabs in
 the top row, not sections on the landing (owner, 2026-10-07). Every asset URL is absolute (`/styles.css?v=...`) so the
 same file works from any of those paths. Bump `?v=` on everything you touch.
@@ -48,8 +47,9 @@ and "Rewrite"), the divider, then the action bar (`.console`) on `--g1`
 with Strength and the judge on the left and the status and the 44px gold
 Humanize on the right, then the Facts and Details folds on the same deeper
 ground. Under the card: only the footer, which now carries the
-construction switch. The steps and the Berkeley section live on `/how`; the
-plans on `/pricing`. The page field is gone;
+construction switch. The steps live on `/how`; the plans on `/pricing`. The Made in
+Berkeley section is gone (owner, 2026-10-07); the eyebrow and the footer
+disclaimer remain. The page field is gone;
 the ASCII tiles in the After pane and the progress card remain. No
 testimonials, logos, slogans.
 
