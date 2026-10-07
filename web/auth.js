@@ -230,6 +230,26 @@
       var a = $('oauth-' + p);
       if (a) a.setAttribute('href', '/api/auth/oauth/' + p + '/start?next=' + encodeURIComponent(nxt));
     });
+    /* only show the providers this server has keys for. GET /api/auth/providers
+       answers {google: bool, apple: bool}; a button for a provider that is off
+       would only dead-end in an error, so it goes, and so does the "or" when
+       none are left. If the call fails the page stays as written. */
+    (function showProviders() {
+      if (!window.fetch) return;
+      fetch('/api/auth/providers', { credentials: 'same-origin' }).then(function (r) {
+        return r.ok ? r.json() : null;
+      }).then(function (on) {
+        if (!on) return;
+        var left = 0;
+        ['google', 'apple'].forEach(function (p) {
+          var a = $('oauth-' + p);
+          if (!a) return;
+          if (on[p]) { left++; } else { a.hidden = true; }
+        });
+        var wrap = $('auth-oauth'), or = document.querySelector('.auth-or');
+        if (!left) { if (wrap) wrap.hidden = true; if (or) or.hidden = true; }
+      }).catch(function () {});
+    })();
     var oerr = new URLSearchParams(location.search).get('error');
     if (oerr) {
       var OERR = {
