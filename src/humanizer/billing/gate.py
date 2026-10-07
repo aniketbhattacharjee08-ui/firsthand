@@ -389,6 +389,8 @@ class PaywallMiddleware:
         }
 
     def _refund(self, user_id: str, cost: int, why: str) -> int:
+        if cost <= 0:  # an uncharged (admin) run has nothing to give back
+            return int(self.store.balance(user_id) or 0)
         return self.store.credit(user_id, cost, kind="refund", ref=why)
 
     def _refund_unchanged_allowed(self, user_id: str) -> bool:
@@ -536,10 +538,17 @@ class PaywallMiddleware:
             effort = effort_multiplier(data.get("n_candidates", 6), data.get("rounds", 1), data.get("repair_attempts", 0))
             cost *= effort
         ref = uuid.uuid4().hex[:12]
-        # A plan allowance that fell due this month lands before the charge,
-        # so a subscriber is never refused on the first of the month.
-        self.store.topup_if_due(user["id"])
-        balance = self.store.charge(user["id"], cost, kind="charge", ref="%s %s" % (path, ref))
+        if user.get("is_admin"):
+            # The operator is never charged (owner, 2026-10-07: "my account
+            # has infinite words"). The run still takes a GPU slot and is
+            # logged; nothing is written to the ledger.
+            cost = 0
+            balance = int(self.store.balance(user["id"]) or 0)
+        else:
+            # A plan allowance that fell due this month lands before the charge,
+            # so a subscriber is never refused on the first of the month.
+            self.store.topup_if_due(user["id"])
+            balance = self.store.charge(user["id"], cost, kind="charge", ref="%s %s" % (path, ref))
         if balance is None:
             have = self.store.balance(user["id"])
             have = int(user.get("credits") or 0) if have is None else int(have)

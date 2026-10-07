@@ -291,6 +291,23 @@ def test_server_error_refunds(stub_client):
     assert stub_client.get("/api/me").json()["user"]["credits"] == 3
 
 
+def test_admin_is_never_charged(stub_client, tmp_path):
+    """The operator's account has unlimited words: charged routes run, take
+    the slot, and leave the balance and the ledger alone."""
+    user = _login(stub_client)
+    app_store = stub_client.app.state.billing_store if hasattr(stub_client.app.state, "billing_store") else None
+    store = app_store or Store(_env(tmp_path).db_path)
+    store.set_admin(user["id"], True)
+    before = store.balance(user["id"])
+    r = stub_client.post("/api/humanize/llm", json={"text": TEXT_301})
+    assert r.status_code == 200
+    assert r.headers["x-longhand-credits-charged"] == "0"
+    assert store.balance(user["id"]) == before
+    me = stub_client.get("/api/me").json()["user"]
+    assert me["unlimited"] is True and me["is_admin"] is True and me["credits"] == before
+    assert [e["kind"] for e in store.ledger(user["id"])] == ["signup"]
+
+
 def test_detect_free_unless_operator_gptzero(stub_client):
     r = stub_client.post("/api/detect", json={"text": TEXT_300, "detectors": ["surrogate"]})
     assert r.status_code == 200

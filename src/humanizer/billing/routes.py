@@ -135,6 +135,8 @@ def _user_payload(user: Dict[str, Any], words_per_credit: int = 1) -> Dict[str, 
         "plan_allowance": int(user.get("plan_allowance") or 0),
         "has_billing_portal": bool(user.get("stripe_customer_id")),
         "is_admin": bool(user.get("is_admin")),
+        # Admins (the operator) are never charged; the page shows "Unlimited".
+        "unlimited": bool(user.get("is_admin")),
         "created": user.get("created"),
         "session_expires": user.get("session_expires"),
     }

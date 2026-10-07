@@ -2169,6 +2169,7 @@
   var billing = {
     on: false,            /* paywall true and someone to charge: a user or a guest */
     guest: false,         /* nobody signed in; the free words belong to this address */
+    unlimited: false,     /* the operator: never charged, no balance to show */
     user: null,
     wordsPerCredit: null,
     wordsLeft: null,
@@ -2212,6 +2213,7 @@
     var u = obj.user && typeof obj.user === 'object' ? obj.user : null;
     billing.on = obj.paywall === true && !!u;
     billing.guest = !!(u && u.guest === true);
+    billing.unlimited = !!(u && (u.unlimited === true || u.is_admin === true));
     billing.user = u;
     var wpc = loose(u && u.words_per_credit);
     if (wpc === null) wpc = loose(obj.words_per_credit);
@@ -2274,7 +2276,10 @@
     if (!bal || !plan || !btn) return;
     if (!billing.on) { bal.hidden = true; plan.hidden = true; btn.hidden = true; return; }
     clear(bal);
-    if (billing.wordsLeft !== null) {
+    if (billing.unlimited) {
+      bal.appendChild(document.createTextNode('Unlimited words'));
+      bal.hidden = false;
+    } else if (billing.wordsLeft !== null) {
       bal.appendChild(el('span', 'num', fmtInt(billing.wordsLeft)));
       bal.appendChild(document.createTextNode(billing.guest
         ? ' free ' + plural(billing.wordsLeft, 'word') + ' left'
@@ -2326,7 +2331,7 @@
     var node = $('cost-hint');
     if (!node) return;
     var n = words(state.text).length;
-    if (!billing.on || billing.wordsLeft === null || !n) {
+    if (!billing.on || billing.unlimited || billing.wordsLeft === null || !n) {
       node.hidden = true;
       node.removeAttribute('data-short');
       clear(node);
