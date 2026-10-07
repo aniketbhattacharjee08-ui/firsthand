@@ -15,8 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl unzip sqli
 
 WORKDIR /app
 # CPU wheels only: the default torch wheel on x86_64 pulls CUDA and is 2GB+.
-RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<2.9" \
-    && pip install "transformers>=4.40,<5" "safetensors>=0.4"
+# Pinned past the 2026-10-07 audit: torch 2.8 and transformers 4.57 carried
+# 17 advisories (malicious checkpoints, untrusted hub repos). The surrogate
+# loads only the shipped local model, but the fixed lines cost nothing.
+# transformers 5 dropped a tokenizer method; detectors/local.py shims it.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.13,<2.14" \
+    && pip install "transformers>=5.10,<6" "safetensors>=0.4"
 
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY src ./src

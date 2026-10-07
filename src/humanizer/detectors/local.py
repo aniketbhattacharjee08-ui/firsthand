@@ -698,7 +698,11 @@ def _pooled_sigmoid_class():
             super().__init__(config)
             self.model = AutoModel.from_config(config)
             self.classifier = nn.Linear(config.hidden_size, 1)
-            self.init_weights()
+            # `post_init` rather than `init_weights`: transformers 5 computes
+            # the tied-weight bookkeeping here and `from_pretrained` reads it
+            # back (AttributeError on `all_tied_weights_keys` otherwise, seen
+            # 2026-10-07); on 4.x it is `init_weights` plus the same hooks.
+            self.post_init()
 
         def forward(self, input_ids, attention_mask=None, **_kwargs):
             hidden = self.model(input_ids, attention_mask=attention_mask)[0]
@@ -904,6 +908,33 @@ def _finite(values: Sequence[float]) -> List[float]:
 
 
 # ------------------------------------------------------- perplexity detector
+
+
+def _with_special_tokens(tokenizer: Any, ids: List[int]) -> List[int]:
+    """Wrap one chunk's token ids the way the model was trained to see them.
+
+    transformers 4.x exposes `build_inputs_with_special_tokens` on every
+    tokenizer; 5.x dropped it from the fast classes (seen 2026-10-07 while
+    moving off the vulnerable 4.57). The fallback reproduces the only two
+    layouts our checkpoints use: RoBERTa-style `<s> ... </s>` when the
+    tokenizer has a cls and sep id, else bos/eos when it has those, else the
+    bare ids (GPT-2 adds nothing).
+    """
+    build = getattr(tokenizer, "build_inputs_with_special_tokens", None)
+    if callable(build):
+        try:
+            return list(build(list(ids)))
+        except (AttributeError, NotImplementedError):
+            pass
+    cls_id = getattr(tokenizer, "cls_token_id", None)
+    sep_id = getattr(tokenizer, "sep_token_id", None)
+    if cls_id is not None and sep_id is not None:
+        return [cls_id] + list(ids) + [sep_id]
+    bos_id = getattr(tokenizer, "bos_token_id", None)
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    if bos_id is not None and eos_id is not None and bos_id != eos_id:
+        return [bos_id] + list(ids) + [eos_id]
+    return list(ids)
 
 
 class PerplexityDetector(Detector):
@@ -1578,7 +1609,7 @@ class ModernDetector(Detector):
         if not id_lists:
             return []
         built = [
-            list(tokenizer.build_inputs_with_special_tokens(list(ids)))
+            _with_special_tokens(tokenizer, list(ids))
             for ids in id_lists
         ]
         width = max(len(b) for b in built)
@@ -1752,7 +1783,7 @@ class ClassifierDetector(Detector):
         weights: List[float] = []
         with torch.no_grad():
             for chunk in chunks:
-                built = tokenizer.build_inputs_with_special_tokens(list(chunk))
+                built = _with_special_tokens(tokenizer, list(chunk))
                 tensor = torch.tensor([built], dtype=torch.long)
                 logits = model(input_ids=tensor).logits
                 p = torch.softmax(logits[0].float(), dim=-1)
