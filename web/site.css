@@ -35,14 +35,25 @@
 }
 .top .balance .num { color: var(--accent); }
 
+/* the service pill: when everything is fine it is a gold dot with the words
+   on hover; the words show by themselves only while connecting or when
+   something is wrong, which is when they matter */
+.top .pill[data-kind="ok"] { font-size: 0; gap: 0; }
+.top .pill[data-kind="ok"]::before { width: 8px; height: 8px; }
+
 /* ── the hero ──────────────────────────────────────────────────────────── */
 .hero-app {
   max-width: 76ch;
   margin: 0 auto;
   padding: var(--s-10) 0 var(--s-8);
   text-align: center;
-  display: grid; justify-items: center; gap: var(--s-4);
+  /* stretch, not center: a centred grid item takes its max-content width and a
+     long headline then overflows a phone instead of wrapping */
+  display: grid; justify-items: stretch; gap: var(--s-4);
 }
+.hero-app > * { min-width: 0; max-width: 100%; }
+.hero-app .hero-eyebrow { justify-self: center; }
+.hero-app .hero-p { margin-left: auto; margin-right: auto; }
 .hero-eyebrow {
   display: inline-flex; align-items: center; gap: var(--s-3);
   margin: 0;
@@ -92,7 +103,9 @@
   min-height: 52px; padding: var(--s-3) var(--s-6);
 }
 .tool .pane-title { color: var(--fg); font-size: var(--t-3); }
-.tool .pane-body { min-height: 42vh; min-height: 42dvh; padding: var(--s-6) var(--s-8) var(--s-8); }
+.tool .pane-body { min-height: 320px; padding: var(--s-6) var(--s-8) var(--s-8); }
+.tool .pane-head { flex-wrap: wrap; row-gap: var(--s-1); }
+.tool .reading { white-space: normal; }
 .tool .pane-foot { background: var(--g1); border-top: 1px solid var(--line); }
 .tool .divider { border-radius: 0; background: var(--g2); }
 .tool .divider::before { top: 0; bottom: 0; }
@@ -193,12 +206,14 @@
   .top-nav { margin-left: auto; }
   .top-tools { flex-basis: 100%; margin-left: 0; justify-content: space-between; gap: var(--s-3); }
   .top .account { flex-wrap: wrap; }
-  .hero-app { padding: var(--s-8) 0 var(--s-5); text-align: left; justify-items: start; }
+  .hero-app { padding: var(--s-8) 0 var(--s-5); text-align: left; }
+  .hero-app .hero-eyebrow { justify-self: start; }
+  .hero-app .hero-p { margin-left: 0; }
   .hero-eyebrow::after { display: none; }
   .trust { justify-content: flex-start; }
   .tool { border-radius: var(--r); }
   .tool .pane-head { padding: var(--s-3) var(--s-4); }
-  .tool .pane-body { padding: var(--s-5) var(--s-4) var(--s-6); min-height: 30vh; min-height: 30dvh; }
+  .tool .pane-body { padding: var(--s-5) var(--s-4) var(--s-6); min-height: 220px; }
   .tool .console { padding: var(--s-4); grid-template-columns: minmax(0, 1fr); }
   .tool .console-act { gap: var(--s-3); }
   .console-go { width: 100%; }

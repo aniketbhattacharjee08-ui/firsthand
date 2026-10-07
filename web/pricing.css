@@ -4,7 +4,9 @@
    (the top row and section headings). This file adds the three plan cards,
    the top-up row and the How it works list. Rules: web/DESIGN.md. */
 
-.pricing-main { padding-top: var(--s-10); }
+.pricing-main { padding-top: 0; }
+.pricing-page .doc-head { padding-bottom: var(--s-2); }
+.pricing-page .plans-free { margin-top: var(--s-2); }
 .pricing-page .home-nav-link[aria-current="page"] { color: var(--fg); }
 .home-balance { font-size: var(--t-1); color: var(--fg-2); white-space: nowrap; margin-right: var(--s-2); }
 .home-balance .num { color: var(--fg); }
@@ -24,7 +26,7 @@
 
 /* three cards side by side, each an opaque surface with a hairline, like a pane */
 .price-grid {
-  margin-top: var(--s-8);
+  margin-top: var(--s-6);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--s-4);

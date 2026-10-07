@@ -46,8 +46,17 @@ the two panes flush inside it (heads on `--blue-wash`, titled "Your draft"
 and "Rewrite"), the divider, then the action bar (`.console`) on `--g1`
 with Strength and the judge on the left and the status and the 44px gold
 Humanize on the right, then the Facts and Details folds on the same deeper
-ground. Under the card: only the footer, which now carries the
-construction switch. The steps live on `/how`; the plans on `/pricing`. The Made in
+ground. Under the card: only the footer, one centred stack (lockup, the
+links with the construction switch and the year, the disclaimer); a left
+lockup with a right-hand link block read as off-centre once the disclaimer
+wrapped (owner, 2026-10-07). The service pill in the top row is a gold dot
+alone while the service is fine (the words are its title); it speaks only
+while connecting or when something is wrong. The disabled primary is gold
+at low alpha, the primary action not yet available, never grey. Pane
+bodies have pixel minimums (320 / 220 on a phone), not viewport fractions,
+so a tall screen does not stretch an empty card. `/pricing` opens with the
+same `.doc-head` as `/how` (eyebrow, serif title, one lede) and its notes
+section is "The fine print", so the nav's "How it works" means one thing. The steps live on `/how`; the plans on `/pricing`. The Made in
 Berkeley section is gone (owner, 2026-10-07); the eyebrow and the footer
 disclaimer remain. The page field is gone;
 the ASCII tiles in the After pane and the progress card remain. No

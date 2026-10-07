@@ -273,7 +273,7 @@ summary::-webkit-details-marker { display: none; }
 }
 .btn-primary:hover { background: #FFC31B; border-color: #FFC31B; }
 .btn-primary:active { background: var(--accent-deep); border-color: var(--accent-deep); }
-.btn-primary[disabled] { background: var(--g3); border-color: var(--line-2); color: var(--fg-3); }
+.btn-primary[disabled] { background: rgba(253, 181, 21, 0.16); border-color: transparent; color: rgba(253, 181, 21, 0.62); }
 .btn-primary[data-busy="1"] { color: var(--fg-2); }
 
 select {

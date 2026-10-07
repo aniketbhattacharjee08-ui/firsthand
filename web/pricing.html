@@ -16,13 +16,13 @@
 <noscript><link rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Barlow+Condensed:wght@500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
 
-<link rel="stylesheet" href="/styles.css?v=202610070230">
-<link rel="stylesheet" href="/brand/footer.css?v=202610070230">
-<link rel="stylesheet" href="/home.css?v=202610070230">
-<link rel="stylesheet" href="/site.css?v=202610070230">
-<link rel="stylesheet" href="/pricing.css?v=202610070230">
+<link rel="stylesheet" href="/styles.css?v=202610071330">
+<link rel="stylesheet" href="/brand/footer.css?v=202610071330">
+<link rel="stylesheet" href="/home.css?v=202610071330">
+<link rel="stylesheet" href="/site.css?v=202610071330">
+<link rel="stylesheet" href="/pricing.css?v=202610071330">
 </head>
-<body class="home pricing-page">
+<body class="doc-page pricing-page">
 
 <a class="skip-link" href="#main">Skip to the content</a>
 
@@ -42,16 +42,18 @@
     </div>
   </header>
 
-  <main class="home-main pricing-main" id="main">
+  <main class="page page-doc pricing-main" id="main">
 
     <!-- the plans. The copy here is the static fallback; pricing.js replaces
          the prices and word counts with what GET /api/billing/plans answers,
          so the page never drifts from what Stripe charges. Every numeral in .num. -->
-    <section class="plans" aria-labelledby="plans-h">
-      <h1 class="plans-h" id="plans-h">What it costs</h1>
-      <p class="plans-lede">Every plan gives you a number of words a month to run through the humanizer; the free allowance comes first and nothing is charged until it is used.</p>
+    <header class="doc-head">
+      <p class="hero-eyebrow">Built at UC Berkeley</p>
+      <h1 class="doc-h" id="plans-h">What it costs</h1>
+      <p class="doc-lede">Every plan gives you a number of words a month to run through the humanizer. The free allowance comes first, and nothing is charged until it is used.</p>
       <p class="plans-free" id="free-line"><span class="num">1,000</span> words free before you need an account.</p>
-
+    </header>
+    <section class="plans" aria-labelledby="plans-h">
       <div class="price-grid" id="price-grid">
         <article class="price-card" data-plan="monthly" data-interval="month">
           <h2 class="price-card-h">Monthly</h2>
@@ -104,7 +106,7 @@
     </section>
 
     <section class="how" aria-labelledby="how-h">
-      <h2 class="section-h" id="how-h">How it works</h2>
+      <h2 class="section-h" id="how-h">The fine print</h2>
       <ul class="how-list">
         <li>Words are counted on what you submit, before the rewrite runs.</li>
         <li>A rewrite that comes back unchanged is refunded.</li>
@@ -136,6 +138,6 @@
 
 </div>
 
-<script src="/pricing.js?v=202610070230" defer></script>
+<script src="/pricing.js?v=202610071330" defer></script>
 </body>
 </html>
