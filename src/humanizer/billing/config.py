@@ -214,6 +214,15 @@ class BillingConfig:
     #: Directory for `requests.log`; empty logs through `logging` instead.
     log_dir: str = ""
     trust_proxy: bool = False
+    #: The edge (Vercel's rewrite) stamps every request it forwards with
+    #: `x-origin-secret: <this>`. With it set, the visitor address in
+    #: X-Real-IP / X-Forwarded-For is believed only on requests that carry
+    #: the secret; anything else is keyed by the address the host's own proxy
+    #: saw (Fly-Client-IP), and with `require_origin` is refused outright
+    #: (403) except /api/health. Found 2026-10-07: a direct call to the Fly
+    #: hostname with a forged X-Real-IP minted a fresh free allowance.
+    origin_secret: str = ""
+    require_origin: bool = True
     dev_links: bool = False
     smtp_url: str = ""
     mail_from: str = "Vervly <no-reply@localhost>"
@@ -302,6 +311,8 @@ class BillingConfig:
             max_waiting=max(1, get_int("LONGHAND_MAX_WAITING", 8)),
             log_dir=get("LONGHAND_LOG_DIR"),
             trust_proxy=get_bool("LONGHAND_TRUST_PROXY", False),
+            origin_secret=get("LONGHAND_ORIGIN_SECRET"),
+            require_origin=get_bool("LONGHAND_REQUIRE_ORIGIN", True),
             dev_links=get_bool("LONGHAND_DEV_LINKS", False),
             smtp_url=get("LONGHAND_SMTP_URL"),
             mail_from=get("LONGHAND_MAIL_FROM", "Vervly <no-reply@localhost>"),

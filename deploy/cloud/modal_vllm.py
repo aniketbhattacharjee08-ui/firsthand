@@ -70,6 +70,9 @@ app = modal.App(APP_NAME)
     scaledown_window=180,
     timeout=60 * 60,
     min_containers=int(os.environ.get("VERVLY_MIN_CONTAINERS", "0")),
+    # A hard cap on GPU containers: the API server runs one rewrite at a time,
+    # so one container is the whole need; a flood cannot fan out onto more GPUs.
+    max_containers=int(os.environ.get("VERVLY_MAX_CONTAINERS", "1")),
 )
 @modal.concurrent(max_inputs=64)
 @modal.web_server(port=PORT, startup_timeout=15 * 60)

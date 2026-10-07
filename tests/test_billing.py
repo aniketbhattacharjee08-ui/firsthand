@@ -809,6 +809,52 @@ def test_trust_proxy_uses_real_ip_or_rightmost_forwarded(tmp_path):
     assert client_ip(scope, True) == "3.3.3.3"
 
 
+def test_origin_secret_decides_whose_address_to_believe():
+    """2026-10-07: a direct call to the Fly host with a forged X-Real-IP minted
+    a fresh free allowance. With an origin secret, the forwarded address is
+    believed only when the edge's header is present; otherwise the host's own
+    Fly-Client-IP or the socket peer is the address."""
+    from humanizer.billing.gate import client_ip
+
+    forged = {"client": ("10.0.0.1", 1), "headers": [(b"x-real-ip", b"203.0.113.77"), (b"fly-client-ip", b"198.51.100.4")]}
+    assert client_ip(forged, True, "edge-secret") == "198.51.100.4"
+    no_fly = {"client": ("10.0.0.1", 1), "headers": [(b"x-real-ip", b"203.0.113.77")]}
+    assert client_ip(no_fly, True, "edge-secret") == "10.0.0.1"
+    via_edge = {"client": ("10.0.0.1", 1), "headers": [(b"x-real-ip", b"203.0.113.77"), (b"x-origin-secret", b"edge-secret")]}
+    assert client_ip(via_edge, True, "edge-secret") == "203.0.113.77"
+    wrong = {"client": ("10.0.0.1", 1), "headers": [(b"x-real-ip", b"203.0.113.77"), (b"x-origin-secret", b"nope")]}
+    assert client_ip(wrong, True, "edge-secret") == "10.0.0.1"
+
+
+def test_direct_requests_are_refused_when_an_origin_secret_is_set(tmp_path):
+    cfg = _env(tmp_path, LONGHAND_ORIGIN_SECRET="edge-secret", LONGHAND_TRUST_PROXY="1", LONGHAND_FREE_CREDITS="1")
+    with TestClient(_stub_app(cfg)) as c:
+        # health stays open for the host's checks (the stub has no such route, so
+        # it falls through to a 404 rather than the 403); everything else needs the edge
+        assert c.get("/api/health").status_code == 404
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300}, headers={"X-Real-IP": "203.0.113.77"})
+        assert r.status_code == 403 and r.json()["error"] == "direct_access"
+        assert c.get("/api/me").status_code == 403
+        edge = {"x-origin-secret": "edge-secret", "X-Real-IP": "203.0.113.77"}
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}, headers=edge).status_code == 200
+        assert c.post("/api/humanize/llm", json={"text": TEXT_300}, headers=edge).status_code == 402
+        # a forged address behind the edge header is still just that address, one allowance
+    store = Store(cfg.db_path)
+    assert store.user_by_email("guest:203.0.113.77")["credits"] == 0
+    assert store.user_by_email("guest:testclient") is None
+
+
+def test_require_origin_can_be_switched_off(tmp_path):
+    cfg = _env(tmp_path, LONGHAND_ORIGIN_SECRET="edge-secret", LONGHAND_REQUIRE_ORIGIN="0", LONGHAND_FREE_CREDITS="1")
+    with TestClient(_stub_app(cfg)) as c:
+        r = c.post("/api/humanize/llm", json={"text": TEXT_300}, headers={"X-Real-IP": "203.0.113.77"})
+        assert r.status_code == 200
+    # ...but the forged address was ignored: the row is keyed by the real peer
+    store = Store(cfg.db_path)
+    assert store.user_by_email("guest:203.0.113.77") is None
+    assert store.user_by_email("guest:testclient")["credits"] == 0
+
+
 def test_store_recovers_from_failed_transaction(tmp_path):
     s = Store(tmp_path / "s.db")
     u = s.get_or_create_user("r@example.com", 3)

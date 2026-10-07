@@ -125,15 +125,42 @@ def rule_for(method: str, path: str) -> str:
     return "free"
 
 
-def client_ip(scope: Dict[str, Any], trust_proxy: bool) -> str:
-    """The address to rate-limit on.
+def from_edge(headers: Dict[str, str], origin_secret: str) -> bool:
+    """True when the request carries the edge's `x-origin-secret`."""
+    if not origin_secret:
+        return False
+    return hmac.compare_digest(headers.get("x-origin-secret", ""), origin_secret)
 
-    With `trust_proxy`, `X-Real-IP` (which `deploy/Caddyfile` sets by
-    replacement to the peer address) wins; failing that, the *rightmost*
-    `X-Forwarded-For` element, which is the one the trusted proxy appended.
+
+def client_ip(scope: Dict[str, Any], trust_proxy: bool, origin_secret: str = "") -> str:
+    """The address to rate-limit on, and to key a guest's free words by.
+
+    With an `origin_secret` configured, the forwarded visitor address
+    (`X-Real-IP`, else the rightmost `X-Forwarded-For` element) is believed
+    only when the request carries the matching `x-origin-secret`, which the
+    edge sets and a direct caller cannot. Without it, the request is keyed
+    by `Fly-Client-IP` (the address the host's own proxy accepted the
+    connection from) or the socket peer; a forged `X-Real-IP` is ignored.
+
+    Without an origin secret, `trust_proxy` keeps the older rule for a
+    deployment behind its own proxy (`deploy/Caddyfile` sets X-Real-IP by
+    replacement): X-Real-IP wins, else the rightmost X-Forwarded-For element.
     The leftmost element is whatever the client sent and must not be used.
     """
     headers = _headers(scope)
+    if origin_secret:
+        if from_edge(headers, origin_secret):
+            real = headers.get("x-real-ip")
+            if real:
+                return real.strip()
+            fwd = headers.get("x-forwarded-for")
+            if fwd:
+                return fwd.split(",")[-1].strip()
+        host_seen = headers.get("fly-client-ip")
+        if host_seen:
+            return host_seen.strip()
+        client = scope.get("client")
+        return client[0] if client else "unknown"
     if trust_proxy:
         real = headers.get("x-real-ip")
         if real:
@@ -436,7 +463,19 @@ class PaywallMiddleware:
         path: str = scope["path"]
         method: str = scope.get("method", "GET").upper()
         headers = _headers(scope)
-        ip = client_ip(scope, self.config.trust_proxy)
+        ip = client_ip(scope, self.config.trust_proxy, self.config.origin_secret)
+
+        # Only the edge may talk to the API once an origin secret exists: a
+        # request that did not come through it is refused before anything is
+        # counted, charged or run. The health route stays open for the host's
+        # own checks.
+        if self.config.origin_secret and self.config.require_origin and path != "/api/health":
+            if not from_edge(headers, self.config.origin_secret):
+                await _json_response(
+                    send, 403,
+                    {"error": "direct_access", "detail": "This API is served through %s; direct requests are refused." % self.config.public_url},
+                )
+                return
 
         limiter = self.auth_limiter if _AUTH_PATHS.match(path) and method == "POST" else self.api_limiter
         allowed, retry = limiter.allow(ip)

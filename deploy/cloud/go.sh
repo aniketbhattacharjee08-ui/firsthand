@@ -26,6 +26,14 @@ envset() {  # envset KEY VALUE : replace or append in deploy/.env
 }
 say() { printf '\n== %s\n' "$*"; }
 
+# The edge secret: Vercel stamps forwarded requests with it, the API believes
+# the visitor address only when it is present and refuses direct hits.
+# Generated once, kept in deploy/.env, mirrored into the Vercel project below.
+if [ -z "$(envget LONGHAND_ORIGIN_SECRET)" ]; then
+  envset LONGHAND_ORIGIN_SECRET "$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')"
+  echo "generated LONGHAND_ORIGIN_SECRET"
+fi
+
 # ---------------------------------------------------------------- 1. Modal
 say "Modal (GPU model server)"
 if ! "$MODAL" profile current >/dev/null 2>&1 || ! [ -s "$HOME/.modal.toml" ]; then
@@ -46,7 +54,30 @@ else
   if [ -n "$URL" ]; then envset HUMANIZER_LLM_URL "$URL/v1"; echo "   model server: $URL/v1"; fi
 fi
 
-# ----------------------------------------------------------------- 2. Fly
+# -------------------------------------------------------------- 2. Vercel
+say "Vercel (public address)"
+API_URL="https://$FLY_APP.fly.dev"
+if ! vercel whoami >/dev/null 2>&1; then
+  echo "   needs: vercel login"
+elif ! "$FLY" auth whoami >/dev/null 2>&1; then
+  echo "   waiting for the Fly deploy before pointing Vercel at it"
+else
+  deploy/vercel/make-site.sh "$API_URL" >/dev/null
+  # the project env var the vercel.json transform reads; --force overwrites
+  printf '%s' "$(envget LONGHAND_ORIGIN_SECRET)" | (cd deploy/vercel/site && vercel env add ORIGIN_SECRET production --force --scope "$VERCEL_SCOPE" >/dev/null 2>&1) \
+    || echo "   warning: could not set ORIGIN_SECRET on the Vercel project"
+  (cd deploy/vercel/site && vercel deploy --prod --yes --scope "$VERCEL_SCOPE" 2>&1 | tail -1)
+  if [ -n "${DOMAIN:-}" ]; then
+    (cd deploy/vercel/site && vercel domains add "$DOMAIN" --scope "$VERCEL_SCOPE" 2>&1 | tail -2) || true
+    envset LONGHAND_PUBLIC_URL "https://$DOMAIN"; envset HUMANIZER_PUBLIC_URL "https://$DOMAIN"
+    /usr/bin/grep -vE '^\s*(#|$)' "$ENV_FILE" | /usr/bin/grep -vE '=$' > /tmp/vervly.secrets
+    "$FLY" secrets import --app "$FLY_APP" < /tmp/vervly.secrets >/dev/null; rm -f /tmp/vervly.secrets
+    echo "   public url set to https://$DOMAIN (Fly restarted with it)"
+  else
+    echo "   no DOMAIN given; site is at https://firsthand-navy.vercel.app until then"
+  fi
+fi
+# ----------------------------------------------------------------- 3. Fly
 say "Fly.io (API container)"
 if ! "$FLY" auth whoami >/dev/null 2>&1; then
   echo "   needs: $FLY auth login   (interactive; add a card at https://fly.io/dashboard/personal/billing)"
@@ -65,24 +96,4 @@ else
   curl -fsS -m 20 "$API_URL/api/health" && echo || echo "   (health not up yet; first boot downloads 480MB of weights)"
 fi
 
-# -------------------------------------------------------------- 3. Vercel
-say "Vercel (public address)"
-API_URL="https://$FLY_APP.fly.dev"
-if ! vercel whoami >/dev/null 2>&1; then
-  echo "   needs: vercel login"
-elif ! "$FLY" auth whoami >/dev/null 2>&1; then
-  echo "   waiting for the Fly deploy before pointing Vercel at it"
-else
-  deploy/vercel/make-site.sh "$API_URL" >/dev/null
-  (cd deploy/vercel/site && vercel deploy --prod --yes --scope "$VERCEL_SCOPE" 2>&1 | tail -1)
-  if [ -n "${DOMAIN:-}" ]; then
-    (cd deploy/vercel/site && vercel domains add "$DOMAIN" --scope "$VERCEL_SCOPE" 2>&1 | tail -2) || true
-    envset LONGHAND_PUBLIC_URL "https://$DOMAIN"; envset HUMANIZER_PUBLIC_URL "https://$DOMAIN"
-    /usr/bin/grep -vE '^\s*(#|$)' "$ENV_FILE" | /usr/bin/grep -vE '=$' > /tmp/vervly.secrets
-    "$FLY" secrets import --app "$FLY_APP" < /tmp/vervly.secrets >/dev/null; rm -f /tmp/vervly.secrets
-    echo "   public url set to https://$DOMAIN (Fly restarted with it)"
-  else
-    echo "   no DOMAIN given; site is at https://firsthand-navy.vercel.app until then"
-  fi
-fi
 say "done"

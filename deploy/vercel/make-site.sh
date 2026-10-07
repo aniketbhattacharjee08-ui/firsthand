@@ -8,17 +8,31 @@ API=${1:?usage: make-site.sh https://api-host}
 HERE=$(cd "$(dirname "$0")" && pwd)
 SITE="$HERE/site"
 mkdir -p "$SITE"
+# `routes` rather than `rewrites` so the proxy can stamp every forwarded
+# request with the origin secret (a Vercel project env var, ORIGIN_SECRET,
+# which go.sh sets from LONGHAND_ORIGIN_SECRET). The API believes the
+# visitor's address only on requests carrying it, and refuses the rest.
 cat > "$SITE/vercel.json" <<JSON
 {
   "cleanUrls": false,
-  "rewrites": [
-    { "source": "/(.*)", "destination": "${API}/\$1" }
-  ],
-  "headers": [
-    { "source": "/(.*)", "headers": [
-      { "key": "X-Content-Type-Options", "value": "nosniff" },
-      { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-    ] }
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "${API}/\$1",
+      "headers": {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+      },
+      "transforms": [
+        {
+          "type": "request.headers",
+          "op": "set",
+          "target": { "key": "x-origin-secret" },
+          "args": "\$ORIGIN_SECRET",
+          "env": ["ORIGIN_SECRET"]
+        }
+      ]
+    }
   ]
 }
 JSON

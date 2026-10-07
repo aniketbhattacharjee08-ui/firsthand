@@ -1,12 +1,22 @@
 {
   "cleanUrls": false,
-  "rewrites": [
-    { "source": "/(.*)", "destination": "https://vervly-api.fly.dev/$1" }
-  ],
-  "headers": [
-    { "source": "/(.*)", "headers": [
-      { "key": "X-Content-Type-Options", "value": "nosniff" },
-      { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-    ] }
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "https://vervly-api.fly.dev/$1",
+      "headers": {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+      },
+      "transforms": [
+        {
+          "type": "request.headers",
+          "op": "set",
+          "target": { "key": "x-origin-secret" },
+          "args": "$ORIGIN_SECRET",
+          "env": ["ORIGIN_SECRET"]
+        }
+      ]
+    }
   ]
 }
