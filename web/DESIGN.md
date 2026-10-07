@@ -19,8 +19,10 @@ field. The two ASCII tiles in the After pane and the progress card still animate
 Since 2026-10-07 the tool is the landing page. The server serves `GET /`
 and `GET /app` as `web/index.html` (the sign-in wall, `HUMANIZER_PUBLIC_APP=0`,
 restores the old `web/home.html` landing and the 303 to `/signin?next=/app`),
-`GET /pricing` as `web/pricing.html`, and `GET /signin` and `GET /signup`
-as `web/auth.html`. Every asset URL is absolute (`/styles.css?v=...`) so the
+`GET /how` as `web/how.html` (the three steps, what stays and what goes,
+Made in Berkeley), `GET /pricing` as `web/pricing.html`, and `GET /signin`
+and `GET /signup` as `web/auth.html`. How it works and Pricing are tabs in
+the top row, not sections on the landing (owner, 2026-10-07). Every asset URL is absolute (`/styles.css?v=...`) so the
 same file works from any of those paths. Bump `?v=` on everything you touch.
 `styles.css` carries the tokens and every component; `site.css` is the page
 around them (top row, hero, tool card, trust row, steps, pricing, Berkeley);
@@ -45,10 +47,9 @@ the two panes flush inside it (heads on `--blue-wash`, titled "Your draft"
 and "Rewrite"), the divider, then the action bar (`.console`) on `--g1`
 with Strength and the judge on the left and the status and the 44px gold
 Humanize on the right, then the Facts and Details folds on the same deeper
-ground. Under the card: How it works (three numbered steps on hairlines),
-What it costs (the three plans, static copy that must match the server),
-Made in Berkeley (two paragraphs on a Berkeley Blue hairline), and the
-footer, which now carries the construction switch. The page field is gone;
+ground. Under the card: only the footer, which now carries the
+construction switch. The steps and the Berkeley section live on `/how`; the
+plans on `/pricing`. The page field is gone;
 the ASCII tiles in the After pane and the progress card remain. No
 testimonials, logos, slogans.
 

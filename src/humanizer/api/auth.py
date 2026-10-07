@@ -10,6 +10,7 @@ So the site has three pages, and the gate is a switch:
 
     GET /            web/index.html       the tool is the landing page (public app);
                                           web/home.html behind the wall
+    GET /how         web/how.html         public: the steps, what is kept, Berkeley
     GET /signin      web/auth.html        one page; it reads the path for mode
     GET /signup      web/auth.html
     GET /app         web/index.html       the humanizer. Public by default
@@ -464,6 +465,14 @@ def register_auth(
                 return _page(home)
             # No landing page on disk yet: send visitors through the gate.
             return RedirectResponse("/app", status_code=303)
+
+        @app.get("/how", include_in_schema=False)
+        def how_page(request: Request) -> Any:
+            # Public, like pricing: how the tool works, and where it comes from.
+            page = page_path("how.html")
+            if page is None:
+                return _err(404, "no_how_page", "web/how.html is missing.")
+            return _page(page)
 
         @app.get("/pricing", include_in_schema=False)
         def pricing_page(request: Request) -> Any:

@@ -42,6 +42,7 @@ def _web(tmp_path: Path) -> Path:
     web.mkdir()
     (web / "home.html").write_text("<h1>home</h1>")
     (web / "pricing.html").write_text("<h1>pricing</h1><h2>Monthly</h2>")
+    (web / "how.html").write_text("<h1>how</h1>")
     (web / "auth.html").write_text("<h1>auth</h1>")
     (web / "index.html").write_text("<h1>humanizer</h1>")
     (web / "app.js").write_text("console.log(1)")
@@ -264,6 +265,10 @@ class TestPages:
         client.post("/api/auth/signup", json=GOOD)
         assert "Monthly" in client.get("/pricing").text
 
+    def test_how_it_works_is_public(self, client):
+        r = client.get("/how")
+        assert r.status_code == 200 and "<h1>how</h1>" in r.text
+
     def test_signin_and_signup_serve_the_auth_page(self, client):
         for path in ("/signin", "/signup"):
             r = client.get(path)
@@ -308,7 +313,7 @@ class TestPages:
     def test_static_mount_is_still_last(self, client):
         paths = [getattr(r, "path", None) for r in client.app.router.routes]
         assert paths[-1] == ""
-        for p in ("/", "/pricing", "/signin", "/signup", "/app", "/index.html", "/api/auth/signup", "/api/humanize"):
+        for p in ("/", "/how", "/pricing", "/signin", "/signup", "/app", "/index.html", "/api/auth/signup", "/api/humanize"):
             assert p in paths and paths.index(p) < paths.index(""), p
 
     def test_missing_home_page_sends_visitors_through_the_gate(self, tmp_path):

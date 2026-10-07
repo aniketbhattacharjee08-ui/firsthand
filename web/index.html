@@ -19,9 +19,9 @@
 <noscript><link rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Barlow+Condensed:wght@500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
 
-<link rel="stylesheet" href="/styles.css?v=202610070100">
-<link rel="stylesheet" href="/brand/footer.css?v=202610070100">
-<link rel="stylesheet" href="/site.css?v=202610070100">
+<link rel="stylesheet" href="/styles.css?v=202610070200">
+<link rel="stylesheet" href="/brand/footer.css?v=202610070200">
+<link rel="stylesheet" href="/site.css?v=202610070200">
 </head>
 <body>
 
@@ -34,7 +34,7 @@
   <header class="top" role="banner" data-c="top row" data-src="health: GET /api/health; account: GET /api/auth/me; balance: GET /api/me, X-Longhand-Credits-Balance">
     <a class="wordmark" href="/" aria-label="Vervly, front page"><span class="wordmark-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#FDB515"/></svg></span>Vervly</a>
     <nav class="top-nav" aria-label="Site">
-      <a class="top-link" href="#how">How it works</a>
+      <a class="top-link" href="/how">How it works</a>
       <a class="top-link" href="/pricing">Pricing</a>
     </nav>
     <div class="top-tools">
@@ -272,68 +272,6 @@
       </details>
     </div>
 
-    <!-- how it works: three steps, in the house voice -->
-    <section class="steps" id="how" aria-labelledby="how-h">
-      <h2 class="section-h" id="how-h">How it works</h2>
-      <ol class="steps-grid">
-        <li class="step">
-          <span class="step-n num">1</span>
-          <h3 class="step-h">Paste a draft</h3>
-          <p class="step-p">A paragraph or a page. It is measured as you type, and the reading under it says how a detector would call it.</p>
-        </li>
-        <li class="step">
-          <span class="step-n num">2</span>
-          <h3 class="step-h">Humanize</h3>
-          <p class="step-p">Several rewrites are tried and judged; the one that reads most like a person comes back, in twenty to forty seconds. Every name, number and claim you wrote stays. Anything invented is thrown out before you see it.</p>
-        </li>
-        <li class="step">
-          <span class="step-n num">3</span>
-          <h3 class="step-h">Decide</h3>
-          <p class="step-p">Read both readings side by side. Keep the rewrite with Use this, copy it, or undo. Your draft is never touched until you say so.</p>
-        </li>
-      </ol>
-      <p class="steps-note">The reading is a local estimate of what GPTZero would say. Check the final draft with GPTZero itself before you rely on it.</p>
-    </section>
-
-    <!-- pricing: static copy, the same words the plans sheet and /pricing use.
-         The prices here are the ones the server charges; change both together. -->
-    <section class="pricing" id="pricing" aria-labelledby="pricing-h">
-      <h2 class="section-h" id="pricing-h">What it costs</h2>
-      <p class="pricing-free"><span class="num">1,000</span> words free before you need an account. After that, one of these.</p>
-      <div class="pricing-grid">
-        <article class="price-plan">
-          <h3 class="price-h">Monthly</h3>
-          <p class="price-amount"><span class="num">$9.99</span> a month</p>
-          <p class="price-words"><span class="num">30,000</span> words a month</p>
-          <p class="price-p">Renews every month until you cancel.</p>
-        </article>
-        <article class="price-plan">
-          <h3 class="price-h">Yearly</h3>
-          <p class="price-amount"><span class="num">$79.99</span> a year</p>
-          <p class="price-words"><span class="num">30,000</span> words a month</p>
-          <p class="price-p">Renews every year until you cancel.</p>
-        </article>
-        <article class="price-plan">
-          <h3 class="price-h">Lifetime</h3>
-          <p class="price-amount"><span class="num">$299</span> once</p>
-          <p class="price-words"><span class="num">20,000</span> words a month</p>
-          <p class="price-p">One payment. It never renews.</p>
-        </article>
-      </div>
-      <p class="pricing-note">Unused words carry over, but only up to one month's amount. The free words belong to your connection, not an account; when they are used you create an account and choose a plan, and nothing is charged before then.</p>
-      <p class="pricing-more"><a href="/pricing">See all plans and top-ups</a></p>
-    </section>
-
-    <!-- Berkeley: where it comes from. Facts only; the footer says it is a
-         student's project, not the university's. -->
-    <section class="berkeley" id="berkeley" aria-labelledby="berkeley-h">
-      <h2 class="section-h" id="berkeley-h">Made in Berkeley</h2>
-      <div class="berkeley-grid">
-        <p class="berkeley-p">Vervly is built by a student at UC Berkeley, for people who write for a grade and get read by a machine first. It started as research: dozens of ways of rewriting a paragraph were measured against detectors before one of them was shipped, and the method still changes when the measurements do.</p>
-        <p class="berkeley-p">The gold is California Gold, the hairlines are Berkeley Blue, and the type is the campus pair, Source Serif for what you read and Inter for the controls. That is the whole tribute. There is no seal, no mascot and no claim on the university; the work is one student's, and the footer says so.</p>
-      </div>
-    </section>
-
   </main>
 
   <footer class="site-foot" role="contentinfo">
@@ -389,11 +327,11 @@
      region marked data-c, plus the spacing grid. Shown by the switch or the backtick key. -->
 <div id="construction" class="construction" aria-hidden="true" hidden></div>
 
-<script src="/app.js?v=202610070100" defer></script>
+<script src="/app.js?v=202610070200" defer></script>
 <!-- Progressive enhancement only. app.js renders everything; these modules
      animate it and draw the ASCII tiles. The page field is gone since
      2026-10-07; field.js still draws the tiles in the After pane. -->
-<script type="module" src="/anim.js?v=202610070100"></script>
-<script type="module" src="/field.js?v=202610070100"></script>
+<script type="module" src="/anim.js?v=202610070200"></script>
+<script type="module" src="/field.js?v=202610070200"></script>
 </body>
 </html>
