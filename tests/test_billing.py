@@ -632,7 +632,8 @@ def test_real_app_with_static_mount_keeps_routes_reachable(tmp_path):
     cfg = _env(tmp_path)
     app = _real_app(tmp_path, cfg, web_dir=web)
     with TestClient(app) as c:
-        assert c.get("/").status_code == 200 and "ok" in c.get("/").text
+        # "/" is the tool itself now (index.html), not a separate landing page.
+        assert c.get("/").status_code == 200 and "app" in c.get("/").text
         # /app is public (the paywall limits visitors by address); the site's
         # pages still win over the static mount.
         r = c.get("/app", follow_redirects=False)
