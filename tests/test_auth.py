@@ -7,7 +7,7 @@ session; the point of this file is to check what happens when it is on.
 
 The page contract is the one the front end codes against:
 
-    /            web/home.html, public
+    /            web/index.html when the app is public (the tool is the landing); web/home.html behind the wall
     /pricing     web/pricing.html, public
     /signin      web/auth.html, public
     /signup      web/auth.html, public
@@ -240,14 +240,20 @@ class TestCookie:
 
 
 class TestPages:
-    def test_home_is_public(self, client):
+    def test_home_is_the_tool_when_public(self, client):
+        """Since 2026-10-07 the tool is the landing page: "/" serves index.html."""
         r = client.get("/")
-        assert r.status_code == 200 and "<h1>home</h1>" in r.text
+        assert r.status_code == 200 and "<h1>humanizer</h1>" in r.text
+
+    def test_home_page_is_used_behind_the_wall(self, tmp_path):
+        with TestClient(_app(tmp_path, _web(tmp_path), public_app=False)) as c:
+            r = c.get("/")
+            assert r.status_code == 200 and "<h1>home</h1>" in r.text
         assert r.headers["cache-control"] == "no-cache, must-revalidate"
 
-    def test_home_is_still_home_when_signed_in(self, client):
+    def test_home_is_still_the_tool_when_signed_in(self, client):
         client.post("/api/auth/signup", json=GOOD)
-        assert "<h1>home</h1>" in client.get("/").text
+        assert "<h1>humanizer</h1>" in client.get("/").text
 
     def test_pricing_is_public(self, client):
         r = client.get("/pricing")
@@ -310,9 +316,9 @@ class TestPages:
         web.mkdir()
         (web / "index.html").write_text("<h1>humanizer</h1>")
         with TestClient(_app(tmp_path, web)) as c:
+            # index.html is present, so "/" is the tool itself, no redirect.
             r = c.get("/", follow_redirects=False)
-            assert r.status_code == 303 and r.headers["location"] == "/app"
-            assert c.get("/", follow_redirects=True).url.path == "/app"
+            assert r.status_code == 200 and "<h1>humanizer</h1>" in r.text
 
     def test_no_web_dir_keeps_the_api_placeholder(self, tmp_path):
         with TestClient(_app(tmp_path)) as c:

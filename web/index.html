@@ -4,44 +4,40 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Vervly</title>
-<meta name="description" content="Paste a draft. Vervly rewrites it so it reads as written by a person, keeps your meaning, and shows the estimated GPTZero verdict before and after.">
+<meta name="description" content="Paste a draft. Vervly rewrites it so it reads as written by a person, keeps every name and number, and shows the detector reading before and after. 1,000 words free, no account needed.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0a0e20">
 <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- Berkeley's web pair: Source Serif 4 for what people read, Inter for controls; Fira Mono for every numeral and the field.
+<!-- Berkeley's web pair: Source Serif 4 for what people read, Inter for controls;
+     Barlow Condensed for the eyebrow, Fira Mono for every numeral and the tiles.
      Loaded without blocking; styles.css carries full fallback stacks. -->
 <link rel="stylesheet" media="print" onload="this.media='all'"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Barlow+Condensed:wght@500;600&family=Fira+Mono:wght@400;500&display=swap">
 <noscript><link rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Barlow+Condensed:wght@500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
 
-<link rel="stylesheet" href="/styles.css?v=202610062330">
-<link rel="stylesheet" href="/brand/footer.css?v=202610062330">
+<link rel="stylesheet" href="/styles.css?v=202610070100">
+<link rel="stylesheet" href="/brand/footer.css?v=202610070100">
+<link rel="stylesheet" href="/site.css?v=202610070100">
 </head>
 <body>
 
 <a class="skip-link" href="#editor">Skip to the draft</a>
 
-
-<!-- the field, drawn once: a still ASCII rendering of the orbital system
-     behind the page. field.js draws it and, with data-still, never moves it. -->
-<canvas id="field" class="field" data-still aria-hidden="true"></canvas>
-
 <div class="shell">
 
+  <!-- the top row: wordmark, one link, who is here. The service pill and the
+       account row are filled by app.js (GET /api/health, /api/auth/me, /api/me). -->
   <header class="top" role="banner" data-c="top row" data-src="health: GET /api/health; account: GET /api/auth/me; balance: GET /api/me, X-Longhand-Credits-Balance">
     <a class="wordmark" href="/" aria-label="Vervly, front page"><span class="wordmark-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#FDB515"/></svg></span>Vervly</a>
-    <p class="lede">Rewrites a draft until it reads as written by a person, and keeps what you said.</p>
+    <nav class="top-nav" aria-label="Site">
+      <a class="top-link" href="#how">How it works</a>
+      <a class="top-link" href="/pricing">Pricing</a>
+    </nav>
     <div class="top-tools">
-      <label class="switch-row" for="construction-switch">
-        <button id="construction-switch" class="switch" type="button" role="switch" aria-checked="false"
-                aria-label="Show construction"
-                title="Show how the page is built. Holding the backtick key does the same."></button>
-        <span class="switch-label">Construction</span>
-      </label>
       <p id="health" class="pill" data-kind="wait" role="status" aria-live="polite">Checking the service</p>
       <!-- who is signed in, from GET /api/auth/me; hidden until it answers.
            The balance, the plan and the Plans button come from GET /api/me and
@@ -63,221 +59,280 @@
     <span>The service cannot be reached. Keep writing; nothing is lost.</span>
   </p>
 
-  <main class="page">
+  <main class="page" id="main">
+
+    <!-- the hero: short, over the tool. The tool itself is the landing. -->
+    <section class="hero hero-app" aria-labelledby="hero-h">
+      <p class="hero-eyebrow">Built at UC Berkeley</p>
+      <h1 class="hero-h" id="hero-h">Your draft says what you mean. Now make it sound like you said it.</h1>
+      <p class="hero-p">Paste a paragraph. It comes back in plainer, more particular sentences with every name, number and claim still in place, and you see how a detector reads it before and after.</p>
+      <ul class="trust" aria-label="What you get">
+        <li><span class="num">1,000</span> words free, no account</li>
+        <li>Every fact you wrote, kept</li>
+        <li>Detector reading before and after</li>
+      </ul>
+    </section>
 
     <section class="error" id="error-box" hidden aria-live="assertive"></section>
 
-    <!-- the console: the one primary action, the judge, the status line -->
-    <div class="console" data-c="console" data-flow="out" data-src="POST /api/humanize/stream, then /api/humanize/llm, then /api/humanize">
-      <div class="console-act">
-        <button id="humanize-btn" class="btn btn-primary" type="button">
-          <span id="humanize-label">Humanize</span>
-        </button>
-        <label class="field field-inline" title="How far the rewrite goes">
-          <span class="field-label">Strength</span>
-          <select id="aggressiveness" aria-label="Rewrite strength">
-            <option value="light">Light</option>
-            <option value="balanced" selected>Balanced</option>
-            <option value="strong">Strong</option>
-          </select>
-        </label>
-        <span class="key" aria-hidden="true">Ctrl or Cmd + Enter</span>
-        <!-- what this draft uses, out of the words left; only with the paywall on -->
-        <span class="cost" id="cost-hint" aria-live="polite" hidden></span>
-      </div>
-      <p class="judge">Judged by <span id="verdict-h">GPTZero estimate</span></p>
-      <p class="status" id="status-line" data-state="idle" role="status" aria-live="polite">Ready.</p>
-    </div>
+    <!-- the tool: one card. The two panes with a divider you can drag, and the
+         action bar under them with the one primary action. -->
+    <div class="tool" id="tool">
 
-    <!-- the instrument: before on the left, after on the right, a divider you can drag between
-         them. data-outcome on the wrapper carries the run verdict (none, flipped, held, mixed).
-         The split is the CSS variable --col-before, set by app.js and kept in localStorage. -->
-    <div class="instrument" id="verdict" data-outcome="none" data-collapsed="">
-
-      <section class="pane pane-before" id="pane-before" aria-label="Before: your draft"
-               data-c="Before" data-src="#editor: your text; reading: before.ai_probability, before.label">
-        <header class="pane-head">
-          <h2 class="pane-title">Before</h2>
-          <p class="reading tip" id="v-before" tabindex="0" data-tip="">
-            <span class="reading-p num" id="v-before-p"></span>
-            <span class="reading-word" id="v-before-word" data-label="none">not measured</span>
-          </p>
-        </header>
-
-        <div class="pane-body" id="canvas-scroll">
-          <div id="editor"
-               class="canvas"
-               contenteditable="true"
-               spellcheck="false"
-               role="textbox"
-               aria-multiline="true"
-               aria-label="Your draft"
-               data-placeholder="Paste or type your draft here."></div>
-
-          <div class="empty-state" id="empty-state">
-            <p class="empty-body">Or see a run on one of these.</p>
-            <div class="samples">
-              <button class="chip" type="button" data-sample="ai">Example</button>
-              <button class="chip" type="button" data-sample="letter">Cover letter</button>
-              <button class="chip" type="button" data-sample="report">Lab report</button>
-              <button class="chip" type="button" data-sample="history">History essay</button>
+      <!-- the instrument: before on the left, after on the right, a divider you can drag between
+           them. data-outcome on the wrapper carries the run verdict (none, flipped, held, mixed).
+           The split is the CSS variable --col-before, set by app.js and kept in localStorage. -->
+      <div class="instrument" id="verdict" data-outcome="none" data-collapsed="">
+        <section class="pane pane-before" id="pane-before" aria-label="Before: your draft"
+                 data-c="Before" data-src="#editor: your text; reading: before.ai_probability, before.label">
+          <header class="pane-head">
+            <h2 class="pane-title">Your draft</h2>
+            <p class="reading tip" id="v-before" tabindex="0" data-tip="">
+              <span class="reading-p num" id="v-before-p"></span>
+              <span class="reading-word" id="v-before-word" data-label="none">not measured</span>
+            </p>
+          </header>
+          <div class="pane-body" id="canvas-scroll">
+            <div id="editor"
+                 class="canvas"
+                 contenteditable="true"
+                 spellcheck="false"
+                 role="textbox"
+                 aria-multiline="true"
+                 aria-label="Your draft"
+                 data-placeholder="Paste or type your draft here."></div>
+            <div class="empty-state" id="empty-state">
+              <p class="empty-body">Or try one of these.</p>
+              <div class="samples">
+                <button class="chip" type="button" data-sample="ai">Example</button>
+                <button class="chip" type="button" data-sample="letter">Cover letter</button>
+                <button class="chip" type="button" data-sample="report">Lab report</button>
+                <button class="chip" type="button" data-sample="history">History essay</button>
+              </div>
             </div>
           </div>
+          <footer class="pane-foot" data-c="foot" data-src="#doc-counts: counted here, not sent">
+            <p class="counts num" id="doc-counts" aria-live="polite"></p>
+            <div class="pane-acts">
+              <button id="undo-btn" class="btn" type="button" hidden>Undo</button>
+              <button id="analyze-btn" class="btn" type="button"
+                      title="Score the draft as it stands. This also runs on its own once the draft is long enough.">
+                Measure
+              </button>
+            </div>
+          </footer>
+        </section>
+
+        <!-- the divider: drag it, or focus it and use the arrow keys. Enter or a double
+             click folds the smaller pane away; the same again brings it back. -->
+        <div class="divider" id="divider" role="separator" tabindex="0"
+             aria-orientation="vertical" aria-label="Resize the panes"
+             aria-controls="pane-before pane-after"
+             aria-valuemin="20" aria-valuemax="80" aria-valuenow="50"
+             title="Drag to resize. Arrow keys move it. Enter folds a pane."
+             data-c="divider" data-flow="out" data-src="--col-before, saved as readshuman.split">
+          <span class="divider-grip" aria-hidden="true"></span>
+          <span class="divider-snaps" aria-hidden="true"><i data-at="30"></i><i data-at="50"></i><i data-at="70"></i></span>
         </div>
 
-        <footer class="pane-foot" data-c="foot" data-src="#doc-counts: counted here, not sent">
-          <p class="counts num" id="doc-counts" aria-live="polite"></p>
-          <div class="pane-acts">
-            <button id="undo-btn" class="btn" type="button" hidden>Undo</button>
-            <button id="analyze-btn" class="btn" type="button"
-                    title="Score the draft as it stands. This also runs on its own once the draft is long enough.">
-              Measure
-            </button>
-          </div>
-        </footer>
-      </section>
-
-      <!-- the divider: drag it, or focus it and use the arrow keys. Enter or a double
-           click folds the smaller pane away; the same again brings it back. -->
-      <div class="divider" id="divider" role="separator" tabindex="0"
-           aria-orientation="vertical" aria-label="Resize the panes"
-           aria-controls="pane-before pane-after"
-           aria-valuemin="20" aria-valuemax="80" aria-valuenow="50"
-           title="Drag to resize. Arrow keys move it. Enter folds a pane."
-           data-c="divider" data-flow="out" data-src="--col-before, saved as readshuman.split">
-        <span class="divider-grip" aria-hidden="true"></span>
-        <span class="divider-snaps" aria-hidden="true"><i data-at="30"></i><i data-at="50"></i><i data-at="70"></i></span>
-      </div>
-
-      <section class="pane pane-after" id="pane-after" aria-label="After: the rewrite"
-               data-c="After" data-src="#after: humanized; reading: after.ai_probability, after.label">
-        <header class="pane-head">
-          <h2 class="pane-title">After</h2>
-          <p class="reading tip" id="v-after" tabindex="0" data-tip="" hidden>
-            <span class="reading-p num" id="v-after-p"></span>
-            <span class="reading-word" id="v-after-word" data-label="none"></span>
-          </p>
-        </header>
-
-        <div class="pane-body pane-body-after">
-          <!-- one line on the verdict, then anything the gates refused -->
-          <div class="verdict-strip" id="verdict-strip" hidden
-               data-c="verdict" data-src="summary.verdict_flipped, label_before, label_after, unverified_specifics">
-            <p class="verdict-line" id="verdict-line"></p>
-            <p class="verdict-kept" id="verdict-kept" hidden></p>
-            <div class="verdict-refused" id="verdict-refused" hidden></div>
-          </div>
-
-          <div id="after" class="canvas canvas-after" aria-label="The rewrite" tabindex="0"></div>
-
-          <div class="after-empty" id="after-empty">
-            <canvas class="ascii-tile" data-ascii="idle" width="264" height="112" aria-hidden="true"></canvas>
-            <p>The rewrite lands here with its own reading. Twenty to forty seconds.</p>
-            <p class="after-empty-sub">Your draft stays as it is until you choose Use this.</p>
-          </div>
-
-          <!-- the run checklist: the only feedback during a 20 to 40 second run.
-               Rows are built by app.js from the stage names the service reports. -->
-          <div class="progress" id="progress" hidden data-c="progress" data-src="SSE stage events: status, progress, detail">
-            <div class="progress-card">
-              <div class="progress-head">
-                <div>
-                  <h3 class="progress-title" id="progress-title">Rewriting your draft</h3>
-                  <p class="progress-meta">
-                    <span id="progress-engine">Contacting the service</span>
-                    <span class="progress-elapsed num" id="progress-elapsed">0.0s</span>
-                  </p>
+        <section class="pane pane-after" id="pane-after" aria-label="After: the rewrite"
+                 data-c="After" data-src="#after: humanized; reading: after.ai_probability, after.label">
+          <header class="pane-head">
+            <h2 class="pane-title">Rewrite</h2>
+            <p class="reading tip" id="v-after" tabindex="0" data-tip="" hidden>
+              <span class="reading-p num" id="v-after-p"></span>
+              <span class="reading-word" id="v-after-word" data-label="none"></span>
+            </p>
+          </header>
+          <div class="pane-body pane-body-after">
+            <!-- one line on the verdict, then anything the gates refused -->
+            <div class="verdict-strip" id="verdict-strip" hidden
+                 data-c="verdict" data-src="summary.verdict_flipped, label_before, label_after, unverified_specifics">
+              <p class="verdict-line" id="verdict-line"></p>
+              <p class="verdict-kept" id="verdict-kept" hidden></p>
+              <div class="verdict-refused" id="verdict-refused" hidden></div>
+            </div>
+            <div id="after" class="canvas canvas-after" aria-label="The rewrite" tabindex="0"></div>
+            <div class="after-empty" id="after-empty">
+              <canvas class="ascii-tile" data-ascii="idle" width="264" height="112" aria-hidden="true"></canvas>
+              <p>The rewrite lands here with its own reading. Twenty to forty seconds.</p>
+              <p class="after-empty-sub">Your draft stays as it is until you choose Use this.</p>
+            </div>
+            <!-- the run checklist: the only feedback during a 20 to 40 second run.
+                 Rows are built by app.js from the stage names the service reports. -->
+            <div class="progress" id="progress" hidden data-c="progress" data-src="SSE stage events: status, progress, detail">
+              <div class="progress-card">
+                <div class="progress-head">
+                  <div>
+                    <h3 class="progress-title" id="progress-title">Rewriting your draft</h3>
+                    <p class="progress-meta">
+                      <span id="progress-engine">Contacting the service</span>
+                      <span class="progress-elapsed num" id="progress-elapsed">0.0s</span>
+                    </p>
+                  </div>
+                  <canvas class="ascii-tile ascii-tile-run" data-ascii="run" width="120" height="112" aria-hidden="true"></canvas>
                 </div>
-                <canvas class="ascii-tile ascii-tile-run" data-ascii="run" width="120" height="112" aria-hidden="true"></canvas>
-              </div>
-
-              <ol class="stages" id="stages"></ol>
-
-              <p class="progress-say sr-only" id="progress-say" role="status" aria-live="polite"></p>
-
-              <div class="progress-foot">
-                <button id="progress-cancel" class="btn" type="button">Stop and keep my draft</button>
-                <p class="progress-note" id="progress-note">Your draft is not touched until this finishes.</p>
+                <ol class="stages" id="stages"></ol>
+                <p class="progress-say sr-only" id="progress-say" role="status" aria-live="polite"></p>
+                <div class="progress-foot">
+                  <button id="progress-cancel" class="btn" type="button">Stop and keep my draft</button>
+                  <p class="progress-note" id="progress-note">Your draft is not touched until this finishes.</p>
+                </div>
               </div>
             </div>
           </div>
+          <footer class="pane-foot" data-c="foot" data-src="#changed: summary.paragraphs_rewritten, edits, n_candidates_passed">
+            <p class="counts" id="changed" aria-live="polite"></p>
+            <div class="pane-acts">
+              <button id="copy-btn" class="btn" type="button" disabled title="Copy the rewrite">Copy</button>
+              <button id="use-btn" class="btn" type="button" disabled title="Replace your draft with the rewrite">Use this</button>
+            </div>
+          </footer>
+        </section>
+      </div>
+
+      <!-- the console, now the card's action bar: strength and the judge on the
+           left, the status and the one primary action on the right -->
+      <div class="console" data-c="console" data-flow="out" data-src="POST /api/humanize/stream, then /api/humanize/llm, then /api/humanize">
+        <div class="console-act">
+          <label class="field field-inline" title="How far the rewrite goes">
+            <span class="field-label">Strength</span>
+            <select id="aggressiveness" aria-label="Rewrite strength">
+              <option value="light">Light</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="strong">Strong</option>
+            </select>
+          </label>
+          <p class="judge">Judged by <span id="verdict-h">GPTZero estimate</span></p>
+          <!-- what this draft uses, out of the words left; only with the paywall on -->
+          <span class="cost" id="cost-hint" aria-live="polite" hidden></span>
         </div>
+        <p class="status" id="status-line" data-state="idle" role="status" aria-live="polite">Ready.</p>
+        <div class="console-go">
+          <span class="key" aria-hidden="true">Ctrl or Cmd + Enter</span>
+          <button id="humanize-btn" class="btn btn-primary btn-go" type="button">
+            <span id="humanize-label">Humanize</span>
+          </button>
+        </div>
+      </div>
 
-        <footer class="pane-foot" data-c="foot" data-src="#changed: summary.paragraphs_rewritten, edits, n_candidates_passed">
-          <p class="counts" id="changed" aria-live="polite"></p>
-          <div class="pane-acts">
-            <button id="copy-btn" class="btn" type="button" disabled title="Copy the rewrite">Copy</button>
-            <button id="use-btn" class="btn" type="button" disabled title="Replace your draft with the rewrite">Use this</button>
-          </div>
-        </footer>
-      </section>
+      <p class="legend" id="legend" hidden>Sentences are shaded by estimated risk, faint to strong.</p>
 
+      <!-- The one place a true name, date or figure can enter the rewrite. -->
+      <details class="fold facts" id="facts-fold" data-c="fold: Facts" data-flow="out" data-src="body.facts">
+        <summary class="fold-summary facts-summary">
+          <span class="fold-title">Facts you can vouch for</span>
+          <span class="fold-hint" id="facts-hint">Optional. The rewrite may use these and nothing else it did not find in your draft.</span>
+        </summary>
+        <div class="fold-body">
+          <textarea id="facts" class="facts-input" rows="3" spellcheck="true"
+                    aria-label="Facts you can vouch for"
+                    placeholder="Smith and Rao (2021) surveyed 40 sites in Kerala. The 2019 audit found a 12 percent shortfall."></textarea>
+        </div>
+      </details>
+
+      <details class="fold more" id="more" data-c="fold: Details" data-src="edits, summary, analysis.features, analysis.findings">
+        <summary class="fold-summary">
+          <span class="fold-title">Details</span>
+          <span class="fold-hint">The run, every edit, flagged sentences, measurements, style signals, findings.</span>
+        </summary>
+        <div class="fold-body more-body">
+          <section class="msection" aria-labelledby="run-h" id="run-section" hidden>
+            <h3 class="msection-h" id="run-h">The run</h3>
+            <div id="run-summary" class="rows"></div>
+          </section>
+          <section class="msection" aria-labelledby="repairs-h" id="repairs-section" hidden>
+            <h3 class="msection-h" id="repairs-h">What it tried</h3>
+            <p class="msection-lede">For each paragraph that still failed after the rounds: what the evidence said went wrong, the one thing it changed, and what came back.
+            <div id="repairs" class="rows"></div>
+          </section>
+          <section class="msection" aria-labelledby="edits-h" id="edits-section" hidden>
+            <h3 class="msection-h" id="edits-h">What changed</h3>
+            <div id="edits" class="edits"></div>
+          </section>
+          <section class="msection" aria-labelledby="flag-h">
+            <h3 class="msection-h" id="flag-h">Flagged sentences</h3>
+            <div id="flagged" class="flagged"><p class="muted">No reading yet.</p></div>
+          </section>
+          <section class="msection" aria-labelledby="meas-h">
+            <h3 class="msection-h" id="meas-h">Measurements</h3>
+            <p class="msection-lede">Your value next to the range human academic prose occupies. Open a row for the plain reading.</p>
+            <div id="measurements" class="measure-list"><p class="muted">No analysis yet.</p></div>
+          </section>
+          <section class="msection" aria-labelledby="signals-h">
+            <h3 class="msection-h" id="signals-h">Style signals</h3>
+            <p class="msection-lede">Habits that mark prose as generated. Patterns to edit, not a score.</p>
+            <div id="style-signals" class="signals"><p class="muted">No analysis yet.</p></div>
+          </section>
+          <section class="msection" aria-labelledby="find-h">
+            <h3 class="msection-h" id="find-h">Findings</h3>
+            <div id="findings" class="findings"><p class="muted">No analysis yet.</p></div>
+          </section>
+        </div>
+      </details>
     </div>
 
-    <p class="legend" id="legend" hidden>Sentences are shaded by estimated risk, faint to strong.</p>
+    <!-- how it works: three steps, in the house voice -->
+    <section class="steps" id="how" aria-labelledby="how-h">
+      <h2 class="section-h" id="how-h">How it works</h2>
+      <ol class="steps-grid">
+        <li class="step">
+          <span class="step-n num">1</span>
+          <h3 class="step-h">Paste a draft</h3>
+          <p class="step-p">A paragraph or a page. It is measured as you type, and the reading under it says how a detector would call it.</p>
+        </li>
+        <li class="step">
+          <span class="step-n num">2</span>
+          <h3 class="step-h">Humanize</h3>
+          <p class="step-p">Several rewrites are tried and judged; the one that reads most like a person comes back, in twenty to forty seconds. Every name, number and claim you wrote stays. Anything invented is thrown out before you see it.</p>
+        </li>
+        <li class="step">
+          <span class="step-n num">3</span>
+          <h3 class="step-h">Decide</h3>
+          <p class="step-p">Read both readings side by side. Keep the rewrite with Use this, copy it, or undo. Your draft is never touched until you say so.</p>
+        </li>
+      </ol>
+      <p class="steps-note">The reading is a local estimate of what GPTZero would say. Check the final draft with GPTZero itself before you rely on it.</p>
+    </section>
 
-    <!-- The one place a true name, date or figure can enter the rewrite. -->
-    <details class="fold facts" id="facts-fold" data-c="fold: Facts" data-flow="out" data-src="body.facts">
-      <summary class="fold-summary facts-summary">
-        <span class="fold-title">Facts you can vouch for</span>
-        <span class="fold-hint" id="facts-hint">Optional. The rewrite may use these and nothing else it did not find in your draft.</span>
-      </summary>
-      <div class="fold-body">
-        <textarea id="facts" class="facts-input" rows="3" spellcheck="true"
-                  aria-label="Facts you can vouch for"
-                  placeholder="Smith and Rao (2021) surveyed 40 sites in Kerala. The 2019 audit found a 12 percent shortfall."></textarea>
+    <!-- pricing: static copy, the same words the plans sheet and /pricing use.
+         The prices here are the ones the server charges; change both together. -->
+    <section class="pricing" id="pricing" aria-labelledby="pricing-h">
+      <h2 class="section-h" id="pricing-h">What it costs</h2>
+      <p class="pricing-free"><span class="num">1,000</span> words free before you need an account. After that, one of these.</p>
+      <div class="pricing-grid">
+        <article class="price-plan">
+          <h3 class="price-h">Monthly</h3>
+          <p class="price-amount"><span class="num">$9.99</span> a month</p>
+          <p class="price-words"><span class="num">30,000</span> words a month</p>
+          <p class="price-p">Renews every month until you cancel.</p>
+        </article>
+        <article class="price-plan">
+          <h3 class="price-h">Yearly</h3>
+          <p class="price-amount"><span class="num">$79.99</span> a year</p>
+          <p class="price-words"><span class="num">30,000</span> words a month</p>
+          <p class="price-p">Renews every year until you cancel.</p>
+        </article>
+        <article class="price-plan">
+          <h3 class="price-h">Lifetime</h3>
+          <p class="price-amount"><span class="num">$299</span> once</p>
+          <p class="price-words"><span class="num">20,000</span> words a month</p>
+          <p class="price-p">One payment. It never renews.</p>
+        </article>
       </div>
-    </details>
+      <p class="pricing-note">Unused words carry over, but only up to one month's amount. The free words belong to your connection, not an account; when they are used you create an account and choose a plan, and nothing is charged before then.</p>
+      <p class="pricing-more"><a href="/pricing">See all plans and top-ups</a></p>
+    </section>
 
-    <details class="fold more" id="more" data-c="fold: Details" data-src="edits, summary, analysis.features, analysis.findings">
-      <summary class="fold-summary">
-        <span class="fold-title">Details</span>
-        <span class="fold-hint">The run, every edit, flagged sentences, measurements, style signals, findings.</span>
-      </summary>
-
-      <div class="fold-body more-body">
-
-        <section class="msection" aria-labelledby="run-h" id="run-section" hidden>
-          <h3 class="msection-h" id="run-h">The run</h3>
-          <div id="run-summary" class="rows"></div>
-        </section>
-
-        <section class="msection" aria-labelledby="repairs-h" id="repairs-section" hidden>
-          <h3 class="msection-h" id="repairs-h">What it tried</h3>
-          <p class="msection-lede">For each paragraph that still failed after the rounds: what the evidence said went wrong, the one thing it changed, and what came back.</p>
-          <div id="repairs" class="rows"></div>
-        </section>
-
-        <section class="msection" aria-labelledby="edits-h" id="edits-section" hidden>
-          <h3 class="msection-h" id="edits-h">What changed</h3>
-          <div id="edits" class="edits"></div>
-        </section>
-
-        <section class="msection" aria-labelledby="flag-h">
-          <h3 class="msection-h" id="flag-h">Flagged sentences</h3>
-          <div id="flagged" class="flagged"><p class="muted">No reading yet.</p></div>
-        </section>
-
-        <section class="msection" aria-labelledby="meas-h">
-          <h3 class="msection-h" id="meas-h">Measurements</h3>
-          <p class="msection-lede">Your value next to the range human academic prose occupies. Open a row for the plain reading.</p>
-          <div id="measurements" class="measure-list"><p class="muted">No analysis yet.</p></div>
-        </section>
-
-        <section class="msection" aria-labelledby="signals-h">
-          <h3 class="msection-h" id="signals-h">Style signals</h3>
-          <p class="msection-lede">Habits that mark prose as generated. Patterns to edit, not a score.</p>
-          <div id="style-signals" class="signals"><p class="muted">No analysis yet.</p></div>
-        </section>
-
-        <section class="msection" aria-labelledby="find-h">
-          <h3 class="msection-h" id="find-h">Findings</h3>
-          <div id="findings" class="findings"><p class="muted">No analysis yet.</p></div>
-        </section>
-
+    <!-- Berkeley: where it comes from. Facts only; the footer says it is a
+         student's project, not the university's. -->
+    <section class="berkeley" id="berkeley" aria-labelledby="berkeley-h">
+      <h2 class="section-h" id="berkeley-h">Made in Berkeley</h2>
+      <div class="berkeley-grid">
+        <p class="berkeley-p">Vervly is built by a student at UC Berkeley, for people who write for a grade and get read by a machine first. It started as research: dozens of ways of rewriting a paragraph were measured against detectors before one of them was shipped, and the method still changes when the measurements do.</p>
+        <p class="berkeley-p">The gold is California Gold, the hairlines are Berkeley Blue, and the type is the campus pair, Source Serif for what you read and Inter for the controls. That is the whole tribute. There is no seal, no mascot and no claim on the university; the work is one student's, and the footer says so.</p>
       </div>
-    </details>
-
+    </section>
 
   </main>
 
@@ -292,8 +347,15 @@
         <a href="mailto:aniket_b@berkeley.edu">aniket_b@berkeley.edu</a>
         <a href="/legal/terms.html">Terms</a>
         <a href="/legal/privacy.html">Privacy</a>
+        <!-- the construction reveal, kept for whoever wants to see how the page is built -->
+        <label class="switch-row site-foot-switch" for="construction-switch">
+          <button id="construction-switch" class="switch" type="button" role="switch" aria-checked="false"
+                  aria-label="Show construction"
+                  title="Show how the page is built. Holding the backtick key does the same."></button>
+          <span class="switch-label">Construction</span>
+        </label>
         <span class="site-foot-fine">2026</span>
-        <span class="site-foot-fine site-foot-disclaim">An independent student project. Not affiliated with or endorsed by the University of California.</span> <span class="site-foot-hint kb-only">Hold the backtick key to see how the page is built.</span>
+        <span class="site-foot-fine site-foot-disclaim">An independent student project. Not affiliated with or endorsed by the University of California.</span>
       </nav>
     </div>
   </footer>
@@ -315,7 +377,7 @@
     <div class="plan-rows" id="plan-rows"></div>
     <h3 class="sheet-sub" id="packs-h" hidden>One-time top-ups</h3>
     <div class="plan-rows" id="pack-rows"></div>
-    <p class="sheet-note" id="plans-note">Monthly and yearly plans renew until you cancel; lifetime is a one-time payment. Unused words carry over, but only up to one month's amount. <a class="sheet-link" href="/pricing">Full details</a></p>
+    <p class="sheet-note" id="plans-note">Monthly and yearly plans renew until you cancel; lifetime is a one-time payment. Unused words carry over, but only up to one month's amount. Payments are handled by Stripe; Vervly never sees card numbers.</p>
     <div class="sheet-foot">
       <button class="btn btn-quiet" id="manage-btn" type="button" hidden>Manage subscription</button>
       <p class="sheet-status" id="plans-status" role="status" aria-live="polite" data-state="idle"></p>
@@ -327,10 +389,11 @@
      region marked data-c, plus the spacing grid. Shown by the switch or the backtick key. -->
 <div id="construction" class="construction" aria-hidden="true" hidden></div>
 
-<script src="/app.js?v=202610062330" defer></script>
+<script src="/app.js?v=202610070100" defer></script>
 <!-- Progressive enhancement only. app.js renders everything; these modules
-     animate it and draw the field behind it. -->
-<script type="module" src="/anim.js?v=202610062330"></script>
-<script type="module" src="/field.js?v=202610062330"></script>
+     animate it and draw the ASCII tiles. The page field is gone since
+     2026-10-07; field.js still draws the tiles in the After pane. -->
+<script type="module" src="/anim.js?v=202610070100"></script>
+<script type="module" src="/field.js?v=202610070100"></script>
 </body>
 </html>

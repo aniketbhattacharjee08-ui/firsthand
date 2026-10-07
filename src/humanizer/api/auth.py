@@ -8,7 +8,8 @@ in, make it public and then block IPs; after a couple tries charge people".
 
 So the site has three pages, and the gate is a switch:
 
-    GET /            web/home.html        public landing page
+    GET /            web/index.html       the tool is the landing page (public app);
+                                          web/home.html behind the wall
     GET /signin      web/auth.html        one page; it reads the path for mode
     GET /signup      web/auth.html
     GET /app         web/index.html       the humanizer. Public by default
@@ -452,6 +453,12 @@ def register_auth(
 
         @app.get("/", include_in_schema=False)
         def home_page(request: Request) -> Any:
+            # With the app public, the tool is the landing page (2026-10-07):
+            # "/" and "/app" are the same page. A separate home.html, if one
+            # exists, is used only behind the sign-in wall.
+            index = page_path("index.html")
+            if public and index is not None:
+                return _page(index)
             home = page_path("home.html")
             if home is not None:
                 return _page(home)

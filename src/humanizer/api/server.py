@@ -16,7 +16,7 @@ Endpoints
     POST /api/auth/signin         sign in; 401 invalid_credentials
     POST /api/auth/signout        204, clears the cookie
     GET  /api/auth/me             {signed_in, user?}
-    GET  /                        web/home.html, the landing page
+    GET  /                        web/index.html, the tool as the landing page
     GET  /signin, /signup         web/auth.html
     GET  /app                     web/index.html, signed-in users only
 

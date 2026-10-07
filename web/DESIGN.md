@@ -16,39 +16,41 @@ field. The two ASCII tiles in the After pane and the progress card still animate
 
 ## Pages
 
-The server serves `GET /` as `web/home.html`, `GET /signin` and
-`GET /signup` as `web/auth.html`, and `GET /app` as `web/index.html` to
-anyone (since 2026-10-06; `HUMANIZER_PUBLIC_APP=0` restores the 303 to
-`/signin?next=/app`). A visitor who has not signed in is a guest: the
-paywall gives each client address one free allowance (`LONGHAND_GUEST_CREDITS`,
-1,000 words), `GET /api/me` reports it with `guest: true`, the top row shows
+Since 2026-10-07 the tool is the landing page. The server serves `GET /`
+and `GET /app` as `web/index.html` (the sign-in wall, `HUMANIZER_PUBLIC_APP=0`,
+restores the old `web/home.html` landing and the 303 to `/signin?next=/app`),
+`GET /pricing` as `web/pricing.html`, and `GET /signin` and `GET /signup`
+as `web/auth.html`. Every asset URL is absolute (`/styles.css?v=...`) so the
+same file works from any of those paths. Bump `?v=` on everything you touch.
+`styles.css` carries the tokens and every component; `site.css` is the page
+around them (top row, hero, tool card, trust row, steps, pricing, Berkeley);
+`pricing.css` and `auth.css` are their pages' own; `home.css` remains only
+for the pricing page's older section classes.
+
+A visitor who has not signed in is a guest: the paywall gives each client
+address one free allowance (`LONGHAND_GUEST_CREDITS`, 1,000 words),
+`GET /api/me` reports it with `guest: true`, the top row shows a gold pill
 "N free words left" and a Sign in link instead of a name and Sign out, and
 when the allowance is gone a charged route answers 402 with `guest: true`
 and `signup_url`, which sends the page to `/signup?next=/pricing&error=free_used`.
 An account created from that address inherits what the guest had left, so
-one address gets one free allowance however it is used. Every
-asset URL is absolute (`/styles.css?v=...`) so the same file works from any
-of those paths. Bump `?v=` on everything you touch.
+one address gets one free allowance however it is used.
 
-The landing (`home.html`): the same shell, field and horizon as the app. A
-top row with the wordmark and two links (Sign in, Create account; on a phone
-only Sign in, since the hero carries both). A hero of one Source Serif headline under a short Barlow Condensed eyebrow in gold,
-one plain sentence and two actions (Try it free primary, straight to `/app`
-with no account; Sign in secondary). A specimen: the app's own `.pane` classes, Before and After,
-each with one paragraph written by hand for the page and a reading word
-followed by an `.example-tag` (the construction layer's mono label, brought
-onto the page as information). The tag and the note under the panes say the
-readings are examples, not measurements; the landing shows no numbers. Then
-Made in Berkeley (`#berkeley`): the heading and two short paragraphs on a
-hairline, saying who built it, that it began as research, and that the
-look borrows the campus colours; no seal, no mascot, no claim on the university.
-Then How it works: the three facts from the app's fold in the `.facts-grid` row,
-and one sentence on Use this and Undo. The site footer from
-`brand/footer.html`, verbatim. `home.js` calls `GET /api/auth/me`; signed in,
-the primary action becomes "Open the humanizer" (`/app`), the nav shows the
-name and "Open the humanizer", and Sign in goes. If the call fails (no auth
-routes yet, no network) the page stays as written. No testimonials, logos,
-slogans.
+The page (`index.html`), top to bottom: the top row (wordmark; How it
+works and Pricing links; the service pill; the account row). A centred hero
+of the gold Barlow Condensed eyebrow "Built at UC Berkeley" between two
+short rules, one Source Serif headline, one sentence, and a trust row of
+three facts with gold dots. The tool, one card on `--g2` with a 12px radius:
+the two panes flush inside it (heads on `--blue-wash`, titled "Your draft"
+and "Rewrite"), the divider, then the action bar (`.console`) on `--g1`
+with Strength and the judge on the left and the status and the 44px gold
+Humanize on the right, then the Facts and Details folds on the same deeper
+ground. Under the card: How it works (three numbered steps on hairlines),
+What it costs (the three plans, static copy that must match the server),
+Made in Berkeley (two paragraphs on a Berkeley Blue hairline), and the
+footer, which now carries the construction switch. The page field is gone;
+the ASCII tiles in the After pane and the progress card remain. No
+testimonials, logos, slogans.
 
 Pricing exists, once, as the Pricing section after the specimen
 (`#pricing`): the heading "What it costs", the free allowance line ("1,000
