@@ -21,7 +21,8 @@ HERE = Path(__file__).resolve().parent
 CSS = """
 :root{--g0:#06081a;--g1:#0a0e20;--g2:#10172f;--line:rgba(159,209,255,.14);--line-2:rgba(159,209,255,.24);
 --fg:#ece8df;--fg-2:#b5b0a5;--fg-3:#8e897e;--accent:#FDB515;--accent-deep:#FC9313;
---sans:"Inter",ui-sans-serif,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;--r:4px}
+--sans:"Inter",ui-sans-serif,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;
+--serif:"Source Serif 4","Iowan Old Style","Palatino Linotype",Georgia,Times,serif;--r:6px}
 html{background:var(--g0);color:var(--fg);font:16px/1.6 var(--sans);-webkit-text-size-adjust:100%}
 body{margin:0;padding:48px 20px 80px}
 main{max-width:66ch;margin:0 auto}
@@ -29,8 +30,8 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(253,181,
 a:hover{color:var(--accent-deep)} a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r)}
 nav{font-size:.875rem;color:var(--fg-3);display:flex;gap:16px;margin-bottom:32px}
 nav a{border:0;color:var(--fg-2)} nav a[aria-current]{color:var(--fg)}
-h1{font-size:1.375rem;font-weight:500;margin:0 0 8px}
-h2{font-size:1.125rem;font-weight:500;margin:32px 0 8px;padding-top:16px;border-top:1px solid var(--line)}
+h1{font-family:var(--serif);font-size:2rem;font-weight:400;letter-spacing:-0.012em;line-height:1.15;margin:0 0 12px}
+h2{font-family:var(--serif);font-size:1.375rem;font-weight:400;margin:32px 0 8px;padding-top:16px;border-top:1px solid var(--line)}
 p,li{color:var(--fg-2)} strong{color:var(--fg);font-weight:500} em{color:var(--fg-3)}
 p.draft{font-size:.8125rem;color:var(--fg-3);border:1px solid var(--line-2);border-radius:var(--r);padding:8px 12px;background:var(--g1)}
 ul{padding-left:20px} li{margin:4px 0}
@@ -47,7 +48,7 @@ TEMPLATE = """<!doctype html>
 <meta name="robots" content="index,follow">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400&display=swap">
 <style>{css}</style>
 </head>
 <body>
