@@ -1195,6 +1195,67 @@ SSE_HEADERS = {
 }
 
 
+#: Seconds of silence on an event stream before a comment frame is sent so
+#: the proxies between the browser and this process (Vercel's rewrite, Fly's
+#: edge) do not take the connection for dead. The long batch decode in
+#: "Writing candidate versions" can go three minutes without a pipeline
+#: event; a friend's run on 2026-10-06 ended with "the stream ended before a
+#: result arrived" for exactly that reason. 15 s is well inside every idle
+#: timeout we know of and costs a dozen bytes.
+SSE_KEEPALIVE_S = 15.0
+SSE_KEEPALIVE = ": keepalive\n\n"
+
+
+def _with_keepalive(events: _Iterator[Any], interval: float = SSE_KEEPALIVE_S) -> _Iterator[Any]:
+    """Yield the items of `events`, and `None` whenever `interval` seconds pass
+    without one, so the caller can send a comment frame.
+
+    The source generator is driven on a worker thread and handed over through
+    a queue; this generator waits on the queue with a timeout. Closing this
+    generator (the client went away) asks the pump to stop and closes the
+    source at its next event, then waits for the pump so the caller's
+    `finally` (which releases the model lock) runs after the source is done.
+    Exceptions from the source are re-raised here, in order.
+    """
+    import queue as _queue
+
+    q: "_queue.Queue[tuple]" = _queue.Queue()
+    stop = threading.Event()
+
+    def pump() -> None:
+        try:
+            for item in events:
+                q.put(("event", item))
+                if stop.is_set():
+                    break
+        except BaseException as exc:  # noqa: BLE001 - handed to the consumer
+            q.put(("error", exc))
+        finally:
+            try:
+                events.close()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            q.put(("end", None))
+
+    worker = threading.Thread(target=pump, name="sse-pump", daemon=True)
+    worker.start()
+    try:
+        while True:
+            try:
+                kind, value = q.get(timeout=interval)
+            except _queue.Empty:
+                yield None
+                continue
+            if kind == "end":
+                return
+            if kind == "error":
+                raise value
+            yield value
+    finally:
+        stop.set()
+        worker.join(timeout=600)
+
+
 def llm_event_stream(body: LlmHumanizeRequest) -> _Iterator[str]:
     """The SSE body: one `progress` frame per pipeline event, then `result`.
 
@@ -1246,7 +1307,11 @@ def llm_event_stream(body: LlmHumanizeRequest) -> _Iterator[str]:
         if waited:
             yield sse_frame("progress", _queue_frame("done", waited))
         try:
-            for event in pipeline_mod.stream(body.text, config=_llm_config(body), detector=_request_judge(body)):
+            source = pipeline_mod.stream(body.text, config=_llm_config(body), detector=_request_judge(body))
+            for event in _with_keepalive(source):
+                if event is None:
+                    yield SSE_KEEPALIVE
+                    continue
                 payload = event.as_dict()
                 result = payload.pop("result", None)
                 yield sse_frame("progress", payload)
@@ -1728,11 +1793,15 @@ def guided_event_stream(body: GuidedHumanizeRequest) -> _Iterator[str]:
     from ..humanize import guided as guided_mod
 
     try:
-        for event in guided_mod.stream(
+        source = guided_mod.stream(
             body.text,
             config=_guided_config(body),
             guide=None if body.use_guide else False,
-        ):
+        )
+        for event in _with_keepalive(source):
+            if event is None:
+                yield SSE_KEEPALIVE
+                continue
             payload = event.as_dict()
             result = payload.pop("result", None)
             yield sse_frame("progress", payload)
