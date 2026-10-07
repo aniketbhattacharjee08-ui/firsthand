@@ -469,6 +469,16 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; bo
 .chip:hover { border-color: var(--accent-line); color: var(--fg); background: var(--g3); }
 .chip:active { background: var(--g4); transform: translateY(1px); }
 .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip-upload { border-color: var(--gold-line); color: var(--fg); }
+
+/* a file held over the draft: the pane body takes a dashed gold edge until it
+   is dropped or carried away. Set by app.js on #pane-before. */
+.pane-before[data-drop="1"] .pane-body {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+  background: rgba(253, 181, 21, 0.05);
+}
+.pane-before[data-drop="1"] .canvas, .pane-before[data-drop="1"] .empty-state { opacity: 0.4; }
 
 /* the quiet state of the after pane, before any run: a small live ASCII orbit
    and two sentences */

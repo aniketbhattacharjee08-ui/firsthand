@@ -452,6 +452,29 @@ backtick key is held (not while typing in a field). `buildConstruction()` in
   the clipboard.
 - A reading is stale (`data-stale` on `.reading`) when the text it scored is
   not the text in the pane.
+- Documents (2026-10-07). Upload (`#upload-btn` in the draft pane's foot,
+  the "Upload a file" chip in the empty state, or a file dropped on
+  `#pane-before`, which takes `data-drop="1"` and a dashed gold edge while
+  the file is over it) posts the file to `POST /api/documents/extract` and
+  puts the text in the draft; `.docx`, `.pdf`, `.txt` and `.md`, 8 MB at
+  most. The file stays in `state.doc` so Download (`#download-btn`, next to
+  Copy) can post the rewrite to `POST /api/documents/export` and get a
+  document back: an uploaded Word file with its words replaced and its
+  formatting kept, a `.txt` or `.md` as it came, anything else a fresh
+  `.docx`. The status line says what was loaded ("Loaded essay.docx: 1,340
+  words on 4 pages. 3 headings will stay as they are. The rewrite runs in 2
+  parts.") and what was downloaded.
+- Parts (`planParts`, `runParts`, `mergeParts`). A draft is cut into
+  segments: headings (eight words or fewer, no sentence-ending punctuation,
+  not a list item; the same rule as the server's
+  `documents.looks_like_heading`) are kept verbatim and never sent, and the
+  prose between them is grouped into runs under the service's word limit,
+  which go one after another through the ordinary attempts. The progress
+  card's title becomes "Rewriting part i of n" and its checklist restarts
+  per part (`progNextPart`). The merged result reads like a single run:
+  readings word-weighted across parts, counts summed, edits concatenated,
+  and a "document" row in the run summary. A pasted paragraph with no
+  heading is one request, exactly as before.
 - Events for the modules: `humanizer:ready`, `humanizer:canvas`,
   `humanizer:verdict`, `humanizer:analysis`, `humanizer:progress-open`,
   `humanizer:progress`, `humanizer:progress-close`, `humanizer:split`,
@@ -481,8 +504,8 @@ backtick key is held (not while typing in a field). `buildConstruction()` in
 - No slogans, badges, eyebrow labels, sparkle icons, or the words seamless,
   unlock, transform, AI-powered. No claims the page cannot back.
 - Errors say what happened and what to do next. Empty states say what to do.
-- Actions keep their names through the flow: Humanize, Measure, Use this,
-  Undo, Copy.
+- Actions keep their names through the flow: Humanize, Measure, Upload,
+  Use this, Undo, Copy, Download.
 
 ## Icons
 

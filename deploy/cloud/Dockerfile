@@ -28,7 +28,7 @@ COPY web ./web
 COPY deploy/cloud/entrypoint.sh /usr/local/bin/vervly-entrypoint
 # Editable install so detectors/local.py finds data/ under the repo root
 # (the surrogate path is derived from the package file's location).
-RUN pip install -e ".[api,oauth]" && chmod +x /usr/local/bin/vervly-entrypoint
+RUN pip install -e ".[api,oauth,docs]" && chmod +x /usr/local/bin/vervly-entrypoint
 
 # Reference distributions are small and gitignored; copy whatever is present.
 COPY data/reference ./data/reference

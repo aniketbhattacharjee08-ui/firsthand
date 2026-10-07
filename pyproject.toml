@@ -28,6 +28,9 @@ quality = ["language-tool-python>=2.7"]
 api = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27", "python-multipart>=0.0.9"]
 # Sign in with Apple needs an ES256-signed client secret; Google does not.
 oauth = ["cryptography>=42"]
+# Document upload: .docx and .txt are read with the standard library; PDFs
+# need pypdf (pure Python). Without it the extract route answers 501 for PDFs.
+docs = ["pypdf>=4"]
 dev = ["pytest>=7.4"]
 
 [project.scripts]

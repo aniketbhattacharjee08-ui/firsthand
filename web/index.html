@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Vervly</title>
-<meta name="description" content="Paste a draft. Vervly rewrites it so it reads as written by a person, keeps every name and number, and shows the detector reading before and after. 1,000 words free, no account needed.">
+<meta name="description" content="Paste a draft or upload a document. Vervly rewrites it so it reads as written by a person, keeps every name and number, and shows the detector reading before and after. 1,000 words free, no account needed.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0a0e20">
 <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
@@ -19,9 +19,9 @@
 <noscript><link rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Barlow+Condensed:wght@500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
 
-<link rel="stylesheet" href="/styles.css?v=202610071330">
-<link rel="stylesheet" href="/brand/footer.css?v=202610071330">
-<link rel="stylesheet" href="/site.css?v=202610071330">
+<link rel="stylesheet" href="/styles.css?v=202610071600">
+<link rel="stylesheet" href="/brand/footer.css?v=202610071600">
+<link rel="stylesheet" href="/site.css?v=202610071600">
 </head>
 <body>
 
@@ -65,7 +65,7 @@
     <section class="hero hero-app" aria-labelledby="hero-h">
       <p class="hero-eyebrow">Built at UC Berkeley</p>
       <h1 class="hero-h" id="hero-h">Your draft says what you mean. Now make it sound like you said it.</h1>
-      <p class="hero-p">Paste a paragraph. It comes back in plainer, more particular sentences with every name, number and claim still in place, and you see how a detector reads it before and after.</p>
+      <p class="hero-p">Paste a paragraph or upload a document. It comes back in plainer, more particular sentences with every name, number and claim still in place, and you see how a detector reads it before and after.</p>
       <ul class="trust" aria-label="What you get">
         <li><span class="num">1,000</span> words free, no account</li>
         <li>Every fact you wrote, kept</li>
@@ -100,10 +100,12 @@
                  role="textbox"
                  aria-multiline="true"
                  aria-label="Your draft"
-                 data-placeholder="Paste or type your draft here."></div>
+                 data-placeholder="Paste your draft here, or drop in a .docx, .pdf or .txt file."></div>
             <div class="empty-state" id="empty-state">
-              <p class="empty-body">Or try one of these.</p>
+              <p class="empty-body">Or upload a file, or try one of these.</p>
               <div class="samples">
+                <button class="chip chip-upload" type="button" data-upload
+                        title="Upload a .docx, .pdf, .txt or .md file. Its text becomes your draft.">Upload a file</button>
                 <button class="chip" type="button" data-sample="ai">Example</button>
                 <button class="chip" type="button" data-sample="letter">Cover letter</button>
                 <button class="chip" type="button" data-sample="report">Lab report</button>
@@ -114,6 +116,13 @@
           <footer class="pane-foot" data-c="foot" data-src="#doc-counts: counted here, not sent">
             <p class="counts num" id="doc-counts" aria-live="polite"></p>
             <div class="pane-acts">
+              <!-- the file input is never shown; the Upload buttons and a drop on
+                   the pane open it. POST /api/documents/extract turns the file into
+                   the draft; the file itself stays here for the Download. -->
+              <input type="file" id="doc-input" hidden tabindex="-1"
+                     accept=".docx,.pdf,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown">
+              <button id="upload-btn" class="btn" type="button" data-upload
+                      title="Upload a .docx, .pdf, .txt or .md file. Its text becomes your draft.">Upload</button>
               <button id="undo-btn" class="btn" type="button" hidden>Undo</button>
               <button id="analyze-btn" class="btn" type="button"
                       title="Score the draft as it stands. This also runs on its own once the draft is long enough.">
@@ -181,9 +190,11 @@
               </div>
             </div>
           </div>
-          <footer class="pane-foot" data-c="foot" data-src="#changed: summary.paragraphs_rewritten, edits, n_candidates_passed">
+          <footer class="pane-foot" data-c="foot" data-src="#changed: summary.paragraphs_rewritten, edits, n_candidates_passed; Download: POST /api/documents/export">
             <p class="counts" id="changed" aria-live="polite"></p>
             <div class="pane-acts">
+              <button id="download-btn" class="btn" type="button" disabled
+                      title="Download the rewrite as a document. An uploaded Word file keeps its formatting.">Download</button>
               <button id="copy-btn" class="btn" type="button" disabled title="Copy the rewrite">Copy</button>
               <button id="use-btn" class="btn" type="button" disabled title="Replace your draft with the rewrite">Use this</button>
             </div>
@@ -327,11 +338,11 @@
      region marked data-c, plus the spacing grid. Shown by the switch or the backtick key. -->
 <div id="construction" class="construction" aria-hidden="true" hidden></div>
 
-<script src="/app.js?v=202610071330" defer></script>
+<script src="/app.js?v=202610071600" defer></script>
 <!-- Progressive enhancement only. app.js renders everything; these modules
      animate it and draw the ASCII tiles. The page field is gone since
      2026-10-07; field.js still draws the tiles in the After pane. -->
-<script type="module" src="/anim.js?v=202610071330"></script>
-<script type="module" src="/field.js?v=202610071330"></script>
+<script type="module" src="/anim.js?v=202610071600"></script>
+<script type="module" src="/field.js?v=202610071600"></script>
 </body>
 </html>

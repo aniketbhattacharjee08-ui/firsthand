@@ -2193,3 +2193,157 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
     if enabled:
         _register_auth(app, auth_db, public_app=public_app)
     return app
+
+
+# ===========================================================================
+# Documents in, documents out:  GET  /api/documents/health
+#                               POST /api/documents/extract
+#                               POST /api/documents/export
+#
+# Appended below the auth block for the reasons the earlier blocks give. Both
+# POST routes are free in the billing gate: extraction and export are a
+# formality around the rewrite, which is charged on its own routes as before.
+# The front end uploads a file, drops the extracted text into the draft, runs
+# the ordinary rewrite, then asks for the result back as a document.
+# ===========================================================================
+
+from fastapi import File as _File, Form as _Form, UploadFile as _UploadFile  # noqa: E402
+from fastapi.responses import Response as _Response  # noqa: E402
+
+from .. import documents as _documents  # noqa: E402
+
+
+def _document_error(exc: "_documents.DocumentError") -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"error": exc.code, "detail": str(exc)})
+
+
+def _content_disposition(filename: str) -> str:
+    """`attachment` with an ASCII fallback and the UTF-8 name per RFC 5987."""
+    from urllib.parse import quote
+
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").replace('"', "") or "humanized"
+    return "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (ascii_name, quote(filename))
+
+
+async def _read_upload(upload: Optional["_UploadFile"], limit: int) -> bytes:
+    """The upload's bytes, stopping one byte past `limit` so a huge file is
+    refused without being held in memory."""
+    if upload is None:
+        return b""
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        chunks.append(chunk)
+        if total > limit:
+            break
+    return b"".join(chunks)
+
+
+def _register_document_routes(app: FastAPI) -> FastAPI:
+    @app.get("/api/documents/health")
+    def documents_health() -> JSONResponse:
+        """What the document routes accept: kinds, the size ceiling, PDF support."""
+        kinds = sorted(set(_documents.KINDS.values()))
+        if not _documents.pdf_available():
+            kinds = [k for k in kinds if k != "pdf"]
+        return _ok(
+            {
+                "available": True,
+                "kinds": kinds,
+                "extensions": sorted(ext for ext, k in _documents.KINDS.items() if k in kinds),
+                "pdf": _documents.pdf_available(),
+                "max_bytes": _documents.MAX_UPLOAD_BYTES,
+                "export_formats": sorted(_documents.EXPORT_MEDIA),
+                "rewrite_max_words": LLM_MAX_WORDS,
+            }
+        )
+
+    @app.post("/api/documents/extract")
+    async def documents_extract(file: "_UploadFile" = _File(...)) -> JSONResponse:
+        """The text of an uploaded .docx, .pdf, .txt or .md, paragraph by paragraph.
+
+        Multipart, one field `file`. Returns `text` (paragraphs separated by
+        blank lines, the shape the rewrite routes take), `paragraphs` with a
+        `locked` flag on headings, `n_words`, `n_pages` (PDF only) and
+        `warnings`. 415 for another kind of file, 413 past
+        `MAX_UPLOAD_BYTES`, 422 when no text is found, 501 for a PDF on a
+        server without the `docs` extra, 400 for a file that will not open.
+        """
+        data = await _read_upload(file, _documents.MAX_UPLOAD_BYTES)
+        try:
+            extracted = _documents.extract(file.filename or "", data, file.content_type or "")
+        except _documents.DocumentError as exc:
+            return _document_error(exc)
+        return _ok(extracted.as_dict())
+
+    @app.post("/api/documents/export")
+    async def documents_export(
+        text: str = _Form(""),
+        format: str = _Form("docx"),
+        filename: str = _Form(""),
+        source: Optional["_UploadFile"] = _File(None),
+    ) -> Any:
+        """`text` written out as a document; the bytes come back as a download.
+
+        Multipart: `text`, `format` (`docx`, `txt` or `md`), `filename` (the
+        original upload's name, for the download's name) and, for `docx`,
+        the original `.docx` as `source` so the rewrite is written into it
+        with its formatting kept. Without `source` the .docx is a fresh one.
+        """
+        src = await _read_upload(source, _documents.MAX_UPLOAD_BYTES) if source is not None else b""
+        if len(src) > _documents.MAX_UPLOAD_BYTES:
+            return _document_error(_documents.DocumentTooLarge("The source document is too large to write into."))
+        if src and _documents.kind_of(source.filename or "", source.content_type or "") != "docx":
+            src = b""
+        try:
+            data, media, ext = _documents.export(text, format, source=src or None)
+        except _documents.DocumentError as exc:
+            return _document_error(exc)
+        name = _documents.export_filename(filename, ext)
+        return _Response(
+            content=data,
+            media_type=media,
+            headers={
+                "Content-Disposition": _content_disposition(name),
+                "Cache-Control": "no-store",
+                "X-Document-Filename": name.encode("ascii", "ignore").decode("ascii"),
+            },
+        )
+
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_documents = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+    auth: Optional[bool] = None,
+    auth_db: Optional[Path] = None,
+    public_app: Optional[bool] = None,
+) -> FastAPI:
+    """Build the ASGI application, document routes included.
+
+    Identical to the definition above plus `_register_document_routes`.
+    """
+    app = _create_app_without_documents(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+        auth=auth,
+        auth_db=auth_db,
+        public_app=public_app,
+    )
+    return _register_document_routes(app)

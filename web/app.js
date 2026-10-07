@@ -319,7 +319,8 @@
     preHumanize: null,    /* the draft as it was before Use this, for undo */
     yardstick: null,      /* null = the service has not said; 'gptzero' or a local model name */
     requestToken: 0,
-    openMeasure: null
+    openMeasure: null,
+    doc: null             /* the uploaded file, if any: {name, kind, file, nPages}; the Download writes into it */
   };
 
   var editor, scroller, statusLine, errorBox;
@@ -447,6 +448,7 @@
   function refreshAfterActions() {
     var h = state.humanize;
     $('copy-btn').disabled = !h;
+    $('download-btn').disabled = !h || !!activeRun;
     $('use-btn').disabled = !h || h.unchanged || rewriteInUse() || !!activeRun;
   }
 
@@ -485,6 +487,9 @@
     var s = state.located.length;
     var t = w + ' ' + plural(w, 'word');
     if (s) t += ', ' + s + ' ' + plural(s, 'sentence');
+    if (state.doc && state.doc.name) {
+      t = state.doc.name + (state.doc.nPages ? ', ' + state.doc.nPages + ' ' + plural(state.doc.nPages, 'page') : '') + ': ' + t;
+    }
     node.textContent = t;
   }
 
@@ -922,6 +927,13 @@
       ].filter(Boolean).join(', '));
     }
     addRow(host, 'edits', h.edits.length);
+    var parts = loose(sm.parts), kept = loose(sm.headings_kept);
+    if ((parts !== null && parts > 1) || (kept !== null && kept > 0)) {
+      addRow(host, 'document', [
+        parts !== null && parts > 1 ? parts + ' parts, one after another' : null,
+        kept ? kept + ' ' + plural(kept, 'heading') + ' kept as written' : null
+      ].filter(Boolean).join(', '));
+    }
     var secs = loose(sm.seconds) !== null ? loose(sm.seconds) : h.elapsed;
     if (secs !== null && secs !== undefined) addRow(host, 'time', secs.toFixed(1) + 's');
     var tps = loose(sm.tokens_per_second);
@@ -1132,6 +1144,25 @@
       prog.warned = true;
       progSetNote('warn', 'Still running. Long drafts take a few minutes on this machine. You can stop at any time and keep your draft.');
     }
+  }
+
+  /* a document in parts: the checklist starts again for part i of n, the
+     elapsed time keeps running */
+  function progNextPart(i, n, nWords) {
+    if (!prog.open) return;
+    progStopEstimate();
+    prog.mode = 'unknown';
+    prog.eta = null;
+    progSetStages(stageList());
+    $('progress-title').textContent = 'Rewriting part ' + i + ' of ' + n;
+    progSetEngine('Contacting the service', null);
+    progSetNote(null, (nWords ? 'About ' + nWords + ' words in this part. ' : '') + 'Your draft is not touched until every part finishes.');
+    progSay('Part ' + i + ' of ' + n + ' started.');
+    if (prog.armTimer) clearTimeout(prog.armTimer);
+    prog.armTimer = setTimeout(function () {
+      prog.armTimer = null;
+      if (prog.mode === 'unknown') progStartEstimate('estimated');
+    }, 900);
   }
 
   function progStopEstimate() {
@@ -1373,7 +1404,7 @@
     if (activeRun) { setHumanizeState('busy'); measure.disabled = true; refreshAfterActions(); return; }
     measure.disabled = !state.text.trim();
     renderFlow();
-    if (!state.text.trim()) { setHumanizeState('empty', 'Paste or type a draft first.'); refreshAfterActions(); return; }
+    if (!state.text.trim()) { setHumanizeState('empty', 'Paste a draft or upload a file first.'); refreshAfterActions(); return; }
     setHumanizeState('ready');
     refreshAfterActions();
   }
@@ -1670,20 +1701,182 @@
       progStage(key, { status: d.status, progress: d.progress, detail: detail });
     };
 
+    /* A pasted paragraph or two is one request, exactly as before. A document
+       is planned into parts: headings are kept out of the request altogether,
+       and the prose between them is cut into runs the service's word limit
+       allows, which go one after another through the same pipeline. */
+    var plan = planParts(text);
+    if (plan.nChunks <= 1 && !plan.nLocked) return runPart(text, body, signal, sink);
+    return runParts(plan, body, signal, sink);
+  }
+
+  /* one request for `text`: the streaming route, then the blocking one, then
+     the rule engine; or the rule engine straight away when the service cannot
+     run the pipeline or the text is past its word limit */
+  function runPart(text, body, signal, sink) {
+    var part = {};
+    for (var k in body) if (Object.prototype.hasOwnProperty.call(body, k)) part[k] = body[k];
+    part.text = text;
     var attempts = [];
     var nWords = words(text).length;
     var over = caps.maxWords !== null && nWords > caps.maxWords;
     if (caps.llmReady === false || over) {
       progSwitchToRule(over
-        ? 'This draft is ' + nWords + ' words, past the ' + caps.maxWords + ' word limit of the rewrite pipeline.'
+        ? 'This part is ' + nWords + ' words, past the ' + caps.maxWords + ' word limit of the rewrite pipeline.'
         : (caps.llmReason ? 'The rewrite pipeline cannot run: ' + caps.llmReason : ''));
       attempts.push({ path: RULE_PATH, engine: 'rule', stream: false });
-      return runAttempts(attempts, 0, body, signal, sink);
+      return runAttempts(attempts, 0, part, signal, sink);
     }
     attempts.push({ path: LLM_STREAM_PATH, engine: 'llm', stream: true });
     attempts.push({ path: LLM_BLOCKING_PATH, engine: 'llm', stream: false });
     attempts.push({ path: RULE_PATH, engine: 'rule', stream: false });
-    return runAttempts(attempts, 0, body, signal, sink);
+    return runAttempts(attempts, 0, part, signal, sink);
+  }
+
+  /* ── documents: parts ───────────────────────────────────────────────────
+     The service splits on blank lines (single newlines when there are none)
+     and caps a request at caps.maxWords. The plan mirrors that: a list of
+     segments in document order, each a locked paragraph (a heading, kept
+     verbatim) or a chunk of consecutive prose paragraphs under the cap. */
+
+  var HEADING_MAX_WORDS = 8;
+
+  function splitParagraphs(text) {
+    var t = text.trim();
+    if (!t) return [];
+    var parts = t.split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length === 1 && t.indexOf('\n') >= 0) {
+      parts = t.split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+    }
+    return parts;
+  }
+
+  /* the same rule as the service's documents.looks_like_heading: short, no
+     sentence-ending punctuation, not a list item */
+  function looksLikeHeading(para) {
+    var t = para.trim();
+    if (!t || t.indexOf('\n') >= 0) return false;
+    if (/[.!?;:,]['"”’)\]]*$/.test(t)) return false;
+    if (/^\s*(?:[-*•]|\d+[.)]|[a-zA-Z][.)])\s+/.test(t)) return false;
+    var n = words(t).length;
+    return n > 0 && n <= HEADING_MAX_WORDS;
+  }
+
+  function planParts(text) {
+    var paras = splitParagraphs(text);
+    var cap = caps.maxWords !== null && caps.maxWords > 0 ? caps.maxWords : Infinity;
+    var segments = [], open = null, nLocked = 0, nChunks = 0;
+    function close() { if (open) { segments.push(open); open = null; } }
+    paras.forEach(function (para) {
+      if (looksLikeHeading(para)) {
+        close();
+        segments.push({ kind: 'locked', text: para });
+        nLocked++;
+        return;
+      }
+      var n = words(para).length;
+      if (open && open.words + n > cap && open.paras.length) close();
+      if (!open) { open = { kind: 'chunk', paras: [], words: 0 }; nChunks++; }
+      open.paras.push(para);
+      open.words += n;
+    });
+    close();
+    segments.forEach(function (sg) { if (sg.kind === 'chunk') sg.text = sg.paras.join('\n\n'); });
+    return { segments: segments, nChunks: nChunks, nLocked: nLocked, paragraphs: paras.length };
+  }
+
+  /* the chunks one after another, each through runPart with the same sink;
+     the progress card restarts its checklist for every part after the first */
+  function runParts(plan, body, signal, sink) {
+    var chunks = plan.segments.filter(function (sg) { return sg.kind === 'chunk'; });
+    var results = [];
+    var t0 = Date.now();
+    function next(i) {
+      if (i >= chunks.length) return Promise.resolve(mergeParts(plan, chunks, results, (Date.now() - t0) / 1000));
+      if (chunks.length > 1) progNextPart(i + 1, chunks.length, chunks[i].words);
+      return runPart(chunks[i].text, body, signal, sink).then(function (res) {
+        results.push(res);
+        return next(i + 1);
+      });
+    }
+    return next(0);
+  }
+
+  /* one result in the shape finishHumanize reads: the rewritten chunks and
+     the headings back in document order, readings word-weighted across the
+     chunks, the counts summed, the edits concatenated */
+  function mergeParts(plan, chunks, results, elapsed) {
+    var raws = results.map(function (r) { return r.raw && typeof r.raw === 'object' ? r.raw : {}; });
+    var j = 0;
+    var out = plan.segments.map(function (sg) {
+      if (sg.kind === 'locked') return sg.text;
+      var r = raws[j++] || {};
+      var text = pickString(r.humanized, r.rewritten, r.output, r.text);
+      return text.trim() ? text.trim() : chunks[j - 1].text;
+    });
+    function weighted(sideKey, labelKey) {
+      var num_ = 0, den = 0, labels = {};
+      raws.forEach(function (r, i) {
+        var o = r[sideKey] && typeof r[sideKey] === 'object' ? r[sideKey] : {};
+        var p = loose(o.ai_probability); if (p === null) p = loose(o.probability);
+        var w = chunks[i] ? chunks[i].words : 1;
+        if (p !== null) { num_ += p * w; den += w; }
+        var sm = r.summary && typeof r.summary === 'object' ? r.summary : {};
+        var lab = labelOf(pickString(sm[labelKey], o.label), p).label;
+        if (lab) labels[lab] = (labels[lab] || 0) + w;
+      });
+      var side_ = {};
+      if (den) side_.ai_probability = num_ / den;
+      var best = null;
+      Object.keys(labels).forEach(function (k) { if (best === null || labels[k] > labels[best]) best = k; });
+      if (best) side_.label = Object.keys(labels).length > 1 && den ? (num_ / den >= 0.5 ? 'ai' : 'human') : best;
+      return side_;
+    }
+    var before = weighted('before', 'label_before');
+    var after = weighted('after', 'label_after');
+    var summary = {};
+    var sums = ['n_candidates_total', 'n_candidates_passed', 'n_candidates_rejected', 'paragraphs_rewritten', 'paragraphs_unchanged', 'seconds'];
+    raws.forEach(function (r) {
+      var sm = r.summary && typeof r.summary === 'object' ? r.summary : {};
+      sums.forEach(function (k) { var v = loose(sm[k]); if (v !== null) summary[k] = (summary[k] || 0) + v; });
+      if (sm.gate_rejections && typeof sm.gate_rejections === 'object') {
+        summary.gate_rejections = summary.gate_rejections || {};
+        Object.keys(sm.gate_rejections).forEach(function (g) {
+          var v = loose(sm.gate_rejections[g]); if (v !== null) summary.gate_rejections[g] = (summary.gate_rejections[g] || 0) + v;
+        });
+      }
+      if (Array.isArray(sm.unverified_specifics)) summary.unverified_specifics = (summary.unverified_specifics || []).concat(sm.unverified_specifics);
+      if (summary.yardstick === undefined && sm.yardstick) summary.yardstick = sm.yardstick;
+      if (summary.facts_supplied === undefined && typeof sm.facts_supplied === 'boolean') summary.facts_supplied = sm.facts_supplied;
+      if (summary.model === undefined && typeof sm.model === 'string') summary.model = sm.model;
+    });
+    if (plan.nLocked) summary.paragraphs_unchanged = (summary.paragraphs_unchanged || 0) + plan.nLocked;
+    summary.parts = chunks.length;
+    summary.headings_kept = plan.nLocked;
+    if (before.label) summary.label_before = before.label;
+    if (after.label) summary.label_after = after.label;
+    if (before.label && after.label) summary.verdict_flipped = before.label === 'ai' && after.label === 'human';
+    var edits = [];
+    raws.forEach(function (r) { if (Array.isArray(r.edits)) edits = edits.concat(r.edits); });
+    var engines = results.map(function (r) { return r.engine; });
+    var engine = engines.every(function (e) { return e === 'llm'; }) ? 'llm' : (engines.every(function (e) { return e === 'rule'; }) ? 'rule' : 'llm');
+    var last = raws[raws.length - 1] || {};
+    return {
+      raw: {
+        humanized: out.join('\n\n'),
+        before: before,
+        after: after,
+        summary: summary,
+        edits: edits,
+        stages: Array.isArray(last.stages) ? last.stages : [],
+        model: pickString(last.model, summary.model),
+        aggressiveness: last.aggressiveness,
+        elapsed: elapsed
+      },
+      engine: engine,
+      streamed: results.some(function (r) { return r.streamed === true; }),
+      stages: results.length ? results[results.length - 1].stages : []
+    };
   }
 
   function humanize() {
@@ -1982,6 +2175,171 @@
   }
 
   /* ── status, errors, the analyze cycle ───────────────────────────────── */
+
+  /* ── documents: upload and download ────────────────────────────────────
+     A .docx, .pdf, .txt or .md file becomes the draft through
+     POST /api/documents/extract; the file itself stays in this page so the
+     Download can write the rewrite back into it (POST /api/documents/export,
+     formatting kept for a Word file). Nothing here is charged; the rewrite
+     is charged on its own routes as always. */
+
+  var DOC_EXTRACT_PATH = '/api/documents/extract';
+  var DOC_EXPORT_PATH = '/api/documents/export';
+  var DOC_EXTENSIONS = /\.(docx|pdf|txt|text|md|markdown)$/i;
+  var DOC_MAX_BYTES = 8 * 1024 * 1024;
+  var loadingDoc = false;
+
+  function docKind(name) {
+    var m = DOC_EXTENSIONS.exec(name || '');
+    if (!m) return null;
+    var ext = m[1].toLowerCase();
+    return ext === 'text' ? 'txt' : ext === 'markdown' ? 'md' : ext;
+  }
+
+  function fmtBytes(n) {
+    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+
+  function loadDocument(file) {
+    if (!file) return;
+    if (activeRun) { setStatus('idle', 'A rewrite is running. Stop it before loading a file.'); return; }
+    var kind = docKind(file.name);
+    if (!kind) { setStatus('error', 'Only .docx, .pdf, .txt and .md files are read. ' + file.name + ' is something else.'); return; }
+    if (file.size > DOC_MAX_BYTES) { setStatus('error', file.name + ' is ' + fmtBytes(file.size) + '; the largest accepted is 8 MB.'); return; }
+    if (loadingDoc) return;
+    loadingDoc = true;
+
+    setStatus('loading', 'Reading ' + file.name + '.');
+    var fd = new FormData();
+    fd.append('file', file, file.name);
+    fetch(API_BASE + DOC_EXTRACT_PATH, { method: 'POST', body: fd, headers: { Accept: 'application/json' }, cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) return httpFail(res);
+        return res.json();
+      })
+      .then(function (d) {
+        var text = d && typeof d.text === 'string' ? d.text : '';
+        if (!text.trim()) throw new Error('no text was found in the file');
+        state.humanize = null; state.afterLocated = []; state.preHumanize = null; state.reading = null; state.view = 'reading';
+        $('undo-btn').hidden = true;
+        renderRun(); renderEdits(); renderAfter();
+        state.doc = { name: file.name, kind: pickString(d.kind, kind), file: file, nPages: loose(d.n_pages), nWords: loose(d.n_words) };
+        setText(text);
+        var n = words(text).length;
+        var line = 'Loaded ' + file.name + ': ' + n + ' ' + plural(n, 'word');
+        if (state.doc.nPages) line += ' on ' + state.doc.nPages + ' ' + plural(state.doc.nPages, 'page');
+        line += '.';
+        var locked = loose(d.n_locked);
+        if (locked) line += ' ' + locked + ' ' + plural(locked, 'heading') + ' will stay as ' + (locked === 1 ? 'it is' : 'they are') + '.';
+        var plan = planParts(text);
+        if (plan.nChunks > 1) line += ' The rewrite runs in ' + plan.nChunks + ' parts.';
+        if (Array.isArray(d.warnings) && d.warnings.length) line += ' ' + d.warnings.join(' ');
+        /* no measurement yet: it would overwrite this line within a second.
+           Measure, an edit, or the Humanize run itself scores the draft. */
+        setStatus('ok', line);
+        emit('humanizer:document', { name: file.name, kind: state.doc.kind, words: n });
+      }, function (err) {
+        var msg = (err && err.message) || 'unknown error';
+        if (err && err.status === 404) msg = 'this server does not read files yet';
+        setStatus('error', 'Could not read ' + file.name + ': ' + msg.replace(/^HTTP \d+: /, '') + '.');
+      })
+      .then(function () { loadingDoc = false; });
+  }
+
+  function saveBlob(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = name; a.rel = 'noopener';
+    a.style.position = 'fixed'; a.style.left = '-200vw';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /* the rewrite as a file: the uploaded Word file with its words replaced,
+     the uploaded .txt or .md's kind, else a fresh .docx */
+  function downloadRewrite() {
+    var h = state.humanize;
+    if (!h || !h.text.trim() || activeRun) return;
+    var doc = state.doc;
+    var fmt = doc && (doc.kind === 'txt' || doc.kind === 'md') ? doc.kind : 'docx';
+    var base = doc && doc.name ? doc.name.replace(/\.[^.]+$/, '') : 'draft';
+    var name = base + ' humanized.' + fmt;
+    var fd = new FormData();
+    fd.append('text', h.text);
+    fd.append('format', fmt);
+    fd.append('filename', doc && doc.name ? doc.name : 'draft');
+    if (doc && doc.kind === 'docx' && doc.file) fd.append('source', doc.file, doc.name);
+    var btn = $('download-btn');
+    btn.disabled = true;
+    setStatus('loading', 'Preparing ' + name + '.');
+    fetch(API_BASE + DOC_EXPORT_PATH, { method: 'POST', body: fd, cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) return httpFail(res);
+        var header = res.headers.get('X-Document-Filename');
+        if (header) name = header;
+        return res.blob();
+      })
+      .then(function (blob) {
+        saveBlob(blob, name);
+        setStatus('ok', 'Downloaded ' + name + '.');
+      }, function (err) {
+        var msg = (err && err.message) || 'unknown error';
+        if (err && err.status === 404) msg = 'this server does not write files yet';
+        setStatus('error', 'Could not prepare the download: ' + msg.replace(/^HTTP \d+: /, '') + '. Copy still works.');
+      })
+      .then(function () { refreshAfterActions(); });
+  }
+
+  function wireDocuments() {
+    var input = $('doc-input');
+    if (!input) return;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-upload]'), function (b) {
+      b.addEventListener('click', function () { input.value = ''; input.click(); });
+    });
+    input.addEventListener('change', function () {
+      if (input.files && input.files[0]) loadDocument(input.files[0]);
+    });
+    var dl = $('download-btn');
+    if (dl) dl.addEventListener('click', downloadRewrite);
+
+    /* a file dragged over the draft pane: the dashed edge, then the load.
+       Text drags are left to the browser. */
+    var pane = $('pane-before');
+    if (!pane) return;
+    var depth = 0;
+    function hasFiles(e) {
+      var types = e.dataTransfer && e.dataTransfer.types;
+      if (!types) return false;
+      for (var i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
+      return false;
+    }
+    pane.addEventListener('dragenter', function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth++;
+      pane.setAttribute('data-drop', '1');
+    });
+    pane.addEventListener('dragover', function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    });
+    pane.addEventListener('dragleave', function (e) {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) pane.removeAttribute('data-drop');
+    });
+    pane.addEventListener('drop', function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      pane.removeAttribute('data-drop');
+      var f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) loadDocument(f);
+    });
+  }
 
   function setStatus(kind, message) {
     statusLine.setAttribute('data-state', kind);
@@ -2985,6 +3343,7 @@
     $('use-btn').addEventListener('click', function () { useRewrite(); });
     $('copy-btn').addEventListener('click', function () { copyRewrite(); });
     $('progress-cancel').addEventListener('click', function () { cancelHumanize(); });
+    wireDocuments();
 
     Array.prototype.forEach.call(document.querySelectorAll('[data-go]'), function (b) {
       b.addEventListener('click', function () { goTo(b.getAttribute('data-go')); });
@@ -3012,6 +3371,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-sample]'), function (b) {
       b.addEventListener('click', function () {
         state.humanize = null; state.afterLocated = []; state.preHumanize = null; state.reading = null; state.view = 'reading';
+        state.doc = null;
         $('undo-btn').hidden = true;
         renderRun(); renderEdits(); renderAfter();
         setText(SAMPLES[b.getAttribute('data-sample')] || SAMPLE);
