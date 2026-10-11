@@ -184,6 +184,7 @@ from ..features import extract_from_document
 from ..text import Document, normalize, split_paragraphs, words
 from . import kriukow
 from . import llm as llm_mod
+from . import voice as voice_mod
 from .engine import _NUMBER_RE, invariants
 # `_gate` and `_resolve_overlaps` are engine internals. They are imported
 # rather than reimplemented because a second copy of the overlap rule and the
@@ -743,6 +744,12 @@ class PipelineConfig:
         default_factory=lambda: (os.environ.get("HUMANIZER_REPAIR_CRITIC") or "").strip().lower()
         in ("1", "true", "yes", "on")
     )
+
+    #: Your voice (`voice.VoiceSpec`): the user's own samples as the
+    #: freeform exemplars and their fingerprint as a ranking term among the
+    #: candidates that already pass the detector gate. None means the stock
+    #: exemplars and no voice term. Attached per request by `api.voice`.
+    voice: Optional[Any] = None
 
     def __post_init__(self) -> None:
         if self.objective not in GATE_PRESETS:
@@ -1312,7 +1319,9 @@ def stream(
                 pairs = [(outcome, spec) for outcome in batch_targets for spec in style_specs]
                 requests = [
                     llm_mod.GenerationRequest(
-                        prompt=llm_mod.build_prompt(outcome.original, spec, facts=cfg.facts),
+                        prompt=llm_mod.build_prompt(
+                            outcome.original, spec, facts=cfg.facts, shots=_voice_shots(cfg, outcome)
+                        ),
                         temperature=spec.temperature,
                         max_tokens=llm_mod.estimate_max_tokens(outcome.original),
                         tag=(outcome.index, spec.index),
@@ -1545,7 +1554,7 @@ def stream(
                 # Evasion first: the score is the objective. `quality_weight`
                 # is the knob that slowly reintroduces the writing bands; at
                 # its default of 0.0 this is a pure argmin over the proxy.
-                best = min(scored, key=lambda c: _rank_key(c, cfg))
+                best = _select_scored(scored, cfg)
             else:
                 # No detector: rank by the free writing heuristics (sentence
                 # length band, structure template penalty, a little drift).
@@ -1668,6 +1677,7 @@ def stream(
         "paragraphs_rewritten": sum(1 for o in outcomes if o.changed),
         "paragraphs_unchanged": sum(1 for o in outcomes if not o.changed),
         "facts_supplied": bool(cfg.facts and cfg.facts.strip()),
+        "voice": _voice_summary(cfg, outcomes),
         # Union over paragraphs, in order, of what the rejected best candidates
         # invented. Empty when facts were supplied and used, or when nothing
         # was rejected on an invariant.
@@ -1745,6 +1755,100 @@ def stream(
         result=payload,
         result_object=result,
     )
+
+
+def _voice_shots(cfg: PipelineConfig, outcome: ParagraphOutcome) -> Optional[Sequence[Tuple[str, str, str, str]]]:
+    """The user's exemplar triples for this paragraph, or None for the stock set.
+
+    `VoiceSpec.shots` is already the per-paragraph selection when the API
+    attached one set for the whole document; a spec may instead carry a
+    `shots_for(paragraph)` callable to pick per paragraph.
+    """
+    spec = cfg.voice
+    if spec is None:
+        return None
+    picker = getattr(spec, "shots_for", None)
+    if callable(picker):
+        shots = picker(outcome.original)
+        return tuple(shots) if shots else None
+    shots = getattr(spec, "shots", ())
+    return tuple(shots) if shots else None
+
+
+def _voice_distance(candidate: Candidate, cfg: PipelineConfig) -> float:
+    """`voice.profile_distance` for a candidate, measured once and kept in
+    `quality["voice_distance"]` so the wire shows it."""
+    cached = candidate.quality.get("voice_distance")
+    if cached is not None:
+        return float(cached)
+    spec = cfg.voice
+    profile = getattr(spec, "profile", None) if spec is not None else None
+    if profile is None or getattr(profile, "empty", True):
+        return 0.0
+    d = voice_mod.profile_distance(profile, candidate.scrubbed)
+    candidate.quality["voice_distance"] = round(d, 4)
+    return d
+
+
+def _select_scored(scored: Sequence[Candidate], cfg: PipelineConfig) -> Candidate:
+    """The winner among scored survivors.
+
+    Without a voice: the argmin of `_rank_key`, the `evade` objective.
+    With one: the detector gate stays hard. Candidates at or under
+    `pass_threshold` are the pool; among them the voice distance is added
+    to the probability at the spec's weight, so the one that reads human
+    *and* reads like the author wins. With no candidate under the
+    threshold the voice is ignored entirely: it may choose among
+    human-reading rewrites, never promote an AI-reading one.
+    """
+    spec = cfg.voice
+    if spec is None or getattr(spec, "profile", None) is None or getattr(spec.profile, "empty", True):
+        return min(scored, key=lambda c: _rank_key(c, cfg))
+    passers = [c for c in scored if c.ai_probability is not None and c.ai_probability <= cfg.pass_threshold]
+    if not passers:
+        return min(scored, key=lambda c: _rank_key(c, cfg))
+    w = float(getattr(spec, "weight", 0.5) or 0.0)
+    return min(passers, key=lambda c: (_rank_key(c, cfg) + w * _voice_distance(c, cfg), c.index))
+
+
+def _voice_summary(cfg: PipelineConfig, outcomes: Sequence[ParagraphOutcome]) -> Optional[Dict[str, Any]]:
+    """`summary["voice"]`: whether a voice was used and how close the shipped
+    rewrite sits to it. None when no voice was attached."""
+    spec = cfg.voice
+    if spec is None:
+        return None
+    if not getattr(spec, "usable", False):
+        return {"used": False, "reason": getattr(spec, "reason", "no_samples")}
+    distances: List[float] = []
+    for o in outcomes:
+        if o.chosen_index is None:
+            continue
+        for c in o.candidates:
+            if c.index == o.chosen_index and c.paragraph_index == o.index:
+                distances.append(_voice_distance(c, cfg))
+                break
+    match = round(1.0 - sum(distances) / len(distances), 4) if distances else None
+    # The per-paragraph picker records what it used; a static `shots` set
+    # was used for every paragraph, so its ids are the sample ids.
+    used = list(getattr(spec, "used_ids", None) or ())
+    if not used and getattr(spec, "shots", ()):
+        used = list(getattr(spec, "sample_ids", ()) or ())
+    on_used = getattr(spec, "on_used", None)
+    if used and callable(on_used):
+        try:
+            on_used(used)
+        except Exception:  # noqa: BLE001 - bookkeeping must not fail the run
+            pass
+    return {
+        "used": True,
+        "n_samples": len(getattr(spec, "sample_ids", ()) or ()),
+        # The ids the prompts actually leaned on; the feedback reweights these.
+        "sample_ids": used,
+        "strength": getattr(spec, "strength", voice_mod.DEFAULT_STRENGTH),
+        "match": match,
+        "run_id": getattr(spec, "run_id", "") or "",
+        "shots": len(getattr(spec, "shots", ()) or ()),
+    }
 
 
 def _rank_key(candidate: Candidate, cfg: PipelineConfig) -> float:

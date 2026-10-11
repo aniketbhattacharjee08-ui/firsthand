@@ -14,3 +14,5 @@ data/reference/*.json
 # accounts database (local sessions and users)
 data/auth.sqlite
 data/auth.sqlite-*
+data/voice.sqlite
+data/voice.sqlite-*

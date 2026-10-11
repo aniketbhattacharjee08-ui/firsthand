@@ -40,6 +40,8 @@ are called as-is so that the HTTP surface and the CLI can never drift apart.
 
 from __future__ import annotations
 
+import functools
+import logging
 import math
 import os
 import threading
@@ -72,7 +74,7 @@ from ..text import Document
 from .models import AnalyzeRequest, FeaturesRequest, PlanRequest, json_safe
 
 try:  # pragma: no cover - `api.models` already raises a readable error first
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, Field, PrivateAttr
 except ImportError:  # pragma: no cover
     raise
 
@@ -89,6 +91,8 @@ MIN_WORDS_FOR_SENTENCE_RISK = 5
 # Repo root, used to find data/ and web/ when the server is started from
 # somewhere other than the project directory.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+log = logging.getLogger("humanizer.api.server")
 
 
 # --------------------------------------------------------------- reference IO
@@ -934,6 +938,11 @@ LLM_JOB_TTL_S = 900.0
 class LlmHumanizeRequest(BaseModel):
     """Body for POST /api/humanize/llm, /api/humanize/stream and /jobs."""
 
+    #: Resolved at POST time by `api.voice.attach_voice` from the caller's
+    #: session: a `voice.VoiceSpec`, or None. Private so a parked job carries
+    #: it to the resume without a session, and so it never comes off the wire.
+    _voice: Any = PrivateAttr(default=None)
+
     text: str = Field(default="", description="Raw document text.")
     gptzero_api_key: Optional[str] = Field(
         default=None,
@@ -1007,6 +1016,16 @@ class LlmHumanizeRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None, description="Override the MLX model id."
+    )
+    voice: bool = Field(
+        default=False,
+        description=(
+            "Use the caller's own writing samples (Your voice): their ready "
+            "samples become the few-shot exemplars and their style profile "
+            "ranks among the candidates that already pass the detector gate. "
+            "Needs an account with at least one sample; otherwise the run "
+            "proceeds without it and `summary.voice.used` is false."
+        ),
     )
     repair_attempts: int = Field(
         default=0,
@@ -1107,6 +1126,7 @@ def _llm_config(body: LlmHumanizeRequest) -> Any:
         facts=body.facts,
         repair_attempts=body.repair_attempts,
         repair_time_budget_s=LLM_REPAIR_BUDGET_S,
+        voice=getattr(body, "_voice", None),
     )
 
 
@@ -1344,6 +1364,22 @@ def _reap_jobs(jobs: Dict[str, Dict[str, Any]]) -> None:
         jobs.pop(oldest, None)
 
 
+def _attach_voice(app: FastAPI, body: LlmHumanizeRequest, request: Request) -> None:
+    """Resolve the caller's voice into the body when `body.voice` is set.
+
+    The voice block at the end of this file installs `app.state.voice_attach`;
+    without it (an app built before that block, or tests of the LLM routes
+    alone) the field is ignored and the run proceeds as before.
+    """
+    hook = getattr(app.state, "voice_attach", None)
+    if hook is None or not body.voice:
+        return
+    try:
+        hook(body, request)
+    except Exception as exc:  # noqa: BLE001 - a voice failure must not fail the run
+        log.warning("voice: could not attach: %s", exc)
+
+
 def _register_llm_routes(app: FastAPI) -> FastAPI:
     """Add the LLM routes to an app built by the original `create_app`."""
     app.state.llm_jobs = {}
@@ -1386,7 +1422,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         )
 
     @app.post("/api/humanize/llm")
-    def humanize_llm_endpoint(body: LlmHumanizeRequest) -> JSONResponse:
+    def humanize_llm_endpoint(body: LlmHumanizeRequest, request: Request) -> JSONResponse:
         """Rewrite a document with the local LLM. Blocking; use /stream to watch.
 
         The body is a superset of `POST /api/humanize`: `original`,
@@ -1417,6 +1453,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         refusal = llm_precheck(body)
         if refusal is not None:
             return refusal
+        _attach_voice(app, body, request)
 
         from ..humanize import pipeline as pipeline_mod
 
@@ -1436,7 +1473,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         return _ok(result.as_dict())
 
     @app.post("/api/humanize/stream")
-    def humanize_llm_stream_post(body: LlmHumanizeRequest) -> Any:
+    def humanize_llm_stream_post(body: LlmHumanizeRequest, request: Request) -> Any:
         """Server-Sent Events over POST. See `llm_event_stream` for the format.
 
         Use this from `fetch()` + `ReadableStream`. A browser `EventSource` can
@@ -1454,6 +1491,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         refusal = llm_precheck(body)
         if refusal is not None:
             return refusal
+        _attach_voice(app, body, request)
         return StreamingResponse(
             llm_event_stream(body),
             media_type="text/event-stream",
@@ -1461,7 +1499,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         )
 
     @app.post("/api/humanize/jobs")
-    def humanize_llm_job(body: LlmHumanizeRequest) -> JSONResponse:
+    def humanize_llm_job(body: LlmHumanizeRequest, request: Request) -> JSONResponse:
         """Park a request and return a `job_id` for `EventSource`.
 
         The job holds only the request body. Nothing runs until the matching
@@ -1471,6 +1509,7 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
         refusal = llm_precheck(body)
         if refusal is not None:
             return refusal
+        _attach_voice(app, body, request)
         jobs = app.state.llm_jobs
         _reap_jobs(jobs)
         job_id = _uuid.uuid4().hex
@@ -2347,3 +2386,70 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
         public_app=public_app,
     )
     return _register_document_routes(app)
+
+
+# ===========================================================================
+# Your voice: GET /api/voice, POST /api/voice/samples, .../prepare,
+#             DELETE /api/voice/samples/{id}, DELETE /api/voice/liked/{id},
+#             POST /api/voice/settings, POST /api/voice/feedback
+#
+# Appended after the document block. The implementation is `api.voice`; this
+# block builds the store, hands the LLM routes their attach hook and gives
+# the preparer the instruct backend and the run lock. The page at /voice is
+# registered with the other pages in `api.auth`.
+# ===========================================================================
+
+from . import voice as _voice_mod  # noqa: E402
+
+
+def _register_voice_routes(app: FastAPI, voice_db: Optional[Path] = None) -> FastAPI:
+    """Install Your voice on an app built by `create_app`, then re-order mounts."""
+    from ..humanize import llm as _llm_mod
+
+    def instruct_backend() -> Any:
+        return _llm_mod.backend_for("faithful")
+
+    store = _voice_mod.VoiceStore(voice_db or _voice_mod.default_voice_db_path())
+    # The run lock guards one local GPU. A remote backend (HUMANIZER_LLM_URL)
+    # takes concurrent requests, and holding the lock through a remote call
+    # would park every rewrite behind a sample preparation.
+    lock = _RUN_LOCK if _llm_mod.remote_llm_url() is None else None
+    _voice_mod.register_voice_routes(app, store=store, backend_factory=instruct_backend, run_lock=lock)
+    app.state.voice_attach = functools.partial(_voice_mod.attach_voice, app)
+
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_voice = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+    auth: Optional[bool] = None,
+    auth_db: Optional[Path] = None,
+    public_app: Optional[bool] = None,
+    voice_db: Optional[Path] = None,
+) -> FastAPI:
+    """Build the ASGI application, Your voice included.
+
+    Identical to the definition above plus `_register_voice_routes`.
+    `voice_db` overrides the SQLite path (`HUMANIZER_VOICE_DB`, else
+    `voice.sqlite` beside the auth database).
+    """
+    app = _create_app_without_voice(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+        auth=auth,
+        auth_db=auth_db,
+        public_app=public_app,
+    )
+    return _register_voice_routes(app, voice_db=voice_db)

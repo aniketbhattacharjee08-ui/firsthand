@@ -296,6 +296,15 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
         if user is None:
             return _err(401, "login_required", "Sign in first.")
         store.delete_user(user["id"])
+        # Your voice: the samples and liked rewrites go with the account.
+        voice_store = getattr(request.app.state, "voice_store", None)
+        if voice_store is not None:
+            try:
+                voice_store.delete_user("b:" + str(user["id"]))
+                if user.get("auth_user_id"):
+                    voice_store.delete_user("a:" + str(user["auth_user_id"]))
+            except Exception:  # noqa: BLE001 - the account is already gone
+                pass
         response = JSONResponse({"deleted": True})
         response.delete_cookie(SESSION_COOKIE, path="/")
         return response

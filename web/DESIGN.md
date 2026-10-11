@@ -25,8 +25,9 @@ the top row, not sections on the landing (owner, 2026-10-07). Every asset URL is
 same file works from any of those paths. Bump `?v=` on everything you touch.
 `styles.css` carries the tokens and every component; `site.css` is the page
 around them (top row, hero, tool card, trust row, steps, pricing, Berkeley);
-`pricing.css` and `auth.css` are their pages' own; `home.css` remains only
-for the pricing page's older section classes.
+`pricing.css`, `voice.css` and `auth.css` are their pages' own; `home.css`
+remains only for the pricing page's older section classes. `GET /voice`
+serves `web/voice.html` (see "Your voice").
 
 A visitor who has not signed in is a guest: the paywall gives each client
 address one free allowance (`LONGHAND_GUEST_CREDITS`, 1,000 words),
@@ -121,6 +122,55 @@ server without auth still runs the app at `/index.html`. Sign out POSTs
 401 goes through `signInRequired()` in `app.js` (hooked in `request()` and
 `httpFail()`) to `/signin?next=/app`, once. The same `.account` group holds
 the balance and the Plans button when the paywall is on (see "Billing").
+
+## Your voice
+
+Since 2026-10-11 a signed-in user can teach the humanizer their own
+rhythm. The wire contract is `web/VOICE.md`; the server side is
+`humanizer.api.voice` (store, routes, the background preparer) and
+`humanizer.humanize.voice` (the fingerprint, the exemplar picker). Two
+tiers, neither of which trains anything: the user's samples replace the
+stock few-shot exemplars for the base model, and a style fingerprint
+(function words, punctuation, sentence-length spread, character trigrams;
+research/16) ranks among the candidates that already pass the detector
+gate. The gate is hard: a voice chooses among human-reading rewrites and
+never promotes an AI-reading one. Nothing the model writes is ever added
+to the samples; a thumbs up goes to a separate liked pile.
+
+- The page, `/voice` (`voice.html`, `voice.css`, `voice.js`, the
+  pricing page's shell): the doc-head "Your voice" with a one-sentence
+  lede and the privacy line; signed out, a `.notice` "Sign in to add your
+  writing." and every control disabled. Signed in: "Use my voice" (the
+  `#voice-switch` switch "Rewrite in my voice", the Strength select,
+  disabled with the hint "Add one sample first." until a sample is
+  ready); "Your samples" (title, a serif `.voice-input` textarea, a word
+  count in `.num` that turns `--mixed` under 80 or over 2,500 words, the
+  primary "Add sample", one row per sample with its words, status word
+  Ready / Preparing / Needs attention, excerpt, a two-click Remove and a
+  Try again on failed rows; the page polls `GET /api/voice` every 4 s
+  while anything is preparing); "What it learned" (trait rows from the
+  profile, label left, value right, note under); "What you liked" (the
+  liked pile with its own Remove); a four-item How it works. An upload
+  over 450 words arrives as parts titled "Title (part k)". A sample the
+  free detector reads as AI is refused with the server's sentence.
+- The app: a "Your voice" link in the top nav of every page. In the
+  console's left group, after the judge, `#voice-row`: the `#voice-switch`
+  switch "Sound like me" and a quiet `.voice-link` to `/voice`. Hidden
+  for a guest; shown disabled with "Add a sample to use this" when the
+  account has no ready sample; otherwise live, mirroring the server-side
+  setting (`POST /api/voice/settings`). With it on the run body carries
+  `voice: true`.
+- After a run that used the voice, the verdict strip gains `#voice-line`
+  ("In your voice. Match N percent.") and `#voice-votes`: two chips,
+  "Sounds like me" and "Not my voice", `aria-pressed` on the chosen one,
+  posting `/api/voice/feedback` with the draft, the rewrite, the run id
+  and the sample ids the prompts leaned on. A second click on the other
+  chip re-votes. The status line says what the vote did. Hidden when the
+  run kept the draft unchanged.
+- Copy rules hold: no em dashes, numerals in `.num`, text buttons only,
+  no icons. New styles reuse the tokens; the only additions are
+  `.voice-row`, `.voice-link`, `.voice-line`, `.voice-votes` and the
+  pressed state for `.btn` and `.chip`.
 
 ## Billing
 

@@ -450,6 +450,11 @@
     $('copy-btn').disabled = !h;
     $('download-btn').disabled = !h || !!activeRun;
     $('use-btn').disabled = !h || h.unchanged || rewriteInUse() || !!activeRun;
+    /* the votes: only for a rewrite the user's own samples shaped */
+    var canVote = !!(h && !h.unchanged && h.voice && h.voice.used === true && !activeRun);
+    var up = $('vote-up'), down = $('vote-down');
+    if (up) up.hidden = !canVote;
+    if (down) down.hidden = !canVote;
   }
 
   function renderCanvas() {
@@ -560,6 +565,7 @@
     kept.hidden = true;
     refused.hidden = true;
     clear(refused);
+    paintVoiceLine(h);
     beforeCell.removeAttribute('data-stale');
     afterCell.removeAttribute('data-stale');
 
@@ -1680,6 +1686,7 @@
     if (facts) body.facts = facts;
     var key = userKey();
     if (key) body.gptzero_api_key = key;
+    if (voiceOn()) body.voice = true;
 
     var sink = function (key, d) {
       progAdoptLive();
@@ -1836,7 +1843,7 @@
     var after = weighted('after', 'label_after');
     var summary = {};
     var sums = ['n_candidates_total', 'n_candidates_passed', 'n_candidates_rejected', 'paragraphs_rewritten', 'paragraphs_unchanged', 'seconds'];
-    raws.forEach(function (r) {
+    raws.forEach(function (r, i) {
       var sm = r.summary && typeof r.summary === 'object' ? r.summary : {};
       sums.forEach(function (k) { var v = loose(sm[k]); if (v !== null) summary[k] = (summary[k] || 0) + v; });
       if (sm.gate_rejections && typeof sm.gate_rejections === 'object') {
@@ -1849,7 +1856,12 @@
       if (summary.yardstick === undefined && sm.yardstick) summary.yardstick = sm.yardstick;
       if (summary.facts_supplied === undefined && typeof sm.facts_supplied === 'boolean') summary.facts_supplied = sm.facts_supplied;
       if (summary.model === undefined && typeof sm.model === 'string') summary.model = sm.model;
+      mergeVoice(summary, sm.voice, chunks[i] ? chunks[i].words : 1);
     });
+    if (summary.voice && summary.voice.used && summary.voice._den) {
+      summary.voice.match = summary.voice._num / summary.voice._den;
+      delete summary.voice._num; delete summary.voice._den;
+    }
     if (plan.nLocked) summary.paragraphs_unchanged = (summary.paragraphs_unchanged || 0) + plan.nLocked;
     summary.parts = chunks.length;
     summary.headings_kept = plan.nLocked;
@@ -1879,6 +1891,29 @@
     };
   }
 
+  /* the parts' voice summaries become one: used if any part used the
+     samples, the match word-weighted across those parts, the sample ids
+     the union, the run id the first one reported (the feedback route takes
+     one id, so a document's vote goes with its first part) */
+  function mergeVoice(summary, v, weight) {
+    if (!v || typeof v !== 'object') return;
+    var cur = summary.voice;
+    if (v.used === true) {
+      if (!cur || !cur.used) cur = summary.voice = { used: true, sample_ids: [], _num: 0, _den: 0 };
+      var m = loose(v.match);
+      if (m !== null) { cur._num += m * weight; cur._den += weight; }
+      if (typeof v.run_id === 'string' && !cur.run_id) cur.run_id = v.run_id;
+      if (typeof v.strength === 'string' && !cur.strength) cur.strength = v.strength;
+      var n = loose(v.n_samples);
+      if (n !== null && (cur.n_samples === undefined || n > cur.n_samples)) cur.n_samples = n;
+      if (Array.isArray(v.sample_ids)) v.sample_ids.forEach(function (id) {
+        if (typeof id === 'string' && cur.sample_ids.indexOf(id) < 0) cur.sample_ids.push(id);
+      });
+    } else if (!cur) {
+      summary.voice = { used: false, reason: typeof v.reason === 'string' ? v.reason : '' };
+    }
+  }
+
   function humanize() {
     var text = getText();
     if (!text.trim() || activeRun) return;
@@ -1904,6 +1939,7 @@
     }, LLM_CEILING_MS);
 
     refreshHumanizeButton();
+    resetVotes();
     setStatus('loading', 'Rewriting. Nothing is kept until it finishes.');
     progOpen();
 
@@ -2015,7 +2051,8 @@
       engine: res.engine,
       streamed: res.streamed === true,
       model: pickString(r.model, sm.model, caps.model),
-      elapsed: loose(r.elapsed) !== null ? loose(r.elapsed) : elapsed
+      elapsed: loose(r.elapsed) !== null ? loose(r.elapsed) : elapsed,
+      voice: voiceSummary(sm.voice)
     };
     state.afterLocated = [];
     state.view = 'run';
@@ -2038,16 +2075,17 @@
       if (invented.length) {
         var fold = $('facts-fold');
         if (fold) fold.open = true;
-        setStatus('idle', 'Kept your draft. The best rewrites added material that is not in it; the list is under the verdict.');
+        setStatus('idle', 'Kept your draft. The best rewrites added material that is not in it; the list is under the verdict.' + voiceNote());
       } else {
-        setStatus('idle', 'Kept your draft. ' + (state.humanize.reason || 'No rewrite passed the meaning gates.'));
+        setStatus('idle', 'Kept your draft. ' + (state.humanize.reason || 'No rewrite passed the meaning gates.') + voiceNote());
       }
       return;
     }
 
-    setStatus('ok', flipped
+    setStatus('ok', (flipped
       ? 'Done. ' + state.humanize.judge + ' reads the rewrite as ' + after.label + '. Use this makes it your draft.'
-      : 'Done. ' + state.humanize.judge + ' reads the rewrite as ' + (after.label || 'unscored') + '. Use this makes it your draft.');
+      : 'Done. ' + state.humanize.judge + ' reads the rewrite as ' + (after.label || 'unscored') + '. Use this makes it your draft.')
+      + voiceNote());
 
     /* the one judge call after a run: per sentence risk for the rewrite */
     analyzeAfter(state.humanize);
@@ -2999,6 +3037,150 @@
      is signed in, the visitor is a guest: the row shows a Sign in link and
      GET /api/me (billing) fills in the free words for this address. The
      page only leaves for the sign-in form when a product route answers 401. */
+  /* ── your voice ──────────────────────────────────────────────────────────
+     A signed-in user can upload a few pieces of their own writing on /voice.
+     GET /api/voice says whether there are any ready; the switch "Sound like
+     me" in the console sends voice: true with the run, and the result's
+     summary.voice says whether the samples were used and how close the
+     rewrite sits to the user's profile. The two votes under the rewrite go
+     to POST /api/voice/feedback. A guest sees none of this. */
+  var VOICE_PATH = '/api/voice';
+  var VOICE_SETTINGS_PATH = '/api/voice/settings';
+  var VOICE_FEEDBACK_PATH = '/api/voice/feedback';
+
+  var voice = {
+    available: false,     /* the route answered */
+    signedIn: false,
+    ready: 0,             /* samples with status "ready" */
+    enabled: false,       /* the user's switch, stored server side */
+    strength: '',
+    voting: false         /* a feedback post is in flight */
+  };
+
+  function voiceOn() {
+    return voice.available && voice.signedIn && voice.ready > 0 && switchOn($('voice-switch'));
+  }
+
+  /* summary.voice as the page keeps it, or null when the run had none */
+  function voiceSummary(v) {
+    if (!v || typeof v !== 'object') return null;
+    if (v.used !== true) return { used: false, reason: typeof v.reason === 'string' ? v.reason : '' };
+    return {
+      used: true,
+      match: loose(v.match),
+      n_samples: loose(v.n_samples),
+      strength: typeof v.strength === 'string' ? v.strength : '',
+      run_id: typeof v.run_id === 'string' ? v.run_id : '',
+      sample_ids: Array.isArray(v.sample_ids)
+        ? v.sample_ids.filter(function (id) { return typeof id === 'string' && id; })
+        : []
+    };
+  }
+
+  /* one sentence for the status line when the switch was on and the
+     samples were not used; nothing otherwise */
+  function voiceNote() {
+    var h = state.humanize;
+    var v = h && h.voice;
+    if (!v || v.used !== false) return '';
+    if (v.reason === 'no_samples') return ' Your voice was not used: add a sample first.';
+    if (v.reason === 'login_required') return ' Your voice was not used: sign in first.';
+    return '';
+  }
+
+  function paintVoiceLine(h) {
+    var line = $('voice-line');
+    if (!line) return;
+    var v = h && state.view === 'run' ? h.voice : null;
+    clear(line);
+    if (!v || v.used !== true) { line.hidden = true; return; }
+    line.appendChild(document.createTextNode('In your voice.'));
+    if (v.match !== null) {
+      line.appendChild(document.createTextNode(' Match '));
+      line.appendChild(el('span', 'num', String(Math.round(clamp(v.match, 0, 1) * 100))));
+      line.appendChild(document.createTextNode(' percent.'));
+    }
+    line.hidden = false;
+  }
+
+  function applyVoice(v) {
+    var row = $('voice-row');
+    var sw = $('voice-switch');
+    var link = $('voice-link');
+    if (!row || !sw) return;
+    var obj = v && typeof v === 'object' ? v : null;
+    voice.available = !!obj;
+    voice.signedIn = !!(obj && obj.signed_in === true);
+    voice.ready = obj ? (loose(obj.ready) || 0) : 0;
+    voice.enabled = !!(obj && obj.enabled === true);
+    voice.strength = obj && typeof obj.strength === 'string' ? obj.strength : '';
+    if (!voice.available || !voice.signedIn) { row.hidden = true; return; }
+    if (voice.ready > 0) {
+      sw.disabled = false;
+      setSwitch(sw, voice.enabled);
+      if (link) link.textContent = 'Your voice';
+    } else {
+      sw.disabled = true;
+      setSwitch(sw, false);
+      if (link) link.textContent = 'Add a sample to use this';
+    }
+    row.hidden = false;
+  }
+
+  function checkVoice() {
+    request(VOICE_PATH).then(applyVoice, function () { applyVoice(null); });
+  }
+
+  function wireVoice() {
+    var sw = $('voice-switch');
+    wireSwitch(sw, function (on) {
+      voice.enabled = on;
+      /* fire and forget; the switch goes back if the server did not take it */
+      request(VOICE_SETTINGS_PATH, { enabled: on }).then(function (res) {
+        if (res && typeof res.enabled === 'boolean') { voice.enabled = res.enabled; setSwitch(sw, res.enabled); }
+      }, function () {
+        voice.enabled = !on;
+        setSwitch(sw, !on);
+      });
+    });
+    var up = $('vote-up'), down = $('vote-down');
+    if (up) up.addEventListener('click', function () { voteVoice('up'); });
+    if (down) down.addEventListener('click', function () { voteVoice('down'); });
+  }
+
+  /* the votes go away and forget their press until the next result */
+  function resetVotes() {
+    var up = $('vote-up'), down = $('vote-down');
+    if (up) { up.hidden = true; up.setAttribute('aria-pressed', 'false'); }
+    if (down) { down.hidden = true; down.setAttribute('aria-pressed', 'false'); }
+  }
+
+  function voteVoice(vote) {
+    var h = state.humanize;
+    if (!h || !h.voice || h.voice.used !== true || voice.voting) return;
+    var up = $('vote-up'), down = $('vote-down');
+    var body = {
+      vote: vote,
+      original: h.source,
+      text: h.text,
+      run_id: h.voice.run_id,
+      sample_ids: h.voice.sample_ids
+    };
+    voice.voting = true;
+    request(VOICE_FEEDBACK_PATH, body).then(function () {
+      voice.voting = false;
+      if (up) up.setAttribute('aria-pressed', vote === 'up' ? 'true' : 'false');
+      if (down) down.setAttribute('aria-pressed', vote === 'down' ? 'true' : 'false');
+      setStatus('ok', vote === 'up'
+        ? 'Noted. That rewrite is kept as one you liked.'
+        : 'Noted. It will lean less on those samples next time.');
+    }, function (err) {
+      voice.voting = false;
+      var msg = ((err && err.message) || 'network error').replace(/^HTTP \d+: /, '');
+      setStatus('error', 'Your vote was not saved: ' + msg + '. Try again in a moment.');
+    });
+  }
+
   function checkAccount() {
     var box = $('account');
     if (!box) return;
@@ -3394,6 +3576,8 @@
     if (signoutBtn) signoutBtn.addEventListener('click', signOut);
     wireBilling();
     checkBilling();
+    wireVoice();
+    checkVoice();
 
     setText(PARAMS.get('sample') === 'ai' ? SAMPLE : '');
     refreshHumanizeButton();

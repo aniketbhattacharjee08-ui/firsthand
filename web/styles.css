@@ -264,6 +264,8 @@ summary::-webkit-details-marker { display: none; }
 .btn:active { background: var(--g4); transform: translateY(1px); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent-line); }
 .btn[disabled] { color: var(--fg-3); border-color: var(--line); background: transparent; cursor: not-allowed; transform: none; }
+/* a pressed toggle (the two votes under the rewrite): the hover surface, held */
+.btn[aria-pressed="true"] { border-color: var(--accent-line); background: var(--g3); }
 
 .btn-primary {
   background: var(--accent);
@@ -497,6 +499,12 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; bo
 .instrument[data-outcome="held"]    .pane-after { border-color: rgba(240, 132, 102, 0.4); }
 .instrument[data-outcome="mixed"]   .pane-after { border-color: rgba(232, 194, 90, 0.4); }
 .verdict-kept { font-size: var(--t-2); line-height: 1.55; color: var(--fg); max-width: 60ch; }
+/* one small line after a run the user's own samples shaped */
+.voice-line { font-size: var(--t-1); line-height: 1.55; color: var(--fg-2); max-width: 60ch; }
+.voice-line .num { color: var(--fg); }
+.voice-votes { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.voice-votes:not(:has(.chip:not([hidden]))) { display: none; }
+.chip[aria-pressed="true"] { border-color: var(--accent-line); background: var(--g3); color: var(--fg); }
 .verdict-refused { font-size: var(--t-1); line-height: 1.55; color: var(--fg-2); max-width: 60ch; }
 .refused-h { color: var(--fg); }
 .refused-list { margin: var(--s-1) 0; padding-left: 1.1em; display: grid; gap: 2px; }
@@ -1018,6 +1026,19 @@ a.wordmark:focus-visible { outline-offset: 4px; border-radius: 2px; }
 .cost { font-size: var(--t-1); color: var(--fg-3); line-height: 1.3; }
 .cost .num { color: var(--fg-2); }
 .cost[data-short="1"] { color: var(--mixed); }
+
+/* the "Sound like me" switch in the console and its quiet link to /voice.
+   The link sits beside the label, not inside it, so a click on it does not
+   flip the switch. */
+.voice-row { display: inline-flex; align-items: center; gap: var(--s-3); min-width: 0; }
+.voice-row .switch[disabled] + .switch-label { color: var(--fg-3); }
+.voice-link {
+  font-size: var(--t-1); line-height: 1.3; color: var(--fg-3);
+  text-decoration: none; text-underline-offset: 2px;
+  transition: color var(--fast) var(--ease);
+}
+.voice-link:hover { color: var(--fg-2); text-decoration: underline; }
+.voice-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 
 /* a button that reads as a link, inside a sentence */
 .link-btn {

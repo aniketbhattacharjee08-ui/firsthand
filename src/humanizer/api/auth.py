@@ -482,6 +482,15 @@ def register_auth(
                 return _err(404, "no_pricing_page", "web/pricing.html is missing.")
             return _page(page)
 
+        @app.get("/voice", include_in_schema=False)
+        def voice_page(request: Request) -> Any:
+            # Public like the others: the page explains itself to a visitor
+            # and the API answers signed_in: false until they sign in.
+            page = page_path("voice.html")
+            if page is None:
+                return _err(404, "no_voice_page", "web/voice.html is missing.")
+            return _page(page)
+
         @app.get("/signin", include_in_schema=False)
         @app.get("/signup", include_in_schema=False)
         def auth_page(request: Request) -> Any:
