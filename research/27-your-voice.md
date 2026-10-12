@@ -196,7 +196,10 @@ input, which the twin experiment also showed, so with it the exemplars
 pull content rather than style and the gates then reject the result. The
 plain base is unmeasured on the detector for these runs (every own-text
 draft already reads human to the surrogate); the cross-register plain-base
-voiced run is PLAINBASE_CROSS_PLACEHOLDER.
+voiced run settles it: 4 of 9 human against 7 of 9 with the shipped
+checkpoint, 2 of 9 on their author, mean distance 0.428, three
+fallbacks. The adapter is what passes the detector, and the detector comes
+first, so voiced runs keep the adapter.
 
 ## 3. What the numbers say, and what they do not
 
