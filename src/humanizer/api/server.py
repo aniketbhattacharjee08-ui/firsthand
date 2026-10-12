@@ -1027,6 +1027,14 @@ class LlmHumanizeRequest(BaseModel):
             "proceeds without it and `summary.voice.used` is false."
         ),
     )
+    voice_strength: Optional[str] = Field(
+        default=None,
+        description=(
+            "With `voice`, overrides the account's stored strength for this "
+            "one run: light, balanced or strong. The console's \"Run again "
+            "with less voice\" uses it."
+        ),
+    )
     repair_attempts: int = Field(
         default=0,
         ge=0,

@@ -455,6 +455,7 @@
     var up = $('vote-up'), down = $('vote-down');
     if (up) up.hidden = !canVote;
     if (down) down.hidden = !canVote;
+    paintRerunChip(h);
   }
 
   function renderCanvas() {
@@ -1686,7 +1687,17 @@
     if (facts) body.facts = facts;
     var key = userKey();
     if (key) body.gptzero_api_key = key;
-    if (voiceOn()) body.voice = true;
+    /* the one-run override from "Run again with less voice": a light
+       weighting, or the samples left out of this run altogether. The
+       user's switch and stored setting are not touched. */
+    var nextRun = voice.nextRun;
+    voice.nextRun = null;
+    voice.ranWith = nextRun;
+    if (nextRun && nextRun.off) { /* no voice in this body */ }
+    else if (voiceOn()) {
+      body.voice = true;
+      if (nextRun && typeof nextRun.strength === 'string') body.voice_strength = nextRun.strength;
+    }
 
     var sink = function (key, d) {
       progAdoptLive();
@@ -1870,6 +1881,8 @@
     if (before.label && after.label) summary.verdict_flipped = before.label === 'ai' && after.label === 'human';
     var edits = [];
     raws.forEach(function (r) { if (Array.isArray(r.edits)) edits = edits.concat(r.edits); });
+    var paragraphs = [];
+    raws.forEach(function (r) { if (Array.isArray(r.paragraphs)) paragraphs = paragraphs.concat(r.paragraphs); });
     var engines = results.map(function (r) { return r.engine; });
     var engine = engines.every(function (e) { return e === 'llm'; }) ? 'llm' : (engines.every(function (e) { return e === 'rule'; }) ? 'rule' : 'llm');
     var last = raws[raws.length - 1] || {};
@@ -1880,6 +1893,7 @@
         after: after,
         summary: summary,
         edits: edits,
+        paragraphs: paragraphs,
         stages: Array.isArray(last.stages) ? last.stages : [],
         model: pickString(last.model, summary.model),
         aggressiveness: last.aggressiveness,
@@ -2052,8 +2066,15 @@
       streamed: res.streamed === true,
       model: pickString(r.model, sm.model, caps.model),
       elapsed: loose(r.elapsed) !== null ? loose(r.elapsed) : elapsed,
-      voice: voiceSummary(sm.voice)
+      voice: voiceSummary(sm.voice),
+      pairs: voicePairs(r)
     };
+    /* the strength this run was sent with, should the summary not say */
+    if (state.humanize.voice && state.humanize.voice.used === true && !state.humanize.voice.strength &&
+        voice.ranWith && typeof voice.ranWith.strength === 'string') {
+      state.humanize.voice.strength = voice.ranWith.strength;
+    }
+    voice.ranWith = null;
     state.afterLocated = [];
     state.view = 'run';
 
@@ -3054,7 +3075,9 @@
     ready: 0,             /* samples with status "ready" */
     enabled: false,       /* the user's switch, stored server side */
     strength: '',
-    voting: false         /* a feedback post is in flight */
+    voting: false,        /* a feedback post is in flight */
+    nextRun: null,        /* { strength: 'light' } | { off: true } | null: one run's override, read by runRewrite */
+    ranWith: null         /* the override the run in flight was sent with */
   };
 
   function voiceOn() {
@@ -3075,6 +3098,52 @@
         ? v.sample_ids.filter(function (id) { return typeof id === 'string' && id; })
         : []
     };
+  }
+
+  /* the per-paragraph (draft, rewrite) pairs a vote sends: the changed
+     paragraphs only, from the result's paragraphs list */
+  function voicePairs(r) {
+    var paras = Array.isArray(r.paragraphs) ? r.paragraphs : [];
+    var pairs = [];
+    for (var i = 0; i < paras.length; i++) {
+      var p = paras[i];
+      if (!p || typeof p !== 'object') continue;
+      var original = typeof p.original === 'string' ? p.original : '';
+      var text = typeof p.humanized === 'string' ? p.humanized : '';
+      if (!original.trim() || !text.trim()) continue;
+      if (p.changed !== true && text.trim() === original.trim()) continue;
+      pairs.push({ original: original, text: text });
+    }
+    return pairs;
+  }
+
+  /* the third chip: after a run in the user's voice that still reads as
+     AI, the same draft again with the voice weighted lightly; after a
+     light run, without it. Hidden while a run is on and otherwise. */
+  function paintRerunChip(h) {
+    var chip = $('voice-rerun');
+    if (!chip) return;
+    var show = !!(h && h.voice && h.voice.used === true && h.after && h.after.label !== 'human' && !activeRun);
+    chip.hidden = !show;
+    if (!show) return;
+    if (h.voice.strength === 'light') {
+      chip.textContent = 'Run again without my voice';
+      chip.title = 'Runs the same draft again without your voice. Your switch stays as it is.';
+    } else {
+      chip.textContent = 'Run again with less voice';
+      chip.title = 'Runs the same draft again with your voice weighted lightly. If it still does not pass, the next click runs without it.';
+    }
+  }
+
+  /* the chip's click: one run with the override, through the normal path */
+  function rerunVoice() {
+    var h = state.humanize;
+    if (!h || !h.voice || h.voice.used !== true || activeRun) return;
+    var without = h.voice.strength === 'light';
+    voice.nextRun = without ? { off: true } : { strength: 'light' };
+    humanize();
+    if (!activeRun) { voice.nextRun = null; return; }
+    setStatus('loading', without ? 'Running again without your voice.' : 'Running again with less of your voice.');
   }
 
   /* one sentence for the status line when the switch was on and the
@@ -3146,6 +3215,8 @@
     var up = $('vote-up'), down = $('vote-down');
     if (up) up.addEventListener('click', function () { voteVoice('up'); });
     if (down) down.addEventListener('click', function () { voteVoice('down'); });
+    var rerun = $('voice-rerun');
+    if (rerun) rerun.addEventListener('click', rerunVoice);
   }
 
   /* the votes go away and forget their press until the next result */
@@ -3153,6 +3224,8 @@
     var up = $('vote-up'), down = $('vote-down');
     if (up) { up.hidden = true; up.setAttribute('aria-pressed', 'false'); }
     if (down) { down.hidden = true; down.setAttribute('aria-pressed', 'false'); }
+    var rerun = $('voice-rerun');
+    if (rerun) rerun.hidden = true;
   }
 
   function voteVoice(vote) {
@@ -3166,6 +3239,7 @@
       run_id: h.voice.run_id,
       sample_ids: h.voice.sample_ids
     };
+    if (Array.isArray(h.pairs) && h.pairs.length) body.pairs = h.pairs;
     voice.voting = true;
     request(VOICE_FEEDBACK_PATH, body).then(function () {
       voice.voting = false;

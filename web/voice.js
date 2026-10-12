@@ -310,11 +310,19 @@
     if (form) form.setAttribute('aria-disabled', isLive ? 'false' : 'true');
   }
 
+  /* the status word for a sample; while preparing, its place in the queue
+     when the server says: 0 is being prepared now, N has N ahead of it */
   function statusWord(s) {
-    if (s === 'ready') return 'Ready';
-    if (s === 'preparing') return 'Preparing';
-    if (s === 'failed') return 'Needs attention';
-    return s ? String(s) : '';
+    var status = str(s && s.status);
+    if (status === 'ready') return 'Ready';
+    if (status === 'preparing') {
+      var q = loose(s.queue_position);
+      if (q === 0) return 'Preparing now';
+      if (q !== null && q > 0) return 'Preparing, ' + fmtInt(q) + ' ahead';
+      return 'Preparing';
+    }
+    if (status === 'failed') return 'Needs attention';
+    return status;
   }
 
   /* the two-click Remove: the first click asks, the second removes, and four
@@ -360,7 +368,7 @@
       w.appendChild(document.createTextNode(' ' + plural(n, 'word')));
       head.appendChild(w);
     }
-    var st = el('span', 'sample-state', statusWord(s.status));
+    var st = numify(el('span', 'sample-state'), statusWord(s));
     st.setAttribute('data-status', str(s.status));
     head.appendChild(st);
     main.appendChild(head);

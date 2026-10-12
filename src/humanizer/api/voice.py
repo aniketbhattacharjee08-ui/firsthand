@@ -293,11 +293,11 @@ class VoiceStore:
             out.append(d)
         return out
 
-    def add_liked(self, user_id: str, run_id: str, original: str, text: str) -> str:
+    def add_liked(self, user_id: str, run_id: str, original: str, text: str, replace: bool = True) -> str:
         liked_id = "l_" + uuid.uuid4().hex[:12]
         now = time.time()
         with self._lock:
-            if run_id:
+            if run_id and replace:
                 self._conn.execute("DELETE FROM voice_liked WHERE user_id = ? AND run_id = ?", (user_id, run_id))
             self._conn.execute(
                 "INSERT INTO voice_liked (id, user_id, run_id, original, text, n_words, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -430,6 +430,7 @@ class Preparer:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._pending: set = set()
+        self._running: Optional[Tuple[str, str]] = None
         self._available_at = 0.0
         self._available_value = False
 
@@ -456,6 +457,18 @@ class Preparer:
     def pending(self, user_id: str, sample_id: str) -> bool:
         with self._lock:
             return (user_id, sample_id) in self._pending
+
+    def position(self, user_id: str, sample_id: str) -> Optional[int]:
+        """How many preparations are ahead of this one: 0 while it runs,
+        None when it is not queued at all."""
+        key = (user_id, sample_id)
+        with self._lock:
+            if key not in self._pending:
+                return None
+            waiting = list(self._queue.queue)
+        if key in waiting:
+            return waiting.index(key) + (1 if self._running is not None else 0)
+        return 0
 
     def unavailable_reason(self) -> str:
         if self.backend_factory is None:
@@ -493,6 +506,7 @@ class Preparer:
                         self._thread = None
                         return
                 continue
+            self._running = (user_id, sample_id)
             try:
                 self.prepare_now(user_id, sample_id)
             except Exception as exc:  # noqa: BLE001 - one failure must not kill the thread
@@ -502,6 +516,7 @@ class Preparer:
                 except Exception:  # noqa: BLE001
                     pass
             finally:
+                self._running = None
                 with self._lock:
                     self._pending.discard((user_id, sample_id))
                 self._queue.task_done()
@@ -639,7 +654,11 @@ def attach_voice(app: FastAPI, body: Any, request: Request) -> None:
     if user_id is None:
         body._voice = voice_mod.VoiceSpec(reason="login_required", run_id=run_id)
         return
-    body._voice = build_spec(store, user_id, run_id)
+    spec = build_spec(store, user_id, run_id)
+    override = getattr(body, "voice_strength", None)
+    if override in voice_mod.STRENGTHS:
+        spec.strength = override
+    body._voice = spec
 
 
 # ------------------------------------------------------------------- bodies
@@ -655,10 +674,19 @@ class SettingsBody(BaseModel):
     strength: Optional[str] = None
 
 
+class FeedbackPair(BaseModel):
+    original: str = Field(default="", max_length=MAX_FEEDBACK_CHARS)
+    text: str = Field(default="", max_length=MAX_FEEDBACK_CHARS)
+
+
 class FeedbackBody(BaseModel):
     vote: str = Field(default="")
     original: str = Field(default="", max_length=MAX_FEEDBACK_CHARS)
     text: str = Field(default="", max_length=MAX_FEEDBACK_CHARS)
+    #: Per-paragraph (draft, rewrite) pairs. When present a thumbs up keeps
+    #: each pair as its own liked rewrite, which makes a paragraph-sized
+    #: exemplar; `original` and `text` are the whole-document fallback.
+    pairs: List[FeedbackPair] = Field(default_factory=list, max_length=64)
     run_id: str = Field(default="", max_length=40)
     sample_ids: List[str] = Field(default_factory=list)
 
@@ -714,6 +742,8 @@ def register_voice_routes(
             }
         settings = db.settings(user_id)
         samples = db.samples(user_id)
+        for sample in samples:
+            sample["queue_position"] = preparer.position(user_id, sample["id"]) if sample["status"] == "preparing" else None
         profile = db.profile(user_id)
         return {
             "signed_in": True,
@@ -867,9 +897,16 @@ def register_voice_routes(
             db.move_weights(user_id, prev_ids, -WEIGHT_DOWN)
         if vote == "up":
             db.move_weights(user_id, sample_ids, WEIGHT_UP)
-            p = _sample_ai_probability(text)
-            if p is None or p <= AI_SAMPLE_THRESHOLD:
-                db.add_liked(user_id, run_id, original, text)
+            pairs = [
+                (voice_mod.neutralise_markers(pr.original.strip())[:KEEP_FEEDBACK_CHARS], voice_mod.neutralise_markers(pr.text.strip())[:KEEP_FEEDBACK_CHARS])
+                for pr in body.pairs
+                if pr.original.strip() and pr.text.strip() and pr.original.strip() != pr.text.strip()
+            ] or [(original, text)]
+            db.remove_liked_for_run(user_id, run_id)
+            for pair_original, pair_text in pairs:
+                p = _sample_ai_probability(pair_text)
+                if p is None or p <= AI_SAMPLE_THRESHOLD:
+                    db.add_liked(user_id, run_id, pair_original, pair_text, replace=False)
         else:
             db.move_weights(user_id, sample_ids, WEIGHT_DOWN)
             db.remove_liked_for_run(user_id, run_id)

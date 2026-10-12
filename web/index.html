@@ -19,7 +19,7 @@
 <noscript><link rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Barlow+Condensed:wght@500;600&family=Fira+Mono:wght@400;500&display=swap"></noscript>
 
-<link rel="stylesheet" href="/styles.css?v=202610111200">
+<link rel="stylesheet" href="/styles.css?v=202610111800">
 <link rel="stylesheet" href="/brand/footer.css?v=202610071600">
 <link rel="stylesheet" href="/site.css?v=202610111200">
 </head>
@@ -161,13 +161,17 @@
               <p class="verdict-line" id="verdict-line"></p>
               <p class="verdict-kept" id="verdict-kept" hidden></p>
               <!-- only after a run that used the user's own samples: summary.voice,
-                   then the two votes; POST /api/voice/feedback -->
+                   then the two votes; POST /api/voice/feedback. The third chip,
+                   when the rewrite still reads as AI: the same draft again with
+                   voice_strength "light", then with no voice at all. -->
               <p class="voice-line" id="voice-line" hidden></p>
               <div class="voice-votes" id="voice-votes">
                 <button id="vote-up" class="chip" type="button" hidden aria-pressed="false"
                         title="Keep this rewrite as one you liked. The samples it leaned on count for more next time.">Sounds like me</button>
                 <button id="vote-down" class="chip" type="button" hidden aria-pressed="false"
                         title="This does not read like you. The samples it leaned on count for less next time.">Not my voice</button>
+                <button id="voice-rerun" class="chip" type="button" hidden
+                        title="Runs the same draft again with your voice weighted lightly. If it still does not pass, the next click runs without it.">Run again with less voice</button>
               </div>
               <div class="verdict-refused" id="verdict-refused" hidden></div>
             </div>
@@ -203,15 +207,6 @@
           <footer class="pane-foot" data-c="foot" data-src="#changed: summary.paragraphs_rewritten, edits, n_candidates_passed; Download: POST /api/documents/export">
             <p class="counts" id="changed" aria-live="polite"></p>
             <div class="pane-acts">
-              <!-- only after a run that used the user's own samples: summary.voice,
-                   then the two votes; POST /api/voice/feedback -->
-              <p class="voice-line" id="voice-line" hidden></p>
-              <div class="voice-votes" id="voice-votes">
-                <button id="vote-up" class="chip" type="button" hidden aria-pressed="false"
-                        title="Keep this rewrite as one you liked. The samples it leaned on count for more next time.">Sounds like me</button>
-                <button id="vote-down" class="chip" type="button" hidden aria-pressed="false"
-                        title="This does not read like you. The samples it leaned on count for less next time.">Not my voice</button>
-              </div>
               <button id="download-btn" class="btn" type="button" disabled
                       title="Download the rewrite as a document. An uploaded Word file keeps its formatting.">Download</button>
               <button id="copy-btn" class="btn" type="button" disabled title="Copy the rewrite">Copy</button>
@@ -367,7 +362,7 @@
      region marked data-c, plus the spacing grid. Shown by the switch or the backtick key. -->
 <div id="construction" class="construction" aria-hidden="true" hidden></div>
 
-<script src="/app.js?v=202610111200" defer></script>
+<script src="/app.js?v=202610111800" defer></script>
 <!-- Progressive enhancement only. app.js renders everything; these modules
      animate it and draw the ASCII tiles. The page field is gone since
      2026-10-07; field.js still draws the tiles in the After pane. -->

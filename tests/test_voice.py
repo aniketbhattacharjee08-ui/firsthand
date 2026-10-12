@@ -488,3 +488,78 @@ class TestReviewFixes:
         again = api_voice.VoiceStore(tmp_path / "v.sqlite")
         row = again.sample("a:1", s["id"])
         assert row["status"] == "failed" and "restart" in row["detail"]
+
+
+class TestLaterAdditions:
+    def test_strength_override_applies_to_one_run(self, app, monkeypatch):
+        from humanizer.humanize import pipeline as pipeline_mod
+
+        captured = {}
+        real = pipeline_mod.humanize_llm
+
+        def fake(text, config=None, detector=None, backend=None):
+            captured["config"] = config
+            return real(text, config=config, backend=llm_mod.EchoBackend(lambda r: HUMAN_2), detector=False)
+
+        monkeypatch.setattr(pipeline_mod, "humanize_llm", fake)
+        with TestClient(app) as c:
+            _signup(c, "eleven@example.com")
+            c.post("/api/voice/samples", json={"text": HUMAN})
+            _prepared(app)
+            c.post("/api/voice/settings", json={"strength": "strong"})
+            r = c.post("/api/humanize/llm", json={"text": GENERIC, "voice": True, "voice_strength": "light", "n_candidates": 1, "rounds": 1})
+            assert r.json()["summary"]["voice"]["strength"] == "light"
+            assert captured["config"].voice.strength == "light"
+            r = c.post("/api/humanize/llm", json={"text": GENERIC, "voice": True, "n_candidates": 1, "rounds": 1})
+            assert r.json()["summary"]["voice"]["strength"] == "strong", "the stored setting is untouched"
+            r = c.post("/api/humanize/llm", json={"text": GENERIC, "voice": True, "voice_strength": "loud", "n_candidates": 1, "rounds": 1})
+            assert r.json()["summary"]["voice"]["strength"] == "strong", "an unknown override is ignored"
+
+    def test_a_thumbs_up_with_pairs_keeps_one_liked_rewrite_per_paragraph(self, app):
+        with TestClient(app) as c:
+            _signup(c, "twelve@example.com")
+            body = {
+                "vote": "up", "original": GENERIC + "\n\n" + GENERIC, "text": HUMAN + "\n\n" + HUMAN_2, "run_id": "r_pairs",
+                "pairs": [{"original": GENERIC, "text": HUMAN}, {"original": GENERIC, "text": HUMAN_2}, {"original": GENERIC, "text": GENERIC}],
+            }
+            r = c.post("/api/voice/feedback", json=body)
+            assert r.status_code == 200 and r.json()["liked_count"] == 2, "the unchanged pair is skipped"
+            # Voting up again on the same run replaces, never duplicates.
+            assert c.post("/api/voice/feedback", json=body).json()["liked_count"] == 2
+            assert c.post("/api/voice/feedback", json=dict(body, vote="down")).json()["liked_count"] == 0
+
+    def test_queue_position_is_reported_while_preparing(self, app):
+        store = app.state.voice_store
+        preparer = app.state.voice_preparer
+        slow = {"started": False}
+        import threading
+
+        gate = threading.Event()
+
+        def slow_backend():
+            class B:
+                def available(self):
+                    return True
+
+                def generate(self, reqs):
+                    slow["started"] = True
+                    gate.wait(5)
+                    return llm_mod.GenerationBatch(texts=[GENERIC + " " + GENERIC])
+            return B()
+
+        preparer.backend_factory = slow_backend
+        with TestClient(app) as c:
+            _signup(c, "thirteen@example.com")
+            a = c.post("/api/voice/samples", json={"text": HUMAN}).json()["sample"]["id"]
+            b = c.post("/api/voice/samples", json={"text": HUMAN_2}).json()["sample"]["id"]
+            for _ in range(50):
+                if slow["started"]:
+                    break
+                import time as _t
+                _t.sleep(0.02)
+            pos = {s["id"]: s["queue_position"] for s in c.get("/api/voice").json()["samples"]}
+            assert pos[a] == 0 and pos[b] == 1
+            gate.set()
+            _prepared(app)
+            pos = {s["id"]: s["queue_position"] for s in c.get("/api/voice").json()["samples"]}
+            assert pos[a] is None and pos[b] is None

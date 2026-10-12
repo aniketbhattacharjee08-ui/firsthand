@@ -166,7 +166,17 @@ to the samples; a thumbs up goes to a separate liked pile.
   posting `/api/voice/feedback` with the draft, the rewrite, the run id
   and the sample ids the prompts leaned on. A second click on the other
   chip re-votes. The status line says what the vote did. Hidden when the
-  run kept the draft unchanged.
+  run kept the draft unchanged. A thumbs up sends the changed paragraphs
+  as (draft, rewrite) pairs, so each liked rewrite is paragraph sized.
+- When a run in the user's voice still reads as AI, a third chip
+  `#voice-rerun` appears beside the votes: "Run again with less voice"
+  reruns the same draft with `voice_strength: light` for that run only;
+  after a light run it reads "Run again without my voice" and reruns with
+  the voice left out. The switch and the stored setting are never touched.
+  The status line says "Running again with less of your voice." or
+  "Running again without your voice." while it runs.
+- On the voice page a preparing sample says "Preparing now" or
+  "Preparing, N ahead" from the API's `queue_position`.
 - Copy rules hold: no em dashes, numerals in `.num`, text buttons only,
   no icons. New styles reuse the tokens; the only additions are
   `.voice-row`, `.voice-link`, `.voice-line`, `.voice-votes` and the

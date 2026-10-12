@@ -16,3 +16,6 @@ data/auth.sqlite
 data/auth.sqlite-*
 data/voice.sqlite
 data/voice.sqlite-*
+deploy/local/localhost.secret
+data/cache/billing-localhost.db*
+data/cache/localhost-logs/

@@ -30,6 +30,7 @@ GET /api/voice
      "limits": {"min_words": 80, "max_words": 2500, "max_samples": 12, "part_words": 450, "min_ready": 1}}
 
 Sample = {"id": "s_...", "title": "History essay", "n_words": 412,
+          "queue_position": 0|N|null,   # while "preparing": 0 = being prepared now, N = N ahead
           "excerpt": "first 160 chars...",
           "status": "ready"|"preparing"|"failed",
           "detail": "one sentence on why it failed, or ''",
@@ -64,7 +65,11 @@ POST /api/voice/settings  {"enabled": bool, "strength": "light"|"balanced"|"stro
 
 POST /api/voice/feedback
   {"vote": "up"|"down", "original": "<the draft paragraph(s)>", "text": "<the rewrite>",
+   "pairs": [{"original": "<one draft paragraph>", "text": "<its rewrite>"}, ...],
    "run_id": "...", "sample_ids": ["s_..", ...]}
+  `pairs` (optional) is the per-paragraph list from the result's `paragraphs`
+  (original, humanized), changed paragraphs only; a thumbs up keeps each pair
+  as its own liked rewrite. Without it the whole-document pair is kept.
   -> {"recorded": true, "liked_count": 2}
   "up" stores (original, text) in the liked pile and raises the weight of the
   samples used; "down" lowers them. A vote on the same run_id twice replaces
@@ -74,6 +79,7 @@ POST /api/voice/feedback
 
 POST /api/humanize/stream, /api/humanize/llm, /api/humanize/jobs accept
   "voice": true
+  "voice_strength": "light"|"balanced"|"strong"   # optional, this run only
 Server side the user's ready samples and profile are attached at POST time
 (the job resume needs no session). With voice on, the result's `summary`
 carries:
