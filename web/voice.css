@@ -129,3 +129,8 @@
 @media (prefers-reduced-motion: reduce) {
   .voice-notice { animation: none; }
 }
+
+/* the file chip sits after the count, at the end of the action row */
+.sample-upload { margin-left: auto; }
+.sample-upload[data-busy="1"] { color: var(--fg-3); border-color: var(--line); }
+@media (max-width: 600px) { .sample-upload { margin-left: 0; } }

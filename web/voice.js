@@ -297,6 +297,8 @@
     var full = isLive && samples().length >= LIMITS.max_samples;
     if (title) title.disabled = !isLive;
     if (text) text.disabled = !isLive;
+    var upload = $('sample-upload');
+    if (upload) upload.disabled = !isLive || full || !!state.busy;
     if (add) add.disabled = !isLive || full || n < LIMITS.min_words || n > LIMITS.max_words;
     if (count) {
       var off = n > 0 && (n < LIMITS.min_words || n > LIMITS.max_words);
@@ -537,6 +539,49 @@
     });
   }
 
+  /* a file becomes the sample text: the same extract route the app's Upload
+     button uses, so .docx, .pdf, .txt and .md all work the same way here */
+  function uploadSample(file) {
+    if (state.busy || !live() || typeof FormData === 'undefined') return;
+    var text = $('sample-text');
+    var title = $('sample-title');
+    var upload = $('sample-upload');
+    state.busy = true;
+    if (upload) upload.setAttribute('data-busy', '1');
+    setStatus('sample-status', 'wait', 'Reading ' + (file.name || 'the file') + '.');
+    var form = new FormData();
+    form.append('file', file, file.name || 'upload');
+    fetch('/api/documents/extract', { method: 'POST', body: form, headers: { Accept: 'application/json' }, credentials: 'same-origin' }).then(function (res) {
+      return res.text().then(function (t) {
+        var j = null;
+        try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; }
+        return { ok: res.ok, status: res.status, body: j };
+      });
+    }, function (err) {
+      return { ok: false, status: 0, body: null, error: (err && err.message) || 'network error' };
+    }).then(function (r) {
+      state.busy = false;
+      if (upload) upload.removeAttribute('data-busy');
+      if (r.ok && r.body && typeof r.body.text === 'string' && r.body.text.trim()) {
+        if (text) { text.value = r.body.text.trim(); text.dispatchEvent(new Event('input', { bubbles: true })); }
+        if (title && !title.value.replace(/^\s+|\s+$/g, '')) {
+          title.value = String(file.name || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 80);
+        }
+        var n = text ? words(text.value) : 0;
+        setStatus('sample-status', 'ok', 'Read ' + fmtInt(n) + ' ' + plural(n, 'word') + ' from ' + (file.name || 'the file') + '. Check it, then add it.');
+        renderForm();
+        if (text) text.focus();
+        return;
+      }
+      if (r.status === 415) { setStatus('sample-status', 'error', 'That kind of file is not supported. Use a .docx, .pdf, .txt or .md file.'); return; }
+      if (r.status === 413) { setStatus('sample-status', 'error', 'That file is too large.'); return; }
+      if (r.status === 422) { setStatus('sample-status', 'error', 'No text was found in that file.'); return; }
+      if (r.status === 501) { setStatus('sample-status', 'error', 'PDF files cannot be read on this server. Paste the text instead.'); return; }
+      setStatus('sample-status', 'error', 'The file could not be read' + (r.error ? ': ' + r.error : '') + '. Paste the text instead.');
+      renderForm();
+    });
+  }
+
   function addSample() {
     if (state.busy || !live()) return;
     var title = $('sample-title');
@@ -550,11 +595,13 @@
     renderForm();
     renderUse();
     if (add) add.setAttribute('data-busy', '1');
-    setStatus('sample-status', 'wait', 'Checking the sample and adding it.');
+    setStatus('sample-status', 'wait', 'Checking the sample with the detector, which can take a minute the first time.');
     var body = { text: text.value };
     var t = title ? title.value.replace(/^\s+|\s+$/g, '') : '';
     if (t) body.title = t;
-    call(SAMPLES_PATH, body, 30000).then(function (r) {
+    /* the free detector loads on its first call after a restart, so the
+       first add can take well over thirty seconds */
+    call(SAMPLES_PATH, body, 150000).then(function (r) {
       state.busy = false;
       if (add) add.removeAttribute('data-busy');
       if (r.status === 401) { setStatus('sample-status', 'idle', ''); signedOut(); return; }
@@ -683,6 +730,15 @@
     });
     var form = $('sample-form');
     if (form) form.addEventListener('submit', function (e) { e.preventDefault(); addSample(); });
+    var upload = $('sample-upload');
+    var fileInput = $('sample-file');
+    if (upload && fileInput) {
+      upload.addEventListener('click', function () { if (!upload.disabled) fileInput.click(); });
+      fileInput.addEventListener('change', function () {
+        if (fileInput.files && fileInput.files[0]) uploadSample(fileInput.files[0]);
+        fileInput.value = '';
+      });
+    }
     var text = $('sample-text');
     if (text) text.addEventListener('input', function () { renderForm(); });
     document.addEventListener('visibilitychange', function () {

@@ -145,7 +145,9 @@ to the samples; a thumbs up goes to a separate liked pile.
   disabled with the hint "Add one sample first." until a sample is
   ready); "Your samples" (title, a serif `.voice-input` textarea, a word
   count in `.num` that turns `--mixed` under 80 or over 2,500 words, the
-  primary "Add sample", one row per sample with its words, status word
+  primary "Add sample" and an "Upload a file" chip that fills the box from
+  a .docx, .pdf, .txt or .md through the app's extract route, one row per
+  sample with its words, status word
   Ready / Preparing / Needs attention, excerpt, a two-click Remove and a
   Try again on failed rows; the page polls `GET /api/voice` every 4 s
   while anything is preparing); "What it learned" (trait rows from the
