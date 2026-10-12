@@ -26,7 +26,8 @@ rewrites are stored with the draft they came from so they can serve as a
 train anything shared; it is read only for the owning user's own runs.
 
 **Preparation.** A sample is usable as an exemplar only once its twin
-exists. That is one instruct-model call per sample, run on a single
+exists. That is one base-model call per sample (the same checkpoint the
+rewrites use, continuing the exemplar pattern backwards), run on a single
 background thread so uploads return at once; the page polls `GET
 /api/voice` while any sample is "preparing". The run lock the LLM routes
 hold is taken for the call, so a preparation never contends with a
@@ -417,8 +418,8 @@ class VoiceStore:
 class Preparer:
     """One background thread that writes each sample's generic twin.
 
-    `backend_factory` returns an `llm.Backend` (the instruct checkpoint);
-    `run_lock` is the server's LLM run lock, held for the call. Both are
+    `backend_factory` returns an `llm.Backend` (the base checkpoint the
+    rewrites use); `run_lock` is the server's LLM run lock, held for the call. Both are
     injected so tests can hand in an `EchoBackend` and a dummy lock.
     """
 
@@ -535,26 +536,40 @@ class Preparer:
         # Not `estimate_max_tokens`: its 900-token ceiling is for a paragraph,
         # and a twin must be allowed to run the whole sample's length.
         n_words = max(1, len(words(sample["text"])))
-        request = llm_mod.GenerationRequest(
-            prompt=voice_mod.flatten_prompt(sample["text"]),
-            temperature=0.7,
-            max_tokens=int(n_words * 1.35 * 1.8) + 64,
-            tag=("voice", sample_id),
-        )
-        lock = self.run_lock
-        if lock is not None:
-            lock.acquire()
-        try:
-            batch = backend.generate([request])
-        finally:
+        twin: Optional[str] = None
+        closest: Optional[float] = None
+        # 0.8 first; a twin that echoes the sample gets one hotter retry.
+        for temperature in (0.8, 1.0):
+            request = llm_mod.GenerationRequest(
+                prompt=voice_mod.flatten_prompt(sample["text"]),
+                temperature=temperature,
+                max_tokens=int(n_words * 1.35 * 1.8) + 64,
+                tag=("voice", sample_id),
+            )
+            lock = self.run_lock
             if lock is not None:
-                lock.release()
-        raw = batch.texts[0] if batch.texts else ""
-        twin = voice_mod.clean_flattened(raw, sample["text"])
+                lock.acquire()
+            try:
+                batch = backend.generate([request])
+            finally:
+                if lock is not None:
+                    lock.release()
+            raw = batch.texts[0] if batch.texts else ""
+            candidate = voice_mod.clean_flattened(raw, sample["text"])
+            if candidate is None:
+                continue
+            share = voice_mod.retained_share(sample["text"], candidate)
+            if closest is None or share < closest:
+                closest = share
+            if share <= voice_mod.MAX_TWIN_RETAINED:
+                twin = candidate
+                break
         if twin is None:
             self.store.set_prepared(
                 user_id, sample_id, None,
-                "The model did not produce a usable generic version. Try again, or try a different passage.",
+                "The model's generic version came back too close to your own words to teach from. Try again, or try a different passage."
+                if closest is not None
+                else "The model did not produce a usable generic version. Try again, or try a different passage.",
             )
             return
         self.store.set_prepared(user_id, sample_id, twin)

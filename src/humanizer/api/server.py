@@ -2415,7 +2415,12 @@ def _register_voice_routes(app: FastAPI, voice_db: Optional[Path] = None) -> Fas
     from ..humanize import llm as _llm_mod
 
     def instruct_backend() -> Any:
-        return _llm_mod.backend_for("faithful")
+        # The plain base checkpoint, the one model every deployment serves
+        # (`voice.flatten_prompt` is a base-model pattern). Without the HIP
+        # adapter on purpose: measured 2026-10-11, the adapter checkpoint
+        # echoes the sample back (0.8-0.95 of its words) where the plain base
+        # writes a genuinely generic version (0.6-0.73).
+        return _llm_mod.backend_for("freeform", _llm_mod.FREEFORM_MODEL, adapter="")
 
     store = _voice_mod.VoiceStore(voice_db or _voice_mod.default_voice_db_path())
     # The run lock guards one local GPU. A remote backend (HUMANIZER_LLM_URL)

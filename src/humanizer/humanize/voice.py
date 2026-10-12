@@ -50,6 +50,8 @@ __all__ = [
     "notes_from",
     "flatten_prompt",
     "clean_flattened",
+    "retained_share",
+    "MAX_TWIN_RETAINED",
     "select_shots",
     "describe_profile",
     "MIN_SAMPLE_WORDS",
@@ -484,39 +486,60 @@ def notes_from(text: str, limit: int = 5) -> str:
 # ------------------------------------------------------------- the draft
 
 
-FLATTEN_SYSTEM = (
-    "You are a general-purpose writing assistant. You rewrite text into the "
-    "polished, neutral, generic style of a typical AI assistant: smooth "
-    "transitions, balanced sentences, formal connectives, no contractions, "
-    "no personal asides. You keep every fact, name, number, date, quotation "
-    "and claim exactly as given and add nothing new."
+#: The twin is made by the *base* checkpoint, the one model every
+#: deployment serves (deploy/cloud/modal_vllm.py serves the base with its
+#: adapters and nothing else), by continuing the stock pattern backwards:
+#: three (HUMAN, DRAFT) pairs from `exemplars.FREEFORM_SHOTS`, then the
+#: sample as HUMAN and an open DRAFT slot. A base model continues the
+#: pattern it is shown; shown human paragraphs each followed by their
+#: generic assistant version, it writes the generic version of the sample.
+FLATTEN_HEADER = (
+    "Each paragraph below is given twice: first as its author wrote it "
+    "(HUMAN), then as a writing assistant would produce the same paragraph "
+    "(DRAFT): smoother, more formal, more general, the same claims and the "
+    "same particulars in the same order, nothing added.\n\n"
 )
-
-FLATTEN_USER = (
-    "Rewrite the paragraph below in your usual style. Keep every fact, name, "
-    "number, date, quotation and claim; do not add any. Keep it about the "
-    "same length. Output only the rewritten paragraph.\n\nPARAGRAPH:\n{p}"
-)
+FLATTEN_STOPS = llm_mod.FREEFORM_STOPS
 
 
 def flatten_prompt(sample: str) -> llm_mod.Prompt:
-    """The chat prompt that turns a real paragraph into its generic AI twin.
+    """The base-model prompt that turns a real paragraph into its generic twin.
 
     This is the one place the product asks a model to sound *more* like an
     assistant: the twin is the draft half of the exemplar pair, and the
     user's real paragraph is the rewrite half.
     """
-    return llm_mod.Prompt(
-        kind="chat",
-        messages=(("system", FLATTEN_SYSTEM), ("user", FLATTEN_USER.format(p=sample.strip()))),
+    from .exemplars import FREEFORM_SHOTS
+
+    block = "".join(
+        "HUMAN:\n%s\n\nDRAFT:\n%s\n\n" % (rewrite, draft) for _topic, draft, _notes, rewrite in FREEFORM_SHOTS
     )
+    return llm_mod.Prompt(
+        kind="text",
+        text=FLATTEN_HEADER + block + "HUMAN:\n" + sample.strip() + "\n\nDRAFT:\n",
+    )
+
+
+#: A twin that keeps more than this share of the sample's words is an echo,
+#: not a generic version: the pair would teach the model to copy the draft.
+#: Measured 2026-10-11 on the 7B base: the plain checkpoint at 0.8 keeps
+#: 0.6-0.73, the HIP-adapter checkpoint 0.8-0.95.
+MAX_TWIN_RETAINED = 0.85
+
+
+def retained_share(sample: str, twin: str) -> float:
+    """The share of the sample's words that appear in the twin."""
+    mine = [w.lower() for w in words(sample)]
+    theirs = set(w.lower() for w in words(twin or ""))
+    if not mine:
+        return 0.0
+    return sum(1 for w in mine if w in theirs) / len(mine)
 
 
 def clean_flattened(raw: str, sample: str) -> Optional[str]:
     """The model's twin, or None when it is unusable (empty, a refusal, the
     sample echoed back, or wildly off in length)."""
-    text = llm_mod.clean_completion(raw or "") if hasattr(llm_mod, "clean_completion") else (raw or "").strip()
-    text = text.strip()
+    text = llm_mod.clean_completion(raw or "", FLATTEN_STOPS).strip()
     if not text:
         return None
     if text.strip() == sample.strip():

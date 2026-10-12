@@ -94,10 +94,19 @@ class TestNotes:
 
 
 class TestFlatten:
-    def test_prompt_is_a_chat_that_keeps_the_sample_last(self):
+    def test_prompt_is_a_base_model_pattern_that_ends_at_the_open_draft_slot(self):
+        from humanizer.humanize.exemplars import FREEFORM_SHOTS
+
         p = voice_mod.flatten_prompt(HUMAN)
-        assert p.kind == "chat"
-        assert p.messages[-1][0] == "user" and p.messages[-1][1].endswith(HUMAN)
+        assert p.kind == "text"
+        assert p.text.endswith("HUMAN:\n" + HUMAN + "\n\nDRAFT:\n")
+        # The stock pairs appear reversed: the human rewrite first, its draft after.
+        _t, draft, _n, rewrite = FREEFORM_SHOTS[0]
+        assert p.text.index(rewrite) < p.text.index(draft)
+
+    def test_cleaning_cuts_at_the_patterns_next_label(self):
+        twin = GENERIC + "\n\nHUMAN:\nsomething else the model went on to write"
+        assert voice_mod.clean_flattened(twin, HUMAN) == GENERIC
 
     def test_cleaning_refuses_echo_refusal_and_wild_lengths(self):
         assert voice_mod.clean_flattened(HUMAN, HUMAN) is None
@@ -238,7 +247,7 @@ def app(tmp_path, monkeypatch):
 
 
 def _twin_for(req):
-    sample = req.prompt.messages[-1][1].split("PARAGRAPH:\n", 1)[-1]
+    sample = req.prompt.text.rsplit("HUMAN:\n", 1)[-1].split("\n\nDRAFT:")[0]
     n = len(sample.split())
     out = GENERIC
     while len(out.split()) < 0.7 * n:
@@ -563,3 +572,36 @@ class TestLaterAdditions:
             _prepared(app)
             pos = {s["id"]: s["queue_position"] for s in c.get("/api/voice").json()["samples"]}
             assert pos[a] is None and pos[b] is None
+
+
+class TestTwinQuality:
+    def test_retained_share(self):
+        assert voice_mod.retained_share(HUMAN, HUMAN) == 1.0
+        assert voice_mod.retained_share(HUMAN, GENERIC) < 0.5
+
+    def test_an_echoing_twin_is_refused_after_one_hotter_retry(self, tmp_path):
+        store = api_voice.VoiceStore(tmp_path / "v.sqlite")
+        temps = []
+
+        class Echoing:
+            def available(self):
+                return True
+
+            def generate(self, reqs):
+                temps.append(reqs[0].temperature)
+                # Nearly the sample back: one word changed.
+                return llm_mod.GenerationBatch(texts=[HUMAN.replace("walked", "strolled")])
+
+        prep = api_voice.Preparer(store, backend_factory=lambda: Echoing(), run_lock=None)
+        s = store.add_sample("a:1", "t", HUMAN, None, "preparing")
+        prep.prepare_now("a:1", s["id"])
+        row = store.sample("a:1", s["id"])
+        assert row["status"] == "failed" and "too close to your own words" in row["detail"]
+        assert temps == [0.8, 1.0]
+
+    def test_a_generic_twin_is_accepted_first_time(self, tmp_path):
+        store = api_voice.VoiceStore(tmp_path / "v.sqlite")
+        prep = api_voice.Preparer(store, backend_factory=lambda: llm_mod.EchoBackend(_twin_for), run_lock=None)
+        s = store.add_sample("a:1", "t", HUMAN, None, "preparing")
+        prep.prepare_now("a:1", s["id"])
+        assert store.sample("a:1", s["id"])["status"] == "ready"
