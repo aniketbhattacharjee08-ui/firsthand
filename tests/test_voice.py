@@ -575,9 +575,13 @@ class TestLaterAdditions:
 
 
 class TestTwinQuality:
-    def test_retained_share(self):
+    def test_retained_share_is_over_bigrams_so_terms_may_stay(self):
         assert voice_mod.retained_share(HUMAN, HUMAN) == 1.0
-        assert voice_mod.retained_share(HUMAN, GENERIC) < 0.5
+        assert voice_mod.retained_share(HUMAN, GENERIC) < 0.1
+        # The same technical terms in new phrasing: a paraphrase, not an echo.
+        sample = "Colorectal cancer (CRC) is a common malignancy with high prevalence and low survival. CRC is a heterogeneous disease."
+        twin = "Colorectal cancer is a prevalent and significant form of malignancy, characterized by high incidence and poor survival; it is heterogeneous in nature."
+        assert voice_mod.retained_share(sample, twin) < voice_mod.MAX_TWIN_RETAINED
 
     def test_an_echoing_twin_is_refused_after_one_hotter_retry(self, tmp_path):
         store = api_voice.VoiceStore(tmp_path / "v.sqlite")

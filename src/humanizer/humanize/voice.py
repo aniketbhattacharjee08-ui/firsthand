@@ -520,20 +520,25 @@ def flatten_prompt(sample: str) -> llm_mod.Prompt:
     )
 
 
-#: A twin that keeps more than this share of the sample's words is an echo,
-#: not a generic version: the pair would teach the model to copy the draft.
-#: Measured 2026-10-11 on the 7B base: the plain checkpoint at 0.8 keeps
-#: 0.6-0.73, the HIP-adapter checkpoint 0.8-0.95.
-MAX_TWIN_RETAINED = 0.85
+#: A twin that keeps more than this share of the sample's word *bigrams* is
+#: an echo, not a generic version: the pair would teach the model to copy
+#: the draft. Bigrams, not words: a paraphrase of a technical paragraph
+#: rightly keeps most of its terms (measured 2026-10-11 on PMC text, 0.75
+#: to 0.90 of the words survive a real paraphrase) but breaks most of its
+#: phrasing (0.47 to 0.66 of bigrams). The adapter checkpoint's echoes sit
+#: above 0.9 on both.
+MAX_TWIN_RETAINED = 0.75
 
 
 def retained_share(sample: str, twin: str) -> float:
-    """The share of the sample's words that appear in the twin."""
+    """The share of the sample's adjacent word pairs that survive in the twin."""
     mine = [w.lower() for w in words(sample)]
-    theirs = set(w.lower() for w in words(twin or ""))
-    if not mine:
-        return 0.0
-    return sum(1 for w in mine if w in theirs) / len(mine)
+    theirs = [w.lower() for w in words(twin or "")]
+    pairs = list(zip(mine, mine[1:]))
+    if not pairs:
+        return 1.0 if mine and mine == theirs else 0.0
+    have = set(zip(theirs, theirs[1:]))
+    return sum(1 for pr in pairs if pr in have) / len(pairs)
 
 
 def clean_flattened(raw: str, sample: str) -> Optional[str]:
