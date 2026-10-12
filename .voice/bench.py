@@ -65,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tag", default=None)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--off-only", action="store_true", help="only the voice-off condition")
+    ap.add_argument("--on-only", action="store_true", help="only the voice-on condition")
     ap.add_argument("--judge", choices=("auto", "gptzero", "surrogate"), default="auto",
                     help="who reads the output: GPTZero with the owner's key, or the product's free surrogate; auto tries GPTZero first")
     return ap
@@ -203,7 +204,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         meta["gptzero_cost"] = ledger.as_dict()
         out_path.write_text(json.dumps({"meta": meta, "rows": rows, "summary": summarize(rows, authors)}, indent=1))
 
-    conditions = ["off"] if args.off_only else ["off", "on"]
+    conditions = ["off"] if args.off_only else (["on"] if args.on_only else ["off", "on"])
     for i, it in enumerate(items):
         author = authors[i % len(authors)]
         for condition in conditions:

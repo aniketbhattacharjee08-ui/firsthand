@@ -609,3 +609,53 @@ class TestTwinQuality:
         s = store.add_sample("a:1", "t", HUMAN, None, "preparing")
         prep.prepare_now("a:1", s["id"])
         assert store.sample("a:1", s["id"])["status"] == "ready"
+
+
+class TestVoiceFallbackRound:
+    """A voiced round with no gate passer reruns the paragraph with the
+    stock exemplars, and the clean result replaces the shipped fallback."""
+
+    def test_round_two_drops_the_samples_and_a_clean_candidate_wins(self):
+        from humanizer.humanize import llm as llm_mod
+        from humanizer.humanize import pipeline as pipeline_mod
+
+        prompts = []
+
+        def echo(req):
+            prompts.append(req.prompt.text)
+            # With the user's exemplars in the prompt the model "copies" them:
+            # an off-topic paragraph that fails the content gate. With the
+            # stock exemplars it rewrites the draft faithfully.
+            if HUMAN in req.prompt.text:
+                return HUMAN_2
+            return GENERIC.replace("Furthermore, it is important to note that", "Note that").replace("Moreover, ", "And ")
+
+        class Det:
+            def available(self):
+                return True
+
+            def score(self, text):
+                from humanizer.detectors.base import DetectorResult
+                return DetectorResult(detector="fake", ai_probability=0.01 if "Note that" in text or text == HUMAN_2 else 0.9, label="human")
+
+        shots = ((HUMAN[:30], GENERIC, "- x", HUMAN),)
+        spec = voice_mod.VoiceSpec(profile=voice_mod.build_profile([HUMAN]), shots=shots, sample_ids=("s_1",), run_id="r_1")
+        cfg = pipeline_mod.PipelineConfig(n_candidates=2, rounds=2, style="freeform", voice=spec, time_budget_s=600, pass_threshold=0.15)
+        result = pipeline_mod.humanize_llm(GENERIC, config=cfg, backend=llm_mod.EchoBackend(echo), detector=Det())
+        para = result.paragraphs[0]
+        assert para.voice_dropped is True and para.fallback_reason is None
+        assert "Note that" in result.humanized, "the clean stock-exemplar candidate was shipped"
+        assert any(HUMAN in p for p in prompts) and any(HUMAN not in p for p in prompts), "round one voiced, round two stock"
+        v = result.summary["voice"]
+        assert v["used"] is True and v["paragraphs_without_voice"] == 1
+
+    def test_with_one_round_the_fallback_ships_as_before(self):
+        from humanizer.humanize import llm as llm_mod
+        from humanizer.humanize import pipeline as pipeline_mod
+
+        shots = ((HUMAN[:30], GENERIC, "- x", HUMAN),)
+        spec = voice_mod.VoiceSpec(profile=voice_mod.build_profile([HUMAN]), shots=shots, sample_ids=("s_1",), run_id="r_1")
+        cfg = pipeline_mod.PipelineConfig(n_candidates=1, rounds=1, style="freeform", voice=spec, time_budget_s=600)
+        result = pipeline_mod.humanize_llm(GENERIC, config=cfg, backend=llm_mod.EchoBackend(lambda r: HUMAN_2), detector=False)
+        para = result.paragraphs[0]
+        assert para.voice_dropped is False and para.fallback_reason and "without your samples" not in para.fallback_reason

@@ -163,7 +163,10 @@ to the samples; a thumbs up goes to a separate liked pile.
   setting (`POST /api/voice/settings`). With it on the run body carries
   `voice: true`.
 - After a run that used the voice, the verdict strip gains `#voice-line`
-  ("In your voice. Match N percent.") and `#voice-votes`: two chips,
+  ("In your voice. Match N percent.", plus "N paragraphs went back to the
+  stock examples after your samples pulled it off the draft." when the
+  pipeline had to drop the samples for a paragraph, or that sentence alone
+  when it was every paragraph) and `#voice-votes`: two chips,
   "Sounds like me" and "Not my voice", `aria-pressed` on the chosen one,
   posting `/api/voice/feedback` with the draft, the rewrite, the run id
   and the sample ids the prompts leaned on. A second click on the other

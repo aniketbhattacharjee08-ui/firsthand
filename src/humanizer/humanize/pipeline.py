@@ -496,6 +496,14 @@ class ParagraphOutcome:
     #: "accepted"}}` plus `critic` when the LLM critic ran. Empty when the
     #: paragraph passed in the normal rounds or the stage was disabled.
     repairs: List[Dict[str, Any]] = field(default_factory=list)
+    #: Your voice: set when a round in the user's voice produced no candidate
+    #: that passed the gates (the model copied from the exemplars). The next
+    #: round runs this paragraph with the stock exemplars, and a clean
+    #: candidate from it replaces the fallback whatever its probability.
+    voice_fallback: bool = False
+    #: True once a paragraph was rewritten without the user's samples
+    #: because of the above; reported so the page can say so.
+    voice_dropped: bool = False
 
     @property
     def changed(self) -> bool:
@@ -511,6 +519,7 @@ class ParagraphOutcome:
             "ai_probability_after": self.ai_probability_after,
             "changed": self.changed,
             "fallback_reason": self.fallback_reason,
+            "voice_dropped": self.voice_dropped,
             "unverified_specifics": list(self.unverified_specifics),
             "repairs": [dict(r) for r in self.repairs],
             "candidates": [c.as_dict() for c in self.candidates],
@@ -1224,6 +1233,7 @@ def stream(
             o
             for o in outcomes
             if rnd == 1
+            or o.voice_fallback
             or (
                 o.ai_probability_after is not None
                 and o.ai_probability_after >= cfg.pass_threshold
@@ -1515,6 +1525,13 @@ def stream(
                         "rewrite anyway, which missed %s"
                         % (", ".join(reasons), ", ".join(sorted(best.gates)) or "nothing")
                     )
+                    # Your voice: a round in the user's voice with no clean
+                    # candidate means the model copied from the exemplars. The
+                    # next round runs this paragraph with the stock exemplars
+                    # (`_voice_shots`); the fingerprint still ranks its passers.
+                    if _voice_shots(cfg, outcome) is not None and rnd < max(1, cfg.rounds):
+                        outcome.voice_fallback = True
+                        outcome.fallback_reason += "; the next round runs without your samples"
                     if outcome.unverified_specifics:
                         outcome.fallback_reason += (
                             "; rewrites added material the draft does not contain (%s)"
@@ -1570,6 +1587,7 @@ def stream(
                 and baseline is not None
                 and best.ai_probability >= baseline
                 and rnd > 1
+                and not outcome.voice_fallback
             ):
                 # A refinement round may not make a paragraph worse.
                 outcome.fallback_reason = (
@@ -1580,6 +1598,9 @@ def stream(
                 outcome.chosen_index = best.index
                 outcome.ai_probability_after = best.ai_probability
                 outcome.fallback_reason = None
+                if outcome.voice_fallback:
+                    outcome.voice_fallback = False
+                    outcome.voice_dropped = True
             yield event(
                 "select",
                 "progress",
@@ -1765,7 +1786,7 @@ def _voice_shots(cfg: PipelineConfig, outcome: ParagraphOutcome) -> Optional[Seq
     `shots_for(paragraph)` callable to pick per paragraph.
     """
     spec = cfg.voice
-    if spec is None:
+    if spec is None or outcome.voice_fallback:
         return None
     picker = getattr(spec, "shots_for", None)
     if callable(picker):
@@ -1848,6 +1869,9 @@ def _voice_summary(cfg: PipelineConfig, outcomes: Sequence[ParagraphOutcome]) ->
         "match": match,
         "run_id": getattr(spec, "run_id", "") or "",
         "shots": len(getattr(spec, "shots", ()) or ()),
+        # Paragraphs rewritten without the samples after a voiced round
+        # produced nothing that passed the gates.
+        "paragraphs_without_voice": sum(1 for o in outcomes if o.voice_dropped),
     }
 
 

@@ -1920,6 +1920,7 @@
       if (typeof v.strength === 'string' && !cur.strength) cur.strength = v.strength;
       var n = loose(v.n_samples);
       if (n !== null && (cur.n_samples === undefined || n > cur.n_samples)) cur.n_samples = n;
+      cur.paragraphs_without_voice = (cur.paragraphs_without_voice || 0) + (loose(v.paragraphs_without_voice) || 0);
       if (Array.isArray(v.sample_ids)) v.sample_ids.forEach(function (id) {
         if (typeof id === 'string' && cur.sample_ids.indexOf(id) < 0) cur.sample_ids.push(id);
       });
@@ -3092,6 +3093,7 @@
       used: true,
       match: loose(v.match),
       n_samples: loose(v.n_samples),
+      without: loose(v.paragraphs_without_voice) || 0,
       strength: typeof v.strength === 'string' ? v.strength : '',
       run_id: typeof v.run_id === 'string' ? v.run_id : '',
       sample_ids: Array.isArray(v.sample_ids)
@@ -3163,11 +3165,25 @@
     var v = h && state.view === 'run' ? h.voice : null;
     clear(line);
     if (!v || v.used !== true) { line.hidden = true; return; }
+    var total = Array.isArray(h.pairs) && h.pairs.length ? h.pairs.length : null;
+    var without = v.without || 0;
+    if (without > 0 && total !== null && without >= total) {
+      /* every paragraph went back to the stock examples: the samples pulled
+         the rewrite off your draft, and the gates refused all of it */
+      line.appendChild(document.createTextNode('Your samples pulled the rewrite off your draft, so this one was written without them.'));
+      line.hidden = false;
+      return;
+    }
     line.appendChild(document.createTextNode('In your voice.'));
     if (v.match !== null) {
       line.appendChild(document.createTextNode(' Match '));
       line.appendChild(el('span', 'num', String(Math.round(clamp(v.match, 0, 1) * 100))));
       line.appendChild(document.createTextNode(' percent.'));
+    }
+    if (without > 0) {
+      line.appendChild(document.createTextNode(' '));
+      line.appendChild(el('span', 'num', String(without)));
+      line.appendChild(document.createTextNode(' ' + (without === 1 ? 'paragraph' : 'paragraphs') + ' went back to the stock examples after your samples pulled it off the draft.'));
     }
     line.hidden = false;
   }

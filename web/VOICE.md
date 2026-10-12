@@ -85,6 +85,8 @@ Server side the user's ready samples and profile are attached at POST time
 carries:
   "voice": {"used": true, "n_samples": 3, "sample_ids": ["s_.."], "strength": "balanced",
             "match": 0.72,           # 0..1, how close the shipped rewrite sits to the profile
+            "paragraphs_without_voice": 0,  # paragraphs rerun with the stock exemplars after a
+                                            # voiced round produced nothing that passed the gates
             "run_id": "r_..."}       # pass back with the feedback
 With voice requested but nothing usable (signed out, no ready samples, the
 server-side switch off):
@@ -93,3 +95,5 @@ server-side switch off):
 (the per-paragraph picker chooses up to three per paragraph within a word
 budget), which is what the feedback reweights.
 Each paragraph candidate's `quality` gains "voice_distance" (0..1, lower is closer).
+Each paragraph gains "voice_dropped": true when it was rewritten without the
+samples (see paragraphs_without_voice).
