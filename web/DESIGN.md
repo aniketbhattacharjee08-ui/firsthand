@@ -140,8 +140,11 @@ to the samples; a thumbs up goes to a separate liked pile.
 - The page, `/voice` (`voice.html`, `voice.css`, `voice.js`, the
   pricing page's shell): the doc-head "Your voice" with a one-sentence
   lede and the privacy line; signed out, a `.notice` "Sign in to add your
-  writing." and every control disabled. Signed in: "Use my voice" (the
-  `#voice-switch` switch "Rewrite in my voice", the Strength select,
+  writing." and every control disabled. Under the privacy line, one
+  `.voice-early` sentence on a gold hairline says what was measured and
+  that the switch starts off (research/27). Signed in: "Use my voice" (the
+  `#voice-switch` switch "Rewrite in my voice", off until the user turns it
+  on, the Strength select,
   disabled with the hint "Add one sample first." until a sample is
   ready); "Your samples" (title, a serif `.voice-input` textarea, a word
   count in `.num` that turns `--mixed` under 80 or over 2,500 words, the

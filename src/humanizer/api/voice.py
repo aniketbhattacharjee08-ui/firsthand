@@ -355,7 +355,10 @@ class VoiceStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM voice_settings WHERE user_id = ?", (user_id,)).fetchone()
         if row is None:
-            return {"enabled": True, "strength": voice_mod.DEFAULT_STRENGTH, "profile": None}
+            # Opt in. Measured 2026-10-11 (research/27): rewrites in the voice
+            # pass the detector as often as plain ones but come no closer to
+            # the author's own writing yet, so the switch starts off.
+            return {"enabled": False, "strength": voice_mod.DEFAULT_STRENGTH, "profile": None}
         profile = None
         if row["profile"]:
             try:

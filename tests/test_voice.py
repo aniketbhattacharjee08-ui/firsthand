@@ -296,7 +296,7 @@ class TestVoiceRoutes:
             assert body["signed_in"] is True and body["ready"] == 1
             assert body["samples"][0]["status"] == "ready"
             assert body["profile"]["n_samples"] == 1 and body["profile"]["traits"]
-            assert body["enabled"] is True and body["strength"] == "balanced"
+            assert body["enabled"] is False and body["strength"] == "balanced", "opt in: the switch starts off"
             s = c.post("/api/voice/settings", json={"enabled": False, "strength": "strong"}).json()
             assert s == {"enabled": False, "strength": "strong"}
             assert c.post("/api/voice/settings", json={"strength": "loud"}).status_code == 422
@@ -373,6 +373,7 @@ class TestVoiceRoutes:
             _signup(c, "five@example.com")
             sid = c.post("/api/voice/samples", json={"text": HUMAN}).json()["sample"]["id"]
             _prepared(app)
+            c.post("/api/voice/settings", json={"enabled": True})
             r = c.post("/api/humanize/llm", json={"text": GENERIC, "voice": True, "n_candidates": 1, "rounds": 1})
             assert r.status_code == 200, r.text
             v = r.json()["summary"]["voice"]
@@ -440,6 +441,7 @@ class TestReviewFixes:
             for text in (HUMAN, HUMAN_2, HUMAN + " One more sentence here.", HUMAN_2 + " And another one."):
                 ids.append(c.post("/api/voice/samples", json={"text": text}).json()["sample"]["id"])
             _prepared(app)
+            c.post("/api/voice/settings", json={"enabled": True})
             v = c.post("/api/humanize/llm", json={"text": GENERIC, "voice": True, "n_candidates": 1, "rounds": 1}).json()["summary"]["voice"]
             assert v["used"] and 1 <= len(v["sample_ids"]) <= 3 and set(v["sample_ids"]) <= set(ids)
             assert v["n_samples"] == 4
@@ -515,7 +517,7 @@ class TestLaterAdditions:
             _signup(c, "eleven@example.com")
             c.post("/api/voice/samples", json={"text": HUMAN})
             _prepared(app)
-            c.post("/api/voice/settings", json={"strength": "strong"})
+            c.post("/api/voice/settings", json={"enabled": True, "strength": "strong"})
             r = c.post("/api/humanize/llm", json={"text": GENERIC, "voice": True, "voice_strength": "light", "n_candidates": 1, "rounds": 1})
             assert r.json()["summary"]["voice"]["strength"] == "light"
             assert captured["config"].voice.strength == "light"

@@ -66,12 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--off-only", action="store_true", help="only the voice-off condition")
     ap.add_argument("--on-only", action="store_true", help="only the voice-on condition")
+    ap.add_argument("--plain-base", action="store_true",
+                    help="rewrite with the plain base checkpoint (HUMANIZER_BASE_ADAPTER empty) instead of the shipped HIP adapter")
+    ap.add_argument("--own-text", type=int, default=0,
+                    help="instead of the 9 AI bench paragraphs: for each author, this many held-out paragraphs, "
+                         "each flattened into a generic AI draft by the base model; the question is whether the "
+                         "rewrite comes back closer to what the author actually wrote")
     ap.add_argument("--judge", choices=("auto", "gptzero", "surrogate"), default="auto",
                     help="who reads the output: GPTZero with the owner's key, or the product's free surrogate; auto tries GPTZero first")
     return ap
 
 
-def configure_env() -> Dict[str, str]:
+def configure_env(plain_base: bool = False) -> Dict[str, str]:
     env = {
         "HUMANIZER_PROXY": "surrogate",
         "HUMANIZER_YARDSTICK": "surrogate",
@@ -81,6 +87,8 @@ def configure_env() -> Dict[str, str]:
         "HUMANIZER_ASSUME_AI": "1",
         "HUMANIZER_SCORE_CANDIDATES": "1",
     }
+    if plain_base:
+        env["HUMANIZER_BASE_ADAPTER"] = ""
     os.environ.update(env)
     return env
 
@@ -102,7 +110,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_path = RESULTS / ("%s.json" % tag)
     RESULTS.mkdir(parents=True, exist_ok=True)
     os.chdir(ROOT)
-    env = configure_env()
+    env = configure_env(plain_base=args.plain_base)
     common.ensure_src_on_path()
 
     from humanizer.api import voice as api_voice
@@ -185,7 +193,36 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("held-out ceiling: %d of %d placed on their own author" % (sum(1 for c in ceiling if c["correct"]), len(ceiling)), flush=True)
 
     # ---- the runs ---------------------------------------------------------
-    items = common.load_bench(ai_only=True, limit=args.limit)
+    if args.own_text:
+        # The real use case: the draft is a generic twin of the author's own
+        # held-out paragraph. The target is known: the paragraph itself.
+        from humanizer.humanize.pipeline import content_overlap
+        items = []
+        for a in authors:
+            paras = usable_paragraphs(a["id"])
+            for j in range(args.own_text):
+                k = args.samples + j
+                if k >= len(paras):
+                    break
+                held = paras[k]
+                twin = None
+                backend = llm_mod.backend_for("freeform", llm_mod.FREEFORM_MODEL, adapter="")
+                for temperature in (0.8, 1.0):
+                    batch = backend.generate([llm_mod.GenerationRequest(
+                        prompt=voice_mod.flatten_prompt(held), temperature=temperature,
+                        max_tokens=int(len(held.split()) * 1.35 * 1.8) + 64)])
+                    cand = voice_mod.clean_flattened(batch.texts[0] if batch.texts else "", held)
+                    if cand and voice_mod.retained_share(held, cand) <= voice_mod.MAX_TWIN_RETAINED:
+                        twin = cand
+                        break
+                if twin is None:
+                    print("own-text %s %d: no usable draft" % (a["id"], j), flush=True)
+                    continue
+                items.append({"name": "own-%s-%d" % (a["id"], j + 1), "text": twin, "kind": "ai", "facts": "",
+                              "author_id": a["id"], "held_out": held})
+        print("own-text: %d drafts" % len(items), flush=True)
+    else:
+        items = common.load_bench(ai_only=True, limit=args.limit)
     rows: List[Dict[str, Any]] = []
     done = set()
     if args.resume and out_path.exists():
@@ -207,6 +244,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     conditions = ["off"] if args.off_only else (["on"] if args.on_only else ["off", "on"])
     for i, it in enumerate(items):
         author = authors[i % len(authors)]
+        if it.get("author_id"):
+            author = next(a for a in authors if a["id"] == it["author_id"])
         for condition in conditions:
             if (it["name"], condition) in done:
                 continue
@@ -232,6 +271,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "distances": placed["distances"],
                 "voice": (res.summary or {}).get("voice"),
             })
+            if it.get("held_out"):
+                held = it["held_out"]
+                row["held_out_similarity"] = round(1.0 - voice_mod.trigram_distance(voice_mod.trigram_profile([held], top_k=10 ** 6), res.humanized), 4)
+                row["held_out_overlap"] = round(content_overlap(held, res.humanized), 4)
+                row["draft_similarity"] = round(1.0 - voice_mod.trigram_distance(voice_mod.trigram_profile([held], top_k=10 ** 6), it["text"]), 4)
             rows.append(row)
             write()
             print("%-22s %-3s %s  %s -> %s  own-dist %.3f  nearest %s%s  pass %d/%d  %.0fs%s" % (
@@ -264,7 +308,13 @@ def summarize(rows: List[Dict[str, Any]], authors: List[Dict[str, Any]]) -> Dict
             "mean_own_distance": round(sum(r["own_distance"] or 0.0 for r in sub) / len(sub), 4),
             "mean_p_after": round(sum(r["p_after"] or 0.0 for r in scored) / len(scored), 3) if scored else None,
             "fallbacks": sum(1 for r in sub if r["fallback_reason"]),
+            "paragraphs_without_voice": sum((r.get("voice") or {}).get("paragraphs_without_voice", 0) or 0 for r in sub),
         }
+        own = [r for r in sub if r.get("held_out_similarity") is not None]
+        if own:
+            out[condition]["mean_held_out_similarity"] = round(sum(r["held_out_similarity"] for r in own) / len(own), 4)
+            out[condition]["mean_held_out_overlap"] = round(sum(r["held_out_overlap"] for r in own) / len(own), 4)
+            out[condition]["mean_draft_similarity"] = round(sum(r["draft_similarity"] for r in own) / len(own), 4)
     return out
 
 
@@ -278,6 +328,11 @@ def report(rows: List[Dict[str, Any]], authors: List[Dict[str, Any]], ceiling: L
         lines.append("| voice %s | %d of %d | %d of %d (chance %.0f%%) | %.3f | %d |" % (
             condition, c["human_after"], c["n_scored"], round(c["author_accuracy"] * c["n"]), c["n"], s["chance"] * 100,
             c["mean_own_distance"], c["fallbacks"]))
+    for condition in ("off", "on"):
+        c = s.get(condition) or {}
+        if c.get("mean_held_out_similarity") is not None:
+            lines.append("voice %s: similarity to what the author actually wrote %.3f (the draft itself: %.3f), content overlap %.3f, without-voice paragraphs %d" % (
+                condition, c["mean_held_out_similarity"], c["mean_draft_similarity"], c["mean_held_out_overlap"], c["paragraphs_without_voice"]))
     lines.append("")
     lines.append("held-out human paragraphs placed on their own author: %d of %d" % (
         sum(1 for c in ceiling if c["correct"]), len(ceiling)))

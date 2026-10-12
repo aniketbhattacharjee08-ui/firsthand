@@ -20,7 +20,7 @@ GET /api/voice
      "profile": null, "limits": {...}}
   Signed in:
     {"signed_in": true,
-     "enabled": true|false,          # the user's switch, stored server side
+     "enabled": true|false,          # the user's switch, stored server side; starts off (opt in)
      "strength": "light"|"balanced"|"strong",
      "ready": 3,                     # samples with status "ready"
      "samples": [Sample, ...],       # newest first
