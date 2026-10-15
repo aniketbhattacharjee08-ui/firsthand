@@ -328,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_serve)
 
+    p = sub.add_parser("stats", help="page views and the funnel from the statistics database")
+    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--db", default=None, help="stats database path (default data/stats.sqlite or HUMANIZER_STATS_DB)")
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
+    p.set_defaults(func=cmd_stats)
+
     p = sub.add_parser("account", help="manage accounts in the auth database")
     acc = p.add_subparsers(dest="account_command", required=True)
     m = acc.add_parser("master", help="create or reset the owner's master account")
@@ -342,6 +348,28 @@ def build_parser() -> argparse.ArgumentParser:
     m.set_defaults(func=cmd_account_master)
 
     return parser
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Print what `GET /api/stats/summary` would answer, from the file."""
+    from pathlib import Path
+
+    from .api import stats as stats_mod
+
+    path = Path(args.db) if args.db else stats_mod.default_stats_db_path()
+    if not path.is_file():
+        print("no statistics database at %s" % path, file=sys.stderr)
+        return 1
+    store = stats_mod.StatsStore(path)
+    try:
+        summary = store.summary(days=args.days)
+    finally:
+        store.close()
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print(stats_mod.format_summary(summary))
+    return 0
 
 
 def cmd_account_master(args: argparse.Namespace) -> int:

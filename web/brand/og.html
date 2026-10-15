@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vervly social card</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400&family=Barlow+Condensed:wght@600&family=Fira+Mono:wght@400&display=swap">
+<style>
+  /* 1200 x 630, the page's own ground and type: graphite with Berkeley Blue
+     in it, the gold accent once, the lockup, one serif line. Rendered to
+     og.png with headless Chrome; see brand/README.md. */
+  html, body { margin: 0; padding: 0; }
+  body { width: 1200px; height: 630px; background: #0a0e20; color: #ece8df; font-family: "Inter", -apple-system, "Helvetica Neue", Arial, sans-serif; overflow: hidden; position: relative; }
+  .horizon { position: absolute; left: 0; right: 0; top: 0; height: 1px; background: rgba(159, 209, 255, 0.24); }
+  .wrap { position: absolute; left: 88px; right: 88px; top: 0; bottom: 0; display: flex; flex-direction: column; justify-content: center; gap: 36px; }
+  .lockup { display: flex; align-items: center; gap: 16px; font-size: 34px; font-weight: 500; letter-spacing: -0.01em; }
+  .lockup svg { width: 40px; height: 40px; display: block; }
+  .eyebrow { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-weight: 600; font-size: 22px; letter-spacing: 0.18em; text-transform: uppercase; color: #FDB515; display: flex; align-items: center; gap: 18px; }
+  .eyebrow::before, .eyebrow::after { content: ""; height: 1px; width: 40px; background: rgba(253, 181, 21, 0.42); }
+  h1 { margin: 0; font-family: "Source Serif 4", Georgia, serif; font-weight: 400; font-size: 84px; line-height: 1.02; letter-spacing: -0.016em; color: #ece8df; max-width: 980px; }
+  p { margin: 0; font-size: 28px; line-height: 1.45; color: #b5b0a5; max-width: 900px; }
+  .facts { display: flex; gap: 40px; font-size: 22px; color: #b5b0a5; }
+  .facts span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #FDB515; margin-right: 12px; vertical-align: 2px; }
+  .url { position: absolute; right: 88px; bottom: 44px; font-family: "Fira Mono", Menlo, monospace; font-size: 22px; color: #8e897e; }
+</style>
+</head>
+<body>
+<div class="horizon"></div>
+<div class="wrap">
+  <div class="lockup">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#FDB515"/></svg>
+    Vervly
+  </div>
+  <div class="eyebrow">Built at UC Berkeley</div>
+  <h1>Reads like you wrote it.</h1>
+  <p>An AI humanizer that keeps every name, number and claim, and shows the detector reading before and after.</p>
+  <div class="facts"><span>1,000 words free</span><span>No account needed</span><span>Every fact kept</span></div>
+</div>
+<div class="url">vervly.app</div>
+</body>
+</html>

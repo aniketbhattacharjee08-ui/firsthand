@@ -3,8 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Vervly</title>
+<title>Vervly: AI humanizer that keeps your facts and shows the detector score</title>
 <meta name="description" content="Paste a draft or upload a document. Vervly rewrites it so it reads as written by a person, keeps every name and number, and shows the detector reading before and after. 1,000 words free, no account needed.">
+<link rel="canonical" href="https://vervly.app/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Vervly">
+<meta property="og:url" content="https://vervly.app/">
+<meta property="og:title" content="Vervly: reads like you wrote it">
+<meta property="og:description" content="An AI humanizer that keeps every name, number and claim, and shows the detector reading before and after. 1,000 words free, no account.">
+<meta property="og:image" content="https://vervly.app/brand/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Vervly: reads like you wrote it.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Vervly: reads like you wrote it">
+<meta name="twitter:description" content="An AI humanizer that keeps every name, number and claim, and shows the detector reading before and after. 1,000 words free, no account.">
+<meta name="twitter:image" content="https://vervly.app/brand/og.png">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0a0e20">
 <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
@@ -22,6 +36,37 @@
 <link rel="stylesheet" href="/styles.css?v=202610111800">
 <link rel="stylesheet" href="/brand/footer.css?v=202610071600">
 <link rel="stylesheet" href="/site.css?v=202610111200">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://vervly.app/#site",
+      "url": "https://vervly.app/",
+      "name": "Vervly",
+      "description": "An AI humanizer that keeps every name, number and claim, and shows the detector reading before and after."
+    },
+    {
+      "@type": "WebApplication",
+      "@id": "https://vervly.app/#app",
+      "name": "Vervly",
+      "url": "https://vervly.app/",
+      "applicationCategory": "UtilitiesApplication",
+      "operatingSystem": "Web",
+      "browserRequirements": "Requires JavaScript",
+      "description": "Paste a draft or upload a document. Vervly rewrites it so it reads as written by a person, keeps every name and number, and shows the detector reading before and after.",
+      "offers": [
+        { "@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "1,000 words free, no account needed" },
+        { "@type": "Offer", "price": "9.99", "priceCurrency": "USD", "description": "Monthly plan" },
+        { "@type": "Offer", "price": "79.99", "priceCurrency": "USD", "description": "Yearly plan" },
+        { "@type": "Offer", "price": "299", "priceCurrency": "USD", "description": "Lifetime" }
+      ],
+      "author": { "@type": "Person", "name": "Aniket Bhattacharjee", "email": "aniket_b@berkeley.edu" }
+    }
+  ]
+}
+</script>
 </head>
 <body>
 
@@ -34,6 +79,7 @@
   <header class="top" role="banner" data-c="top row" data-src="health: GET /api/health; account: GET /api/auth/me; balance: GET /api/me, X-Longhand-Credits-Balance">
     <a class="wordmark" href="/" aria-label="Vervly, front page"><span class="wordmark-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><g opacity=".55"><rect x="2" y="4" width="2" height="2"/><rect x="5" y="4" width="2" height="2"/><rect x="8" y="4" width="2" height="2"/><rect x="11" y="4" width="2" height="2"/></g><rect x="2" y="10" width="9" height="2"/><rect x="12" y="9" width="2" height="4" fill="#FDB515"/></svg></span>Vervly</a>
     <nav class="top-nav" aria-label="Site">
+      <a class="top-link" href="/check">Free check</a>
       <a class="top-link" href="/how">How it works</a>
       <a class="top-link" href="/pricing">Pricing</a>
       <a class="top-link" href="/voice">Your voice</a>
@@ -362,7 +408,8 @@
      region marked data-c, plus the spacing grid. Shown by the switch or the backtick key. -->
 <div id="construction" class="construction" aria-hidden="true" hidden></div>
 
-<script src="/app.js?v=202610111800" defer></script>
+<script src="/stats.js?v=202610141200" defer></script>
+<script src="/app.js?v=202610141200" defer></script>
 <!-- Progressive enhancement only. app.js renders everything; these modules
      animate it and draw the ASCII tiles. The page field is gone since
      2026-10-07; field.js still draws the tiles in the After pane. -->

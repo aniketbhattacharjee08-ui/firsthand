@@ -276,12 +276,17 @@ def register_oauth(app: FastAPI, store: auth_mod.AuthStore, config: Optional[OAu
             log.warning("oauth %s: %s", code, detail)
         return RedirectResponse(url="/signin?error=%s" % code, status_code=303)
 
+    def provider_name(request: Request) -> str:
+        path = request.url.path
+        return "apple" if "/apple/" in path else ("google" if "/google/" in path else "oauth")
+
     def sign_in(request: Request, email: str, name: Optional[str], next_url: str) -> RedirectResponse:
         user = store.user_by_email(email)
         if user is None:
             # No password can ever match this; the account is provider-only
             # until the owner adds a password-reset flow.
             user = store.create_user(email, secrets.token_urlsafe(32), name)
+            auth_mod._stats_record(request, "signup", user=str(user["id"]), props={"method": provider_name(request)})
         token = store.create_session(user["id"])
         response = RedirectResponse(url=next_url, status_code=303)
         auth_mod.set_session_cookie(response, request, token)

@@ -2466,3 +2466,65 @@ def create_app(  # noqa: F811 - deliberate: wraps the definition above
         public_app=public_app,
     )
     return _register_voice_routes(app, voice_db=voice_db)
+
+
+# ===========================================================================
+# Statistics: POST /api/stats/event, GET /api/stats/summary
+#
+# Appended after Your voice (2026-10-14). First-party, cookie-free page views
+# and funnel events (`api.stats`); the paywall, the sign-up routes and the
+# Stripe webhook record their own events through `stats.record_event`. Off
+# with HUMANIZER_STATS=0. The beacon route is free in the billing gate like
+# every other unlisted /api/ path.
+# ===========================================================================
+
+from . import stats as _stats_mod  # noqa: E402
+
+
+def _register_stats(app: FastAPI, stats_db: Optional[Path] = None) -> FastAPI:
+    """Install the statistics store and routes, then re-order mounts."""
+    store = _stats_mod.StatsStore(stats_db or _stats_mod.default_stats_db_path())
+    _stats_mod.register_stats(app, store)
+
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    if mounts:
+        app.router.routes = [r for r in routes if not isinstance(r, Mount)] + mounts
+    return app
+
+
+_create_app_without_stats = create_app
+
+
+def create_app(  # noqa: F811 - deliberate: wraps the definition above
+    reference_dir: Optional[Path] = None,
+    web_dir: Optional[Path] = None,
+    default_reference: Optional[str] = None,
+    auth: Optional[bool] = None,
+    auth_db: Optional[Path] = None,
+    public_app: Optional[bool] = None,
+    voice_db: Optional[Path] = None,
+    stats: Optional[bool] = None,
+    stats_db: Optional[Path] = None,
+) -> FastAPI:
+    """Build the ASGI application, statistics included.
+
+    Identical to the definition above plus `_register_stats`. `stats=None`
+    reads `HUMANIZER_STATS` (default on); `stats_db` overrides the SQLite
+    path (`HUMANIZER_STATS_DB`, else `stats.sqlite` beside the auth database).
+    """
+    app = _create_app_without_stats(
+        reference_dir=reference_dir,
+        web_dir=web_dir,
+        default_reference=default_reference,
+        auth=auth,
+        auth_db=auth_db,
+        public_app=public_app,
+        voice_db=voice_db,
+    )
+    enabled = _stats_mod.stats_enabled_from_env() if stats is None else bool(stats)
+    if enabled:
+        _register_stats(app, stats_db=stats_db)
+    return app

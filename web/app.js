@@ -21,6 +21,14 @@
 
   var PARAMS = new URLSearchParams(location.search);
   var API_BASE = PARAMS.get('api') || '';
+  /* the free check at /check leaves the draft here for the rewrite (2026-10-14) */
+  var HANDOFF_STORE = 'vervly:handoff';
+
+  /* statistics: a named event to the page's own beacon (stats.js). Counts
+     only; never the text. A page without stats.js has no one to tell. */
+  function track(name, props) {
+    try { if (typeof window.vervlyTrack === 'function') window.vervlyTrack(name, props || {}); } catch (e) { /* never */ }
+  }
   var DEBOUNCE_MS = 900;
   var AUTO_MEASURE_CHARS = 250;
 
@@ -1957,6 +1965,7 @@
     resetVotes();
     setStatus('loading', 'Rewriting. Nothing is kept until it finishes.');
     progOpen();
+    track('run_started', { words: words(text).length, level: level, doc: !!(state.doc && state.doc.kind) });
 
     runRewrite(text, level, ctl ? ctl.signal : null).then(function (res) {
       if (run.cancelled) return;
@@ -2042,6 +2051,11 @@
     var unchanged = out.trim() === text.trim();
     var before = side(r.before, sm.label_before);
     var after = side(r.after, sm.label_after);
+    track('run_finished', {
+      words: words(text).length, seconds: Math.round(elapsed), unchanged: unchanged,
+      flipped: before.label === 'ai' && after.label === 'human',
+      after: after.p === null ? -1 : Math.round(after.p * 100)
+    });
     var yard = sm.yardstick && typeof sm.yardstick === 'object' ? sm.yardstick : null;
     var flipped = typeof sm.verdict_flipped === 'boolean'
       ? sm.verdict_flipped
@@ -2138,6 +2152,7 @@
   function useRewrite() {
     var h = state.humanize;
     if (!h || !h.text.trim() || activeRun || rewriteInUse()) return;
+    track('use', {});
     state.preHumanize = state.text;
     state.view = 'reading';
     state.reading = h.after.label ? { p: h.after.p, label: h.after.label, derived: h.after.derived, text: h.text } : null;
@@ -2173,6 +2188,7 @@
   function copyRewrite() {
     var h = state.humanize;
     if (!h) return;
+    track('copy', {});
     var done = function () { setStatus('ok', 'Copied the rewrite.'); };
     var fail = function () { setStatus('error', 'Could not copy. Select the text on the right and copy it yourself.'); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2269,6 +2285,7 @@
     if (file.size > DOC_MAX_BYTES) { setStatus('error', file.name + ' is ' + fmtBytes(file.size) + '; the largest accepted is 8 MB.'); return; }
     if (loadingDoc) return;
     loadingDoc = true;
+    track('upload', { kind: kind, bytes: file.size });
 
     setStatus('loading', 'Reading ' + file.name + '.');
     var fd = new FormData();
@@ -2324,6 +2341,7 @@
     if (!h || !h.text.trim() || activeRun) return;
     var doc = state.doc;
     var fmt = doc && (doc.kind === 'txt' || doc.kind === 'md') ? doc.kind : 'docx';
+    track('download', { format: fmt });
     var base = doc && doc.name ? doc.name.replace(/\.[^.]+$/, '') : 'draft';
     var name = base + ' humanized.' + fmt;
     var fd = new FormData();
@@ -3669,7 +3687,15 @@
     wireVoice();
     checkVoice();
 
-    setText(PARAMS.get('sample') === 'ai' ? SAMPLE : '');
+    /* a draft left by the free check at /check: take it, score it, and
+       say where it came from; the key is cleared so a reload starts clean */
+    var handoff = '';
+    try {
+      handoff = sessionStorage.getItem(HANDOFF_STORE) || '';
+      if (handoff) sessionStorage.removeItem(HANDOFF_STORE);
+    } catch (e) { handoff = ''; }
+    setText(handoff || (PARAMS.get('sample') === 'ai' ? SAMPLE : ''));
+    if (handoff) track('handoff', { words: words(handoff).length });
     refreshHumanizeButton();
     renderVerdict();
     renderRun();
@@ -3680,7 +3706,9 @@
     renderStyleSignals();
     renderFlagged();
 
-    if (state.text.trim()) analyze({ detect: false });
+    /* a draft handed over from the free check is scored at once, so the
+       reading the visitor just saw is the first thing on this page too */
+    if (state.text.trim()) analyze({ detect: !!handoff });
     else setStatus('idle', 'Ready.');
     handleReturn();
 

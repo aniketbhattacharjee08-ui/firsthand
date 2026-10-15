@@ -16,6 +16,29 @@ field. The two ASCII tiles in the After pane and the progress card still animate
 
 ## Pages
 
+Since 2026-10-14 there is also `GET /check` (`check.html`, `check.css`,
+`check.js`): the free detector check, public and the page a search for
+"will my essay be flagged" should land on. One card like the tool's (draft
+pane, console, the reading under it with each sentence shaded by its
+`--risk-N` token), then "What the reading means" in the `steps` grid and the
+usual `doc-cta`. It posts to `POST /api/detect` (free in the gate) and hands
+the draft to `/app` through `sessionStorage['vervly:handoff']`, which
+`app.js` reads once on load and scores. "Free check" is the first link in
+the top nav on every page. The head of every page carries a canonical URL,
+Open Graph and Twitter tags pointing at `brand/og.png` (1200 by 630,
+rendered from `brand/og.html` with headless Chrome), and `index.html`
+carries JSON-LD for the site and the application; `check.html` carries a
+FAQPage. `GET /robots.txt` and `GET /sitemap.xml` are routes in
+`api/auth.py`, built from `HUMANIZER_PUBLIC_URL`.
+
+Every page loads `stats.js` last: the first-party, cookie-free beacon
+(`POST /api/stats/event`, `src/humanizer/api/stats.py`). `app.js` calls
+`track(name, props)` for `run_started`, `run_finished`, `use`, `copy`,
+`download`, `upload` and `handoff`; `check.js` for `check`. Counts only,
+never the text. The owner reads `humanizer stats` or
+`GET /api/stats/summary` with `X-Admin-Token`.
+
+
 Since 2026-10-07 the tool is the landing page. The server serves `GET /`
 and `GET /app` as `web/index.html` (the sign-in wall, `HUMANIZER_PUBLIC_APP=0`,
 restores the old `web/home.html` landing and the 303 to `/signin?next=/app`),

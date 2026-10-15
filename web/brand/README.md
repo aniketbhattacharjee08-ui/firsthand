@@ -14,6 +14,8 @@ The mark is the product's own before and after, drawn in the cells the page alre
 - `favicon.svg`: the mark at 32 units on a `#10172f` tile with a 4 unit radius. Link it with `<link rel="icon" type="image/svg+xml" href="brand/favicon.svg">`; export 32 and 180 pixel PNGs from it if `.ico` or Apple touch icons are needed.
 - `footer.html` and `footer.css`: the site footer snippet and its styles, on the tokens in `styles.css`.
 - `preview.png`: the mark at 16, 32 and 64, the lockups on dark and light, and the footer wide and narrow.
+- `og.html` and `og.png`: the social card (1200 by 630) every page names in its Open Graph and Twitter tags. Edit the HTML, then re-render:
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars --window-size=1200,630 --virtual-time-budget=8000 --screenshot=web/brand/og.png file://$PWD/web/brand/og.html`
 
 ## Rules
 

@@ -45,6 +45,7 @@ def _web(tmp_path: Path) -> Path:
     (web / "how.html").write_text("<h1>how</h1>")
     (web / "auth.html").write_text("<h1>auth</h1>")
     (web / "index.html").write_text("<h1>humanizer</h1>")
+    (web / "check.html").write_text("<h1>check</h1>")
     (web / "app.js").write_text("console.log(1)")
     return web
 
@@ -268,6 +269,10 @@ class TestPages:
     def test_how_it_works_is_public(self, client):
         r = client.get("/how")
         assert r.status_code == 200 and "<h1>how</h1>" in r.text
+
+    def test_free_check_is_public(self, client):
+        r = client.get("/check")
+        assert r.status_code == 200 and "<h1>check</h1>" in r.text
 
     def test_signin_and_signup_serve_the_auth_page(self, client):
         for path in ("/signin", "/signup"):

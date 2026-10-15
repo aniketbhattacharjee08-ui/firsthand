@@ -64,13 +64,18 @@ from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 SESSION_COOKIE = "rh_session"
 #: `HUMANIZER_PUBLIC_APP`: unset or anything but 0/false/no/off serves /app
 #: and the product API to visitors who have not signed in.
 PUBLIC_APP_ENV = "HUMANIZER_PUBLIC_APP"
+#: The public origin for absolute URLs in robots.txt and the sitemap.
+PUBLIC_URL_ENV = "HUMANIZER_PUBLIC_URL"
+DEFAULT_PUBLIC_URL = "https://vervly.app"
+#: The pages search engines may index, as (path, change frequency, priority).
+SITEMAP_PAGES = (("/", "weekly", "1.0"), ("/check", "weekly", "0.9"), ("/how", "monthly", "0.7"), ("/pricing", "monthly", "0.6"), ("/voice", "monthly", "0.5"))
 SESSION_TTL_S = 30 * 24 * 3600
 MIN_PASSWORD_LENGTH = 8
 
@@ -382,6 +387,13 @@ def current_user(request: Request) -> Optional[Dict[str, Any]]:
     return store.user_for_session(request.cookies.get(SESSION_COOKIE))
 
 
+def _stats_record(request: Request, name: str, **kw: Any) -> None:
+    """Record a server-side statistics event; a no-op when stats are off."""
+    from . import stats as stats_mod
+
+    stats_mod.record_event(request.app, name, **kw)
+
+
 def _err(status: int, error: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": error, "detail": detail})
 
@@ -391,6 +403,35 @@ def _safe_next(value: str) -> str:
     if value and value.startswith("/") and not value.startswith("//"):
         return value
     return "/app"
+
+
+def public_url() -> str:
+    """`HUMANIZER_PUBLIC_URL` without a trailing slash, else the shipped domain."""
+    return (os.environ.get(PUBLIC_URL_ENV, "").strip() or DEFAULT_PUBLIC_URL).rstrip("/")
+
+
+def robots_txt(base: str) -> str:
+    """Index the pages, keep crawlers out of the API, the account pages and the legal boilerplate's query forms."""
+    return (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/\n"
+        "Disallow: /signin\n"
+        "Disallow: /signup\n"
+        "Disallow: /app\n"
+        "\n"
+        "Sitemap: %s/sitemap.xml\n" % base
+    )
+
+
+def sitemap_xml(base: str, pages: Any = SITEMAP_PAGES, lastmod: Optional[str] = None) -> str:
+    day = lastmod or time.strftime("%Y-%m-%d", time.gmtime())
+    rows = "".join(
+        "  <url><loc>%s%s</loc><lastmod>%s</lastmod><changefreq>%s</changefreq><priority>%s</priority></url>\n"
+        % (base, path, day, freq, prio)
+        for path, freq, prio in pages
+    )
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n%s</urlset>\n' % rows
 
 
 def _page(path: Path) -> FileResponse:
@@ -491,6 +532,29 @@ def register_auth(
                 return _err(404, "no_voice_page", "web/voice.html is missing.")
             return _page(page)
 
+        @app.get("/check", include_in_schema=False)
+        def check_page(request: Request) -> Any:
+            # The free detector check (2026-10-14): a public page that scores
+            # a pasted draft with POST /api/detect, which is free in the gate,
+            # and hands the text to /app for the rewrite. It is the page a
+            # search for "will my essay be flagged" should land on.
+            page = page_path("check.html")
+            if page is None:
+                return _err(404, "no_check_page", "web/check.html is missing.")
+            return _page(page)
+
+        @app.get("/robots.txt", include_in_schema=False)
+        def robots(request: Request) -> Any:
+            return PlainTextResponse(robots_txt(public_url()), headers={"Cache-Control": "public, max-age=3600"})
+
+        @app.get("/sitemap.xml", include_in_schema=False)
+        def sitemap(request: Request) -> Any:
+            # Only pages that exist on disk are listed, so a deployment without
+            # the check page does not advertise a 404 to search engines.
+            present = tuple(p for p in SITEMAP_PAGES if p[0] == "/" or page_path(p[0].lstrip("/") + ".html") is not None)
+            body = sitemap_xml(public_url(), present)
+            return Response(body, media_type="application/xml", headers={"Cache-Control": "public, max-age=3600"})
+
         @app.get("/signin", include_in_schema=False)
         @app.get("/signup", include_in_schema=False)
         def auth_page(request: Request) -> Any:
@@ -525,6 +589,7 @@ def register_auth(
         except ValueError:
             return _err(409, "email_exists", "An account with that email already exists. Sign in instead.")
         token = store.create_session(user["id"])
+        _stats_record(request, "signup", user=str(user["id"]), props={"method": "password"})
         response = JSONResponse(status_code=201, content={"ok": True, "user": user_payload(user)})
         set_session_cookie(response, request, token)
         return response

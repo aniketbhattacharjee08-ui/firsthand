@@ -165,6 +165,15 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
 
     # -- health -----------------------------------------------------------
 
+    def _stats(name: str, **kw: Any) -> None:
+        # Server-side statistics event (api.stats), best effort; a no-op when
+        # the api package or the store is absent.
+        try:
+            from ..api.stats import record_event
+        except Exception:  # noqa: BLE001
+            return
+        record_event(app, name, **kw)
+
     @app.get("/api/billing/health")
     def billing_health() -> JSONResponse:
         return JSONResponse(cfg.public())
@@ -496,6 +505,7 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
         if row is None:
             return JSONResponse({"received": True, "duplicate": True})
         log.info("plan %s for %s until %r (balance %d) for %s", plan.name, user["id"], until, row["credits"], event_id)
+        _stats("purchase", user=str(user["id"]), props={"kind": "plan", "plan": plan.name, "credits": int(plan.allowance_credits or 0), "recurring": bool(plan.recurring)})
         return JSONResponse({"received": True, "plan": plan.name, "plan_until": until, "balance": int(row["credits"])})
 
     def _apply_subscription(event_id: str, event_type: str, sub: Dict[str, Any]) -> JSONResponse:
@@ -620,6 +630,7 @@ def register_billing_routes(app: FastAPI, cfg: BillingConfig, store: Store) -> F
         if isinstance(customer, str) and customer:
             store.set_stripe_ids(user_id, customer_id=customer)
         log.info("credited %d to %s (balance %d) for %s", credits, user_id, balance, event_id)
+        _stats("purchase", user=user_id, props={"kind": "topup", "credits": credits})
         return JSONResponse({"received": True, "credited": credits, "balance": balance})
 
     @app.get("/api/billing/ledger")

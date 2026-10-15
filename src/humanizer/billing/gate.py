@@ -598,6 +598,13 @@ class PaywallMiddleware:
             )
             if guest:
                 detail = "The free words for this address are used up (%d left, this draft needs %d). Create an account and choose a plan to continue." % (have * wpc, cost * wpc)
+            # The paywall hit is the funnel's hinge, so it is journalled like
+            # a charged request and mirrored to the statistics (2026-10-14).
+            self._journal(scope, {
+                "t": round(time.time(), 3), "ip": ip, "user": user["id"], "path": path, "rule": rule,
+                "words": n_words, "effort": effort, "credits": 0, "refunded": 0, "status": 402,
+                "needed": cost, "balance": have, "guest": guest,
+            })
             await _json_response(
                 send,
                 402,
@@ -645,6 +652,25 @@ class PaywallMiddleware:
             park=(rule == "park"),
             check_unchanged=(rule == "charge" and self.config.refund_unchanged),
         )
+
+    def _journal(self, scope: Dict[str, Any], record: Dict[str, Any]) -> None:
+        """One JSON line in requests.log, and the same facts as a statistics
+        event: `run` for a charged request's outcome, `paywall` for a 402.
+        The text is in neither; the address is in the log only."""
+        self.request_log.write(record)
+        try:
+            from ..api.stats import record_event_from_scope
+        except Exception:  # noqa: BLE001 - the api package is optional here
+            return
+        status = int(record.get("status") or 0)
+        if status == 402:
+            record_event_from_scope(
+                scope, "paywall", path=str(record.get("path") or ""), user=str(record.get("user") or ""),
+                props={"guest": bool(record.get("guest")), "words": record.get("words"), "needed": record.get("needed"), "balance": record.get("balance")},
+            )
+            return
+        props = {k: record.get(k) for k in ("rule", "status", "words", "effort", "credits", "refunded", "seconds", "busy", "unchanged", "stream_error", "error") if record.get(k) is not None}
+        record_event_from_scope(scope, "run", path=str(record.get("path") or ""), user=str(record.get("user") or ""), props=props)
 
     # -- charged execution -------------------------------------------------
 
@@ -699,7 +725,7 @@ class PaywallMiddleware:
             if not got_slot:
                 self._refund(user_id, cost, "%s %s busy" % (path, ref))
                 record.update(status=503, refunded=cost, seconds=round(time.monotonic() - started, 3), busy=True)
-                self.request_log.write(record)
+                self._journal(scope, record)
                 await self._busy(send)
                 return
 
@@ -735,7 +761,7 @@ class PaywallMiddleware:
                 self._refund(user_id, cost, "%s %s exception" % (path, ref))
                 state["refunded"] = cost
             record.update(status=500, refunded=state["refunded"], seconds=round(time.monotonic() - started, 3), error=True)
-            self.request_log.write(record)
+            self._journal(scope, record)
             raise
         finally:
             if got_slot:
@@ -766,7 +792,7 @@ class PaywallMiddleware:
         record.update(status=status, refunded=state["refunded"], seconds=round(time.monotonic() - started, 3))
         if unchanged is not None:
             record["unchanged"] = unchanged
-        self.request_log.write(record)
+        self._journal(scope, record)
 
     async def _resume(
         self,
@@ -816,7 +842,7 @@ class PaywallMiddleware:
                 self._refund(rec["user_id"], rec["cost"], "%s job %s busy" % (path, job_id))
                 record["refunded"] = rec["cost"]
             record.update(status=503, busy=True, seconds=round(time.monotonic() - started, 3))
-            self.request_log.write(record)
+            self._journal(scope, record)
             await self._busy(send)
             return
 
@@ -843,7 +869,7 @@ class PaywallMiddleware:
                 self._refund(rec["user_id"], rec["cost"], "%s job %s exception" % (path, job_id))
                 record["refunded"] = rec["cost"]
             record.update(status=500, error=True, seconds=round(time.monotonic() - started, 3))
-            self.request_log.write(record)
+            self._journal(scope, record)
             raise
         finally:
             self._slots.release()
@@ -866,7 +892,7 @@ class PaywallMiddleware:
                     self._refund(rec["user_id"], rec["cost"], "%s job %s unchanged" % (path, job_id))
                     record["refunded"] = rec["cost"]
         record.update(status=status, seconds=round(time.monotonic() - started, 3))
-        self.request_log.write(record)
+        self._journal(scope, record)
 
     # -- body plumbing -----------------------------------------------------
 
