@@ -1176,10 +1176,126 @@ REMOTE_CONCURRENCY_ENV = "HUMANIZER_LLM_CONCURRENCY"
 REMOTE_TIMEOUT_ENV = "HUMANIZER_LLM_TIMEOUT_S"
 
 
+#: Seconds the remote server stays resident after it last answered
+#: (deploy/cloud/modal_vllm.py: `scaledown_window`). Past this the next
+#: request pays a cold start, and the plan stage says so instead of
+#: promising a one-minute rewrite that takes six.
+REMOTE_IDLE_ENV = "HUMANIZER_LLM_IDLE_S"
+#: What that cold start costs. Measured 2026-11-01 on Modal: 3 to 6.5 min
+#: (a wait for a free GPU, then the vLLM boot).
+REMOTE_COLD_START_ENV = "HUMANIZER_LLM_COLD_START_S"
+
+
 def remote_llm_url() -> Optional[str]:
     """The configured remote generation server, or None for local MLX."""
     url = (__import__("os").environ.get(REMOTE_URL_ENV) or "").strip()
     return url.rstrip("/") or None
+
+
+def remote_idle_window_s() -> float:
+    """How long the remote server is assumed to stay up after answering."""
+    try:
+        return float(__import__("os").environ.get(REMOTE_IDLE_ENV) or 600.0)
+    except ValueError:
+        return 600.0
+
+
+def remote_cold_start_s() -> float:
+    """The planning estimate for a cold start of the remote server."""
+    try:
+        return float(__import__("os").environ.get(REMOTE_COLD_START_ENV) or 240.0)
+    except ValueError:
+        return 240.0
+
+
+#: When each remote server last answered a request, by base URL
+#: (`time.monotonic()`), and when a warm-up ping was last sent to it.
+_REMOTE_LAST_OK: Dict[str, float] = {}
+_REMOTE_WARM_SENT: Dict[str, float] = {}
+_REMOTE_LOCK = threading.Lock()
+
+
+def note_remote_answered(base_url: Optional[str]) -> None:
+    """Record that the server at `base_url` just answered (load or completion)."""
+    if not base_url:
+        return
+    with _REMOTE_LOCK:
+        _REMOTE_LAST_OK[base_url.rstrip("/")] = time.monotonic()
+
+
+def remote_is_warm(base_url: Optional[str] = None) -> bool:
+    """Whether the remote server answered within its idle window.
+
+    False also when no remote server is configured, and before the first
+    answer of this process: both mean the next request should expect to
+    wait. A warm server that was scaled down early reads as warm until the
+    window passes; the pipeline then simply gets a faster start than it
+    announced.
+    """
+    url = (base_url or remote_llm_url() or "").rstrip("/")
+    if not url:
+        return False
+    with _REMOTE_LOCK:
+        last = _REMOTE_LAST_OK.get(url)
+    return last is not None and (time.monotonic() - last) < remote_idle_window_s()
+
+
+def remote_cold_start_penalty_s() -> float:
+    """Seconds the plan stage adds when the remote server is assumed asleep."""
+    if remote_llm_url() is None or remote_is_warm():
+        return 0.0
+    return remote_cold_start_s()
+
+
+def remote_waking_note(model: str) -> str:
+    """The generate stage's first `detail` when the server must be woken."""
+    minutes = int(remote_idle_window_s() / 60.0 + 0.5)
+    return (
+        "waking the model server for %s: it sleeps after %d min of quiet and "
+        "takes 3 to 6 min to come back, then the writing starts" % (model, minutes)
+    )
+
+
+def warm_remote(block: bool = False, min_interval_s: float = 60.0) -> Dict[str, Any]:
+    """Start waking the remote server before anyone presses Humanize.
+
+    A GET of `/models` is enough to make a scale-to-zero host boot. Sent
+    from a daemon thread (unless `block`), at most once per `min_interval_s`
+    per process, and not at all while the server is known to be warm. The
+    answer says what the caller can expect: `warm` (it answered recently),
+    `warming` (a ping is out), `cold_start_s` (the planning estimate).
+    """
+    url = remote_llm_url()
+    if url is None:
+        return {"remote": False, "warm": False, "warming": False, "cold_start_s": 0.0}
+    estimate = remote_cold_start_s()
+    if remote_is_warm(url):
+        return {"remote": True, "warm": True, "warming": False, "cold_start_s": 0.0}
+    now = time.monotonic()
+    with _REMOTE_LOCK:
+        sent = _REMOTE_WARM_SENT.get(url)
+        recently = sent is not None and (now - sent) < min_interval_s
+        if not recently:
+            _REMOTE_WARM_SENT[url] = now
+    if recently:
+        return {"remote": True, "warm": False, "warming": True, "cold_start_s": estimate}
+
+    def ping() -> None:
+        backend = OpenAICompatBackend(model_name=FREEFORM_MODEL, base_url=url)
+        try:
+            resp = backend._send("GET", f"{url}/models")
+            if resp.status_code < 400:
+                note_remote_answered(url)
+        except Exception:  # noqa: BLE001 - a failed warm-up changes nothing
+            pass
+        finally:
+            backend.unload()
+
+    if block:
+        ping()
+        return {"remote": True, "warm": remote_is_warm(url), "warming": False, "cold_start_s": estimate}
+    threading.Thread(target=ping, name="llm-warm", daemon=True).start()
+    return {"remote": True, "warm": False, "warming": True, "cold_start_s": estimate}
 
 
 def generation_available() -> bool:
@@ -1347,6 +1463,7 @@ class OpenAICompatBackend(Backend):
                     time.sleep(delay)
             assert resp is not None
             resp.raise_for_status()
+            note_remote_answered(self.base_url)
             data = resp.json()
             served = [str(m.get("id", "")) for m in data.get("data", [])] if isinstance(data, dict) else []
         except Exception as exc:  # noqa: BLE001
@@ -1419,6 +1536,7 @@ class OpenAICompatBackend(Backend):
                     time.sleep(delays[attempt])
                     continue
                 resp.raise_for_status()
+                note_remote_answered(self.base_url)
                 data = resp.json()
                 choice = (data.get("choices") or [{}])[0]
                 if req.prompt.kind == "chat":

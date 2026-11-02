@@ -1419,6 +1419,10 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
                 # (HUMANIZER_LLM_URL, so this host needs no GPU) or local MLX.
                 "generation": "remote" if llm_mod.remote_llm_url() else "mlx",
                 "generation_url": llm_mod.remote_llm_url(),
+                # Whether that server answered within its idle window. False
+                # means the next rewrite pays a cold start of minutes; the
+                # frontend asks POST /api/humanize/warm early in that case.
+                "server_warm": llm_mod.remote_is_warm(),
                 # Which detector judges the document, by configured name only:
                 # resolving it here would load weights inside a health call.
                 "yardstick": yardstick_mod.configured_name(),
@@ -1428,6 +1432,22 @@ def _register_llm_routes(app: FastAPI) -> FastAPI:
                 "fallback": LLM_FALLBACK_NOTE,
             }
         )
+
+    @app.post("/api/humanize/warm")
+    def llm_warm() -> JSONResponse:
+        """Wake the generation server before the rewrite is requested.
+
+        The server scales to zero after a quiet spell and takes minutes to
+        come back (2026-11-01: 3 to 6.5 min on Modal). The frontend calls
+        this once a draft is long enough to be worth rewriting, so the boot
+        overlaps the reading of the detector verdict instead of following
+        it. Cheap here: one background GET per minute at most, nothing when
+        the server is known to be warm, nothing without a remote server.
+        Answers `{remote, warm, warming, cold_start_s}`.
+        """
+        from ..humanize import llm as llm_mod
+
+        return _ok(llm_mod.warm_remote())
 
     @app.post("/api/humanize/llm")
     def humanize_llm_endpoint(body: LlmHumanizeRequest, request: Request) -> JSONResponse:

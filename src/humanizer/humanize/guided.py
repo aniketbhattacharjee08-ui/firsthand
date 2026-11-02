@@ -1626,7 +1626,14 @@ def stream(
         outcome.guide_probability_before = _score_with(guide_obj, outcome.original)
 
     # -- generate ---------------------------------------------------------
-    yield event("generate", "start", 0.0, "loading %s" % cfg.resolved_model())
+    yield event(
+        "generate",
+        "start",
+        0.0,
+        llm_mod.remote_waking_note(cfg.resolved_model())
+        if llm_mod.remote_llm_url() and not llm_mod.remote_is_warm()
+        else "loading %s" % cfg.resolved_model(),
+    )
     backend.load()
 
     totals = {

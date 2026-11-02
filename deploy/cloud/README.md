@@ -86,9 +86,21 @@ dedicated A100 with scale-to-zero on DeepInfra (about $0.89 an hour).
   health check on `/api/health`.
 - `modal_vllm.py`: vLLM serving `Qwen/Qwen2.5-7B` plus the LoRA, bf16,
   prefix caching, API key from the `vervly-llm` secret, idle release
-  after 180 s. `VERVLY_GPU=A10G modal deploy ...` picks another card;
-  `VERVLY_MIN_CONTAINERS=1` keeps one warm (about $580 a month on L4,
-  so only once traffic justifies it).
+  after 10 min (`VERVLY_SCALEDOWN_S`). GPUs are tried in order,
+  `VERVLY_GPU=L4,A10G,L40S` by default: on 2026-11-01 every wake waited
+  up to 3.5 min for a free L4 before the boot even began, and visitors
+  read the 6.5 min total as the site being down. The compile caches are
+  copied to the weights volume once the server is up, so a later boot
+  skips about a minute of torch.compile. `VERVLY_MIN_CONTAINERS=1` keeps
+  one warm (about $580 a month on L4) and is the only way to remove cold
+  starts altogether.
+- Cold starts on the API side: `HUMANIZER_LLM_IDLE_S` (default 600, keep
+  equal to `VERVLY_SCALEDOWN_S`) is how long the server is assumed to stay
+  up after answering; past it the plan stage adds
+  `HUMANIZER_LLM_COLD_START_S` (default 240) to its estimate and the
+  generate stage says the server is waking. `POST /api/humanize/warm`
+  starts the boot early; the page calls it once a draft reaches 40 words.
+  `HUMANIZER_LLM_TIMEOUT_S` must exceed the worst cold start (900 now).
 - `convert_adapter_to_peft.py`: mlx-lm LoRA to PEFT. Output lives in
   `data/adapters-peft/` and is baked into the Modal image.
 

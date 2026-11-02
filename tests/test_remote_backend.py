@@ -294,3 +294,52 @@ def test_follows_scale_to_zero_303_polling():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_server_that_answers_is_remembered_as_warm(stub, monkeypatch):
+    """`remote_is_warm` is what the plan stage and the warm route read.
+
+    Before the first answer the server counts as asleep (a cold start is
+    minutes), after one it counts as warm for the idle window, and past the
+    window it is asleep again.
+    """
+    monkeypatch.setattr(llm, "_REMOTE_LAST_OK", {})
+    monkeypatch.setenv(llm.REMOTE_IDLE_ENV, "600")
+    assert llm.remote_is_warm(stub.url) is False
+    b = llm.OpenAICompatBackend(model_name="Qwen/Qwen2.5-7B", base_url=stub.url)
+    b.generate([_text_req()])
+    assert llm.remote_is_warm(stub.url) is True
+    monkeypatch.setenv(llm.REMOTE_IDLE_ENV, "0")
+    assert llm.remote_is_warm(stub.url) is False
+
+
+def test_warm_remote_pings_models_once_and_reports_the_state(stub, monkeypatch):
+    monkeypatch.setattr(llm, "_REMOTE_LAST_OK", {})
+    monkeypatch.setattr(llm, "_REMOTE_WARM_SENT", {})
+    monkeypatch.setenv(llm.REMOTE_URL_ENV, stub.url)
+    monkeypatch.setenv(llm.REMOTE_COLD_START_ENV, "240")
+    first = llm.warm_remote(block=True)
+    assert first == {"remote": True, "warm": True, "warming": False, "cold_start_s": 240.0}
+    # The server answered, so a second ask sends nothing and says so.
+    assert llm.warm_remote(block=True)["warm"] is True
+    assert llm.remote_cold_start_penalty_s() == 0.0
+
+
+def test_warm_remote_is_throttled_and_a_dead_server_stays_cold(monkeypatch):
+    monkeypatch.setattr(llm, "_REMOTE_LAST_OK", {})
+    monkeypatch.setattr(llm, "_REMOTE_WARM_SENT", {})
+    monkeypatch.setenv(llm.REMOTE_URL_ENV, "http://127.0.0.1:9/v1")
+    monkeypatch.setenv(llm.REMOTE_COLD_START_ENV, "240")
+    monkeypatch.setenv(llm.REMOTE_IDLE_ENV, "600")
+    out = llm.warm_remote(block=True)
+    assert out["remote"] is True and out["warm"] is False
+    # A ping went out a moment ago: the next ask within the interval only reports.
+    assert llm.warm_remote(block=False) == {"remote": True, "warm": False, "warming": True, "cold_start_s": 240.0}
+    assert llm.remote_cold_start_penalty_s() == 240.0
+    assert llm.remote_waking_note("Qwen/Qwen2.5-7B").startswith("waking the model server for Qwen/Qwen2.5-7B")
+
+
+def test_without_a_remote_server_warm_remote_does_nothing(monkeypatch):
+    monkeypatch.delenv(llm.REMOTE_URL_ENV, raising=False)
+    assert llm.warm_remote() == {"remote": False, "warm": False, "warming": False, "cold_start_s": 0.0}
+    assert llm.remote_cold_start_penalty_s() == 0.0

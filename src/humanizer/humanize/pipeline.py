@@ -1266,7 +1266,9 @@ def stream(
             "generate",
             "start",
             0.0,
-            "loading %s" % cfg.resolved_model(),
+            llm_mod.remote_waking_note(cfg.resolved_model())
+            if rnd == 1 and llm_mod.remote_llm_url() and not llm_mod.remote_is_warm()
+            else "loading %s" % cfg.resolved_model(),
             rnd,
         )
         try:
@@ -1981,6 +1983,9 @@ def _eta_text(est_tokens: int, n_specs: int, n_paragraphs: int, backends: Any) -
     seconds = est_tokens / max(1.0, _ESTIMATED_TOKENS_PER_S)
     if not any(getattr(b, "loaded", False) for b in backends):
         seconds += _ESTIMATED_LOAD_S
+    # A remote server that has gone to sleep is minutes away, not seconds:
+    # say so here, where the UI reads the figure, rather than at the end.
+    seconds += llm_mod.remote_cold_start_penalty_s()
     seconds = max(5.0, seconds)
     if seconds < 60:
         return "%d s" % (int(seconds / 5.0 + 0.999) * 5)

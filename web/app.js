@@ -1124,6 +1124,7 @@
     prog.said = '';
     prog.warned = false;
     prog.eta = null;
+    prog.waking = false;
 
     progSetStages(stageList());
     $('progress-title').textContent = 'Rewriting your draft';
@@ -1168,6 +1169,7 @@
     progStopEstimate();
     prog.mode = 'unknown';
     prog.eta = null;
+    prog.waking = false;
     progSetStages(stageList());
     $('progress-title').textContent = 'Rewriting part ' + i + ' of ' + n;
     progSetEngine('Contacting the service', null);
@@ -1721,6 +1723,16 @@
         progSetNote(d.status === 'done' ? null : 'warn', d.status === 'done'
           ? 'The model is free. Your rewrite is starting.'
           : 'Someone else\'s rewrite is using the model. Yours starts the moment it finishes. You can stop at any time and keep your draft.');
+      }
+      /* the service names a cold start in the generate stage's first detail;
+         say what that wait is before the ring sits at zero for minutes */
+      if (key === 'generate' && d.status === 'start' && /^waking/i.test(detail)) {
+        prog.waking = true;
+        progSetNote('warn', 'The model server went to sleep after a quiet spell and is waking up. That takes a few minutes before the writing starts' +
+          (prog.eta ? ', about ' + prog.eta + ' in all' : '') + '. Your draft is not touched. You can stop at any time and keep it.');
+      } else if (key === 'generate' && prog.waking && d.status !== 'start') {
+        prog.waking = false;
+        progSetNote(null, 'The model server is up. Writing candidate versions now.');
       }
       var round = loose(d.round);
       if (round !== null && round > 1) detail = detail ? detail + ', pass ' + round : 'pass ' + round;
@@ -2500,6 +2512,26 @@
     emit('humanizer:analysis', { fresh: fresh });
   }
 
+  /* The generation server sleeps after a quiet spell and takes minutes to
+     wake. Once a draft is long enough to be worth rewriting, ask the service
+     to start waking it, so by the time Humanize is pressed the wait is
+     shorter or gone. One ask per two minutes from this page; the service
+     sends at most one ping a minute and none while the server is up. */
+  var WARM_MIN_WORDS = 40;
+  var WARM_EVERY_MS = 120000;
+  var warmAskedAt = 0;
+
+  function maybeWarm(text) {
+    if (caps.llmReady === false) return;
+    if (words(text).length < WARM_MIN_WORDS) return;
+    var now = Date.now();
+    if (now - warmAskedAt < WARM_EVERY_MS) return;
+    warmAskedAt = now;
+    request('/api/humanize/warm', {}, 15000).then(function (r) {
+      if (r && r.remote === false) warmAskedAt = Infinity; /* local model: never needed */
+    }, function () { /* no route or offline: nothing to do */ });
+  }
+
   var debounceTimer = null;
 
   function scheduleAnalyze() {
@@ -2541,6 +2573,7 @@
 
     var token = ++state.requestToken;
     var wordCount = words(text).length;
+    maybeWarm(text);
     var measure = $('analyze-btn');
     measure.disabled = true;
     setStatus('loading', detect

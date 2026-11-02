@@ -21,7 +21,10 @@ HUMANIZER_LLM_API_KEY to the same key. `modal app logs vervly-llm` tails it.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import threading
+import time
 
 import modal
 
@@ -37,7 +40,17 @@ BASE_MODEL = os.environ.get("VERVLY_BASE_MODEL", "Qwen/Qwen2.5-7B")
 #: Served LoRA name -> directory inside the image. The name is what the API
 #: sends as `model` (HUMANIZER_BASE_ADAPTER on the API host).
 ADAPTERS = {"hip7b-r4-it200": "/adapters/hip7b-r4-it200"}
-GPU = os.environ.get("VERVLY_GPU", "L4")
+#: GPU types in order of preference. Modal schedules on the first with
+#: capacity: on 2026-11-01 every wake sat "waiting to be scheduled on a
+#: GPU_L4 worker" for up to 3.5 min before the boot even began, so the
+#: alternatives (both 24 GB or more, Qwen 7B bf16 is 14.4 GiB) take over
+#: when L4s are short. `VERVLY_GPU=L4` pins one card.
+GPU = [g.strip() for g in os.environ.get("VERVLY_GPU", "L4,A10G,L40S").split(",") if g.strip()]
+#: Seconds idle before the GPU is released. 180 s (the launch value) let
+#: the server sleep between a visitor's measure and their Humanize press;
+#: 10 min keeps a working session warm for about $0.13 of idle L4 time per
+#: wake. `VERVLY_MIN_CONTAINERS=1` removes cold starts altogether.
+SCALEDOWN_S = int(os.environ.get("VERVLY_SCALEDOWN_S", "600"))
 #: Prompt plus completion. The freeform few-shot is ~2.5k tokens and
 #: completions are capped at 900 by the pipeline.
 MAX_MODEL_LEN = 6144
@@ -78,9 +91,7 @@ app = modal.App(APP_NAME)
     gpu=GPU,
     volumes={"/hf": weights},
     secrets=[modal.Secret.from_name("vervly-llm")],
-    # Seconds idle before the GPU is released; the next request pays the
-    # cold start (~5 s container + ~30 s weight load from the volume).
-    scaledown_window=180,
+    scaledown_window=SCALEDOWN_S,
     timeout=60 * 60,
     min_containers=int(os.environ.get("VERVLY_MIN_CONTAINERS", "0")),
     # A hard cap on GPU containers: the API server runs one rewrite at a time,
@@ -90,6 +101,7 @@ app = modal.App(APP_NAME)
 @modal.concurrent(max_inputs=64)
 @modal.web_server(port=PORT, startup_timeout=15 * 60)
 def serve() -> None:
+    _restore_caches()
     lora_args = []
     for name, path in ADAPTERS.items():
         if os.path.isdir(path):
@@ -109,4 +121,44 @@ def serve() -> None:
         cmd += ["--enable-lora", "--max-lora-rank", "16", "--max-loras", "2"] + lora_args
     subprocess.Popen(cmd)
     # The volume keeps the download; commit so later containers see it.
+    weights.commit()
+    # Once the server answers, copy its compile caches to the volume too.
+    threading.Thread(target=_save_caches_when_ready, name="cache-save", daemon=True).start()
+
+
+#: vLLM's torch.compile artifacts, Inductor's kernels and Triton's, which
+#: every fresh container rebuilt from nothing (62 s of torch.compile and
+#: 14 s of graph capture on 2026-11-01). They are copied to and from the
+#: weights volume rather than written there directly, because the compile
+#: machinery takes file locks and the volume is a network mount.
+_CACHES = {
+    os.path.expanduser("~/.cache/vllm"): "/hf/caches/vllm",
+    "/tmp/torchinductor_root": "/hf/caches/torchinductor",
+    os.path.expanduser("~/.triton"): "/hf/caches/triton",
+}
+
+
+def _restore_caches() -> None:
+    for local, saved in _CACHES.items():
+        if os.path.isdir(saved):
+            shutil.copytree(saved, local, dirs_exist_ok=True)
+
+
+def _save_caches_when_ready() -> None:
+    import urllib.request
+
+    deadline = time.time() + 14 * 60
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=5) as r:
+                if r.status == 200:
+                    break
+        except Exception:  # noqa: BLE001 - not up yet
+            pass
+        time.sleep(5)
+    else:
+        return
+    for local, saved in _CACHES.items():
+        if os.path.isdir(local):
+            shutil.copytree(local, saved, dirs_exist_ok=True)
     weights.commit()

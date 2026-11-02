@@ -512,6 +512,19 @@ def test_a_callers_gptzero_key_makes_gptzero_the_judge_for_that_request(monkeypa
 # ------------------------------------------------------------ one at a time
 
 
+def test_warm_route_answers_without_a_remote_server(monkeypatch):
+    """POST /api/humanize/warm is cheap and safe to call on every draft."""
+    from humanizer.humanize import llm as llm_mod
+
+    monkeypatch.delenv(llm_mod.REMOTE_URL_ENV, raising=False)
+    with TestClient(create_app(auth=False)) as c:
+        r = c.post("/api/humanize/warm")
+        assert r.status_code == 200
+        assert r.json() == {"remote": False, "warm": False, "warming": False, "cold_start_s": 0.0}
+        h = c.get("/api/humanize/llm/health").json()
+        assert h["server_warm"] is False
+
+
 def test_a_second_rewrite_waits_in_a_visible_queue_stage(monkeypatch):
     """Two rewrites never run the model at once.
 
